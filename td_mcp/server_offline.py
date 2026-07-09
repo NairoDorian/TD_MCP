@@ -332,11 +332,6 @@ def td_build_dmx_fixture(spec):
     return td_build_network(gen.create_dmx_fixture_pipeline(**_json_loads(spec)))
 
 
-def _json_loads(s):
-    import json as _json
-    return _json.loads(s) if isinstance(s, str) else s
-
-
 def td_docs_glossary(limit=200):
     """Compact index of every KB entry — exploration / autocomplete over the whole documentation source."""
     ret = get_pr()

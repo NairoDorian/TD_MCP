@@ -4,6 +4,68 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.3.0] - 2026-07-10
+
+Improvements informed by reviewing sibling TouchDesigner MCP projects
+(`github-mcp/Embody` Envoy, `DOCUMENTATION/`) in the parent folder.
+
+### Fixed
+- **Bridge `do_GET`/`do_POST` were defined twice** (`td_mcp_bridge.py`). The
+  second (stub) definitions shadowed the real ones, silently killing SSE
+  streaming and root JSON-RPC — two headline features advertised by the
+  Streamable-HTTP transport. Removed the dead stubs so the real handlers
+  (WebSocket upgrade, SSE, `/` JSON-RPC, chat UI, status, resources) are active.
+  Added `tests/test_scan_ws.py::test_single_do_get_post` to lock this in.
+- **CORS `*` wildcard was still live despite the docstring claiming it was
+  removed for CSRF** (`td_mcp_bridge.py` `_send` + `do_OPTIONS`). Replaced with
+  `_cors_origin()`, which only echoes back a *loopback* Origin and downgrades
+  everything else to `http://127.0.0.1`. Added
+  `tests/test_scan_ws.py::test_cors_reflects_loopback_blocks_external`.
+- **Undefined `debug` helper** (`td_mcp_bridge.py`): `start()`/`stop()`
+  referenced `debug(...)` which was never defined, raising `NameError` on a
+  second `start()` or on `stop()`. Added a `debug` log helper.
+- **Redundant duplicate WebSocket-upgrade check** in the bridge `do_GET`.
+
+### Changed
+- **`skills/td-building/SKILL.md`** gained a *Connectivity (do this first)*
+  section and a *Self-correction* section distilled from Embody's
+  `td-connectivity` / `mcp-safety` rules: check reachability first, resolve
+  `*here`/`*this`, treat `capture_viewport` quality verdicts as the source of
+  truth for visual work, and follow `recovery_hints` instead of retrying.
+
+---
+
+## [1.2.0] - 2026-07-10
+
+### Fixed
+- **Rerank score misassignment**: `ParallelRetriever` now keeps each doc's own
+  RRF score attached through the cross-encoder reordering (previously scores
+  were reassigned by position, so the wrong score landed on the wrong doc after
+  reranking). Added `tests/test_rag.py::test_rerank_keeps_scores`.
+- **Streamable-HTTP `tools/list` exposed empty schemas**: the HTTP MCP server
+  now emits the full input schema, description, and risk annotations for every
+  tool (previously it sent `{"properties": {}}` with `fn.__doc__` which was
+  `None` for the lambda-registered tools, making HTTP clients blind to tool
+  parameters).
+- **Legacy CLI was dead**: `td-mcp-live` subcommands (`status`, `create`,
+  `set`, `exec`, `list`, `batch`, `read`, `scan`, `find`, ...) were
+  commented out, so the README quick-start commands did nothing. Reimplemented
+  a typed argparse CLI that dispatches to the bridge client.
+
+### Changed
+- **Unified tool metadata**: both the stdio and Streamable-HTTP servers now
+  derive their tool descriptions, input schemas, and risk annotations from a
+  single `_TOOL_META` source, eliminating duplicated schema definitions.
+- **Risk classification** (`td_mcp/tools/risk.py`) now covers all 39 live
+  bridge tools, so `READ_ONLY` / `WRITE_ADDITIVE` / `DESTRUCTIVE` hints are
+  consistent across the live server, the offline server, and any bridge policy
+  enforcement (`TD_MCP_MAX_RISK`, `TD_MCP_ALLOW_EXEC`, `TD_BUILDER_LIVE_READONLY`).
+
+### Cleaned
+- Removed a duplicated `_json_loads` helper in `server_offline.py`.
+
+---
+
 ## [1.1.0] - 2026-07-09
 
 ### Added

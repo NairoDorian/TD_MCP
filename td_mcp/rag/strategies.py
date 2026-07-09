@@ -240,8 +240,13 @@ class ParallelRetriever:
                 out.append((doc, round(rrf[key], 4)))
 
         if self.reranker and out:
-            top = [d for d, _ in out[:self.top_m]]
-            reranked = self.reranker.rerank(query, top)
+            top = out[:self.top_m]
+            reranked = self.reranker.rerank(query, [d for d, _ in top])
+            # Carry the original RRF score with each doc by id so the
+            # reranker's new ordering keeps the correct score attached
+            # (pairing by position would shuffle scores onto wrong docs).
+            score_by_id = {c["id"]: sc for c, sc in top}
+            reranked_scored = [(d, score_by_id.get(d["id"])) for d in reranked]
             rest = out[self.top_m:]
-            out = [(d, sc) for d, sc in zip(reranked, [s for _, s in out[:self.top_m]])] + rest
+            out = reranked_scored + rest
         return out[:k]

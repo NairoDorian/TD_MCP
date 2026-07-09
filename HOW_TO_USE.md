@@ -56,8 +56,8 @@ Before setting up the MCP protocol, you can test both servers directly in the te
   # Set authorization token
   $env:TD_MCP_AUTH_TOKEN="YOUR_AUTO_GENERATED_TOKEN"
 
-  # Check project info
-  uv run td-mcp-live info
+   # Check project info
+   uv run td-mcp-live status
 
   # Create a node
   uv run td-mcp-live create /project1 CircleTOP --name my_circle
@@ -154,6 +154,15 @@ The `build_and_verify` tool runs a creation loop:
 3. Checks for any cook errors.
 4. Renders a thumbnail viewport capture and computes an `is_black` / `is_flat` quality verdict.
 This tells the AI agent if the rendering output is empty or broken so it can automatically self-heal.
+
+### Chat UI Panel (in-app)
+Once the bridge is running, open `http://localhost:9980/` in a Web Render TOP or any browser to load a zero-dependency, glassmorphic chat panel. It has a provider selector (Ollama / Gemini / OpenAI), persistent credential storage, a live network-node sidebar, a health indicator, and a multi-step autonomous agent loop that talks directly to the bridge. `capture_viewport` verdicts and `recovery_hints` are surfaced so you can watch the agent self-correct.
+
+### Streamable HTTP mode
+`td-mcp-live` can also run as an HTTP MCP server (`POST /` JSON-RPC + `GET /` SSE, multi-session, DNS-rebind guard) on `127.0.0.1:8765` for HTTP-capable MCP clients:
+```powershell
+uv run td-mcp-live --http
+```
 
 ---
 

@@ -4,7 +4,8 @@ Local-first **TouchDesigner MCP (Model Context Protocol)** that fuses the best i
 
 - **Offline doc/RAG server** (`td_mcp.server_offline`) — **parallel multi-RAG**: several retrieval backends (global BM25, per-source BM25 for operators/python/glsl/tutorials, optional MiniLM dense + HyDE, title boost) run concurrently and fuse via **Reciprocal Rank Fusion**, with an optional CrossEncoder reranker. Version-aware, no cloud/keys.
 - **Eval harness** (`td_mcp.rag.eval`) — recall@k / MRR / nDCG over labelled queries, so quality is provable and regressions are caught. Includes 1091 chunks (TOP 49 / CHOP 35 / SOP 32 / DAT 24 / Python 22 / COMP 21 / tutorial 19 / POP 8 / GLSL 6 / etc. seed + tdmcp/bottobot corpora): **k=5 recall 0.966**, zero version-gating violations.
-- **Live Bridge MCP Server & CLI Client** (`td_mcp.server_live`) + **TD-side Bridge** (`bridge/td_mcp_bridge.py`) — control a running TD session over HTTP using stdio MCP or CLI. Every mutation is wrapped in `ui.undo` so one Ctrl+Z reverts a whole agent batch. Features spatial context markers (`*here` and `*this`) to resolve the currently active network or selected node.
+- **Live Bridge MCP Server & CLI Client** (`td_mcp.server_live`) + **TD-side Bridge** (`bridge/td_mcp_bridge.py`) — control a running TD session over HTTP using stdio MCP, **Streamable HTTP + SSE** (multi-session, DNS-rebind guard), or the legacy CLI. Exposes **39 live tools** (create/delete/wire/inspect/read/verify/snapshot/recipe/timeline…). Every mutation is wrapped in `ui.undo` so one Ctrl+Z reverts a whole agent batch. Features spatial context markers (`*here` and `*this`) to resolve the currently active network or selected node.
+- **Natively Embedded Chat UI Panel** (`bridge/chat_ui.html`) — a zero-dependency glassmorphic chat panel served by the bridge at `GET /`, with provider selector (Ollama / Gemini / OpenAI), live network sidebar, and a multi-step autonomous agent loop.
 - **Autonomous in-TouchDesigner Agent** (`bridge/td_mcp_agent.py`) — a zero-dependency OpenAI-compatible agent script that runs natively inside TD Text DATs. Allows you to chat offline (using local Ollama) or online (Gemini/OpenAI) to build networks autonomously.
 
 Design notes and the full server catalog are located in the repository root:
@@ -21,22 +22,35 @@ td-mcp/
 ├── README.md
 ├── setup_env.ps1
 ├── td_mcp/
-│   ├── server_offline.py     # doc/RAG MCP server + CLI (uses ParallelRetriever)
-│   ├── server_live.py        # client for the TD bridge (+ --anchor "shots")
+│   ├── server_offline.py     # doc/RAG MCP server + CLI (24 tools, ParallelRetriever)
+│   ├── server_live.py        # Streamable HTTP + SSE + stdio client for the TD bridge (39 tools)
+│   ├── streamable_http.py    # Streamable-HTTP transport mixin (SSE, sessions, DNS-rebind guard)
+│   ├── generators.py         # artist network generators (feedback / audio-reactive / particle / 3D / GLSL / LED / DMX)
+│   ├── recipe_vault.py       # recipe blueprint storage
+│   ├── eval.py               # offline build eval gate
 │   ├── rag/
 │   │   ├── retriever.py      # Index (BM25 + dense + version resolver)
 │   │   ├── strategies.py     # per-source + dense + HyDE strategies, RRF fusion
 │   │   ├── rerank.py         # optional CrossEncoder reranker
+│   │   ├── knowledge_graph.py # Graph-RAG related-operator walk
 │   │   └── eval.py           # recall@k / MRR / nDCG harness
+│   ├── tdn/                  # Diffable YAML (TDN) importer/exporter
+│   ├── showcontrol/          # Show-control network builders (Art-Net / sACN / OSC / MIDI / timecode)
+│   ├── led_mapping/          # LED pixel layout matrices and DMX mapping
+│   ├── tools/risk.py         # risk-tier classification (READ_ONLY / WRITE_ADDITIVE / DESTRUCTIVE)
 │   └── kb/
-│       ├── chunks.jsonl       # 1091 built chunks (real TD facts, source+min_version+aliases)
-│       ├── build_kb.py        # regenerates chunks.jsonl from authored records
-│       ├── embeddings.jsonl   # MiniLM vectors (after TD_MCP_DENSE=1)
-│       ├── scrape.py          # crawl docs.derivative.ca
-│       └── build_index.py     # validate / dense-embed
+│       ├── chunks.jsonl      # 1091 built chunks (real TD facts, source+min_version+aliases)
+│       ├── corpus.py         # operator / Python / GLSL / version corpus records
+│       ├── build_kb.py       # regenerates chunks.jsonl from authored records
+│       ├── import_corpus.py  # import authored JSON corpus records
+│       ├── embeddings.jsonl  # MiniLM vectors (after TD_MCP_DENSE=1)
+│       ├── scrape.py         # crawl docs.derivative.ca
+│       └── build_index.py    # validate / dense-embed
 ├── bridge/
-│   ├── td_mcp_bridge.py      # paste into a Text DAT in TD (bridge server)
-│   └── td_mcp_agent.py       # paste into a Text DAT in TD (autonomous builder agent)
+│   ├── td_mcp_bridge.py      # paste into a Text DAT in TD (bridge server: JSON-RPC, WS, SSE, chat UI)
+│   ├── td_mcp_agent.py       # paste into a Text DAT in TD (autonomous builder agent, ~48 schemas)
+│   ├── chat_ui.html          # glassmorphic chat UI panel served at GET /
+│   └── bootstrap.py          # one-click bootstrap helper
 └── skills/td-building/       # Claude Code skill
 ```
 
@@ -74,9 +88,9 @@ Register in your AI client (Claude Desktop: `%APPDATA%\Claude\claude_desktop_con
 }
 ```
 
-Exposed Offline Tools: `td_docs_search`, `td_docs_operator`, `td_docs_python`, `td_docs_glsl`, `td_docs_template`, `td_docs_version`, `td_docs_family`, `td_docs_parameter`, `td_docs_compare`, `td_docs_connections`, `td_docs_workflow`, `td_docs_version_info`, `td_docs_related`, `td_build_network`, `td_showcontrol_plan`, `td_led_map`, `td_docs_glossary`, `td_build_feedback`, `td_build_audio_reactive`, `td_build_particle`, `td_build_3d_scene`, `td_build_glsl_shader`.
+Exposed Offline Tools (24): `td_docs_search`, `td_docs_operator`, `td_docs_python`, `td_docs_glsl`, `td_docs_template`, `td_docs_version`, `td_docs_family`, `td_docs_parameter`, `td_docs_compare`, `td_docs_connections`, `td_docs_workflow`, `td_docs_version_info`, `td_docs_related`, `td_docs_glossary`, `td_build_network`, `td_showcontrol_plan`, `td_led_map`, `td_build_feedback`, `td_build_audio_reactive`, `td_build_particle`, `td_build_3d_scene`, `td_build_glsl_shader`, `td_build_led_wall`, `td_build_dmx_fixture`.
 
-Exposed Live Tools: `create_node`, `delete_node`, `set_parameters`, `get_parameters`, `get_errors`, `execute_python`, `list_nodes`, `project_info`, `capture_viewport`, `get_resource`, `describe_td_tools`, `batch`, `read_chop`, `read_top`, `read_dat`, `build_and_verify`.
+Exposed Live Tools (39): `create_node`, `delete_node`, `set_parameters`, `get_parameters`, `get_errors`, `execute_python`, `list_nodes`, `project_info`, `capture_viewport`, `get_resource`, `describe_td_tools`, `batch`, `read_chop`, `read_top`, `read_dat`, `scan_network`, `build_and_verify`, `connect_nodes`, `rename_node`, `copy_node`, `auto_layout`, `get_node`, `set_node_color`, `set_node_comment`, `map_network`, `disconnect_nodes`, `get_connections`, `exec_node_method`, `snapshot_network`, `restore_network`, `get_performance`, `validate_network`, `set_flags`, `find_nodes`, `set_node_position`, `timeline`, `export_recipe`, `import_recipe`, `save_tox`.
 
 ## Control a live TouchDesigner
 
@@ -90,6 +104,16 @@ uv run td-mcp-live status
 uv run td-mcp-live create /project1 CircleTOP --name my_circle
 uv run td-mcp-live set /project1/my_circle '{"radius": 0.5}'
 uv run td-mcp-live exec "print([c.name for c in op('/project1').children])"
+```
+
+### Streamable HTTP mode
+
+`td-mcp-live` can also run as a Streamable-HTTP MCP server (POST `/` JSON-RPC +
+GET `/` SSE, multi-session via `Mcp-Session-Id`, DNS-rebind guard). Point an
+HTTP-capable MCP client at `http://127.0.0.1:8765`:
+
+```bash
+uv run td-mcp-live --http
 ```
 
 ## Grow the knowledge base

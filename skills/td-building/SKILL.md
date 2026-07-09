@@ -28,6 +28,27 @@ You are helping someone build a TouchDesigner (TD) network. TD is node-graph cre
 - **GLSL:** fragment shader reads `texture(sTD2DInputs[0], vUV.st)`; write `fragColor`; wire a TOP into input 0. Use `uTD2DInfos[0]` for resolution.
 - **3D render:** Geometry COMP + Camera COMP + Light COMP → Render TOP.
 
+## Connectivity (do this first)
+Before any tool call, confirm the bridge is reachable so you fail fast instead of
+guessing:
+- Call `status` / `GET /api/status` on `td-mcp-live` (or the bridge `status()`). If TD
+  is down, start it and wait for the bridge token before issuing mutations.
+- Resolve spatial pointers first: `*here` = the active network pane, `*this` = the
+  selected operator. Prefer these over hard-coded `/project1/...` paths so commands
+  land where the user is actually working.
+- Treat `capture_viewport` / TOP captures as the source of truth for visual work
+  (Embody's `Quality: FAIL` idea): an `is_black`/`is_flat`/`fully-transparent`
+  verdict means the render is empty — never declare a visual task "done" on a
+  failing or blank capture. Iterate until the verdict is clean.
+
+## Self-correction
+Most failures ride back structured `recovery_hints` (`{cause, action, next_tools}`):
+follow them instead of retrying the same call verbatim. Common patterns:
+- `no such op` → `list_nodes` / `td_docs_family` to confirm spelling.
+- `invalid parameter` → `td_docs_parameter` / `get_parameters` before `set_parameters`.
+- `cook error` → `get_errors` then `td_docs_search` for the operator.
+- `timeout` → split the build into smaller batches / raise the client timeout.
+
 ## Safety
 
 - Prefer bridges that wrap mutations in `ui.undo` so one Ctrl+Z reverts a whole agent batch.

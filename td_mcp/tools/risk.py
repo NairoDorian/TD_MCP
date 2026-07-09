@@ -31,22 +31,50 @@ RISK_CLASS = {
     "td_showcontrol_plan":   "READ_ONLY",
     "td_led_map":            "READ_ONLY",
 
-    # Live bridge tools
-    "create_node":           "WRITE_ADDITIVE",
-    "set_parameters":        "WRITE_ADDITIVE",
+    # Live bridge tools — read-only inspectors
     "get_parameters":        "READ_ONLY",
     "get_errors":            "READ_ONLY",
-    "execute_python":        "DESTRUCTIVE",  # arbitrary code
     "list_nodes":            "READ_ONLY",
     "project_info":          "READ_ONLY",
-    "delete_node":           "DESTRUCTIVE",
     "capture_viewport":      "READ_ONLY",
     "get_resource":          "READ_ONLY",
     "describe_td_tools":     "READ_ONLY",
-    "batch":                 "WRITE_ADDITIVE",  # mixed, but creates more than deletes
     "read_chop":             "READ_ONLY",
     "read_top":              "READ_ONLY",
     "read_dat":              "READ_ONLY",
+    "scan_network":          "READ_ONLY",
+    "get_node":              "READ_ONLY",
+    "map_network":           "READ_ONLY",
+    "get_connections":       "READ_ONLY",
+    "get_performance":       "READ_ONLY",
+    "validate_network":      "READ_ONLY",
+    "find_nodes":            "READ_ONLY",
+
+    # Live bridge tools — additive writers
+    "create_node":           "WRITE_ADDITIVE",
+    "set_parameters":        "WRITE_ADDITIVE",
+    "batch":                 "WRITE_ADDITIVE",  # mixed, but creates more than deletes
+    "build_and_verify":      "WRITE_ADDITIVE",
+    "connect_nodes":         "WRITE_ADDITIVE",
+    "rename_node":           "WRITE_ADDITIVE",
+    "copy_node":             "WRITE_ADDITIVE",
+    "auto_layout":           "WRITE_ADDITIVE",
+    "set_node_color":        "WRITE_ADDITIVE",
+    "set_node_comment":      "WRITE_ADDITIVE",
+    "disconnect_nodes":      "WRITE_ADDITIVE",
+    "exec_node_method":      "WRITE_ADDITIVE",
+    "snapshot_network":      "WRITE_ADDITIVE",
+    "restore_network":       "WRITE_ADDITIVE",
+    "set_flags":             "WRITE_ADDITIVE",
+    "set_node_position":     "WRITE_ADDITIVE",
+    "export_recipe":         "WRITE_ADDITIVE",
+    "import_recipe":         "WRITE_ADDITIVE",
+    "save_tox":              "WRITE_ADDITIVE",
+    "timeline":              "WRITE_ADDITIVE",
+
+    # Live bridge tools — destructive
+    "delete_node":           "DESTRUCTIVE",
+    "execute_python":        "DESTRUCTIVE",  # arbitrary code
 }
 
 

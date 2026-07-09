@@ -390,13 +390,7 @@ class MCPStreamableHandler(BaseHTTPRequestHandler):
                 # Client ack - no response
                 pass
             elif method == "tools/list":
-                tool_list = []
-                for name, fn in TOOL_REGISTRY.items():
-                    tool_list.append({
-                        "name": name,
-                        "description": fn.__doc__ or f"Tool {name}",
-                        "inputSchema": {"type": "object", "properties": {}}
-                    })
+                tool_list = _http_tool_meta()
                 responses.append({"jsonrpc": "2.0", "id": req_id, "result": {"tools": tool_list}})
             elif method == "tools/call":
                 tool_name = params.get("name")
@@ -566,6 +560,68 @@ TOOL_REGISTRY = {
 
 
 # ---------------------------------------------------------------------------
+# Tool metadata — single source of truth for BOTH the stdio MCP server and
+# the Streamable-HTTP server (so the HTTP `tools/list` is no longer empty and
+# both surfaces share identical descriptions / schemas / risk annotations).
+# ---------------------------------------------------------------------------
+# (name, description, properties) — annotations are derived from risk_class().
+_TOOL_META = [
+    ("create_node", "Create a TouchDesigner node.", {"path": {"type": "string"}, "type": {"type": "string"}, "name": {"type": "string"}}),
+    ("delete_node", "Delete a node.", {"path": {"type": "string"}}),
+    ("set_parameters", "Set parameters.", {"path": {"type": "string"}, "params": {"type": "object"}}),
+    ("get_parameters", "Get parameters.", {"path": {"type": "string"}}),
+    ("get_errors", "Get errors.", {"path": {"type": "string"}}),
+    ("execute_python", "Execute Python in TD.", {"code": {"type": "string"}}),
+    ("list_nodes", "List child nodes.", {"path": {"type": "string"}}),
+    ("project_info", "Project info.", {}),
+    ("capture_viewport", "Capture viewport + verdict.", {"path": {"type": "string"}, "detail": {"type": "string"}}),
+    ("get_resource", "Read td:// resource.", {"uri": {"type": "string"}}),
+    ("describe_td_tools", "List bridge capabilities.", {}),
+    ("batch", "Batch multiple ops.", {"ops": {"type": "array"}}),
+    ("read_chop", "Read CHOP channels.", {"path": {"type": "string"}, "channel": {"type": "string"}, "samples": {"type": "integer"}}),
+    ("read_top", "Read TOP metadata.", {"path": {"type": "string"}, "detail": {"type": "string"}}),
+    ("read_dat", "Read DAT rows.", {"path": {"type": "string"}, "rows": {"type": "integer"}}),
+    ("scan_network", "Scan network topology.", {"path": {"type": "string"}, "depth": {"type": "integer"}}),
+    ("build_and_verify", "Create->verify->preview loop.", {"path": {"type": "string"}, "op_type": {"type": "string"}, "params": {"type": "object"}}),
+    ("connect_nodes", "Wire nodes.", {"from_path": {"type": "string"}, "to_path": {"type": "string"}, "from_output": {"type": "integer"}, "to_input": {"type": "integer"}}),
+    ("rename_node", "Rename node.", {"path": {"type": "string"}, "new_name": {"type": "string"}}),
+    ("copy_node", "Copy node.", {"path": {"type": "string"}, "new_parent": {"type": "string"}, "new_name": {"type": "string"}}),
+    ("auto_layout", "Auto-arrange nodes.", {"path": {"type": "string"}, "direction": {"type": "string"}, "spacing_x": {"type": "integer"}, "spacing_y": {"type": "integer"}}),
+    ("get_node", "Get detailed node info.", {"path": {"type": "string"}}),
+    ("set_node_color", "Set node color (RGB 0..1).", {"path": {"type": "string"}, "r": {"type": "number"}, "g": {"type": "number"}, "b": {"type": "number"}}),
+    ("set_node_comment", "Annotate node.", {"path": {"type": "string"}, "comment": {"type": "string"}, "tags": {"type": "string"}}),
+    ("map_network", "Emit Graphviz DOT.", {"path": {"type": "string"}, "depth": {"type": "integer"}}),
+    ("disconnect_nodes", "Break wire.", {"from_path": {"type": "string"}, "to_path": {"type": "string"}, "to_input": {"type": "integer"}}),
+    ("get_connections", "Get wiring map.", {"path": {"type": "string"}}),
+    ("exec_node_method", "Call node method.", {"path": {"type": "string"}, "method": {"type": "string"}, "args": {"type": "array"}}),
+    ("snapshot_network", "Save .tox checkpoint.", {"path": {"type": "string"}}),
+    ("restore_network", "Restore .tox checkpoint.", {"snapshot": {"type": "string"}, "target_parent": {"type": "string"}}),
+    ("get_performance", "Profile cook times.", {"path": {"type": "string"}}),
+    ("validate_network", "Scene contract check.", {"path": {"type": "string"}, "depth": {"type": "integer"}}),
+    ("set_flags", "Toggle node flags.", {"path": {"type": "string"}, "flags": {"type": "object"}}),
+    ("find_nodes", "Search by name/type.", {"path": {"type": "string"}, "query": {"type": "string"}, "type": {"type": "string"}, "depth": {"type": "integer"}}),
+    ("set_node_position", "Move node to (x,y).", {"path": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"}}),
+    ("timeline", "Control global timeline.", {"action": {"type": "string"}, "value": {"type": "number"}}),
+    ("export_recipe", "Export recipe JSON.", {"path": {"type": "string"}, "depth": {"type": "integer"}}),
+    ("import_recipe", "Import recipe JSON.", {"recipe": {"type": "object"}, "target_parent": {"type": "string"}}),
+    ("save_tox", "Save COMP as .tox.", {"path": {"type": "string"}, "file_path": {"type": "string"}}),
+]
+
+
+def _http_tool_meta():
+    from td_mcp.tools.risk import tool_annotations
+    out = []
+    for name, desc, props in _TOOL_META:
+        out.append({
+            "name": name,
+            "description": desc,
+            "inputSchema": {"type": "object", "properties": props},
+            "annotations": tool_annotations(name),
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
 # MCP stdio server (for Claude Desktop / Cursor)
 # ---------------------------------------------------------------------------
 def _run_stdio_server(host=DEFAULT_HOST, port=DEFAULT_PORT, auth_token=None, anchor=False):
@@ -576,89 +632,13 @@ def _run_stdio_server(host=DEFAULT_HOST, port=DEFAULT_PORT, auth_token=None, anc
     app = Server("td-mcp-live")
     client = _get_client()
 
-    # Risk tiers
-    read_only = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
-    modifying = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
-    destructive = {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False}
-
     @app.list_tools()
     async def list_tools():
+        from td_mcp.tools.risk import tool_annotations
         return [
-            types.Tool("create_node", "Create a TouchDesigner node.", {
-                "path": {"type": "string"}, "type": {"type": "string"}, "name": {"type": "string", "optional": True}},
-            annotations=modifying),
-            types.Tool("delete_node", "Delete a node.", {"path": {"type": "string"}}, annotations=destructive),
-            types.Tool("set_parameters", "Set parameters.", {
-                "path": {"type": "string"}, "params": {"type": "object"}}, annotations=modifying),
-            types.Tool("get_parameters", "Get parameters.", {"path": {"type": "string"}}, annotations=read_only),
-            types.Tool("get_errors", "Get errors.", {"path": {"type": "string"}}, annotations=read_only),
-            types.Tool("execute_python", "Execute Python in TD.", {"code": {"type": "string"}}, annotations=destructive),
-            types.Tool("list_nodes", "List child nodes.", {"path": {"type": "string"}}, annotations=read_only),
-            types.Tool("project_info", "Project info.", {}, annotations=read_only),
-            types.Tool("capture_viewport", "Capture viewport + verdict.", {
-                "path": {"type": "string"}, "detail": {"type": "string", "optional": True}}, annotations=read_only),
-            types.Tool("get_resource", "Read td:// resource.", {"uri": {"type": "string"}}, annotations=read_only),
-            types.Tool("describe_td_tools", "List bridge capabilities.", {}, annotations=read_only),
-            types.Tool("batch", "Batch multiple ops.", {"ops": {"type": "array"}}, annotations=modifying),
-            types.Tool("read_chop", "Read CHOP channels.", {
-                "path": {"type": "string"}, "channel": {"type": "string", "optional": True},
-                "samples": {"type": "integer", "optional": True}}, annotations=read_only),
-            types.Tool("read_top", "Read TOP metadata.", {
-                "path": {"type": "string"}, "detail": {"type": "string", "optional": True}}, annotations=read_only),
-            types.Tool("read_dat", "Read DAT rows.", {
-                "path": {"type": "string"}, "rows": {"type": "integer", "optional": True}}, annotations=read_only),
-            types.Tool("scan_network", "Scan network topology.", {
-                "path": {"type": "string"}, "depth": {"type": "integer", "optional": True}}, annotations=read_only),
-            types.Tool("build_and_verify", "Create->verify->preview loop.", {
-                "path": {"type": "string"}, "op_type": {"type": "string"},
-                "params": {"type": "object", "optional": True}}, annotations=modifying),
-            types.Tool("connect_nodes", "Wire nodes.", {
-                "from_path": {"type": "string"}, "to_path": {"type": "string"},
-                "from_output": {"type": "integer", "optional": True},
-                "to_input": {"type": "integer", "optional": True}}, annotations=modifying),
-            types.Tool("rename_node", "Rename node.", {
-                "path": {"type": "string"}, "new_name": {"type": "string"}}, annotations=modifying),
-            types.Tool("copy_node", "Copy node.", {
-                "path": {"type": "string"}, "new_parent": {"type": "string"},
-                "new_name": {"type": "string", "optional": True}}, annotations=modifying),
-            types.Tool("auto_layout", "Auto-arrange nodes.", {
-                "path": {"type": "string"}, "direction": {"type": "string", "optional": True},
-                "spacing_x": {"type": "integer", "optional": True}, "spacing_y": {"type": "integer", "optional": True}}, annotations=modifying),
-            types.Tool("get_node", "Get detailed node info.", {"path": {"type": "string"}}, annotations=read_only),
-            types.Tool("set_node_color", "Set node color (RGB 0..1).", {
-                "path": {"type": "string"}, "r": {"type": "number"}, "g": {"type": "number"}, "b": {"type": "number"}}, annotations=modifying),
-            types.Tool("set_node_comment", "Annotate node.", {
-                "path": {"type": "string"}, "comment": {"type": "string", "optional": True},
-                "tags": {"type": "string", "optional": True}}, annotations=modifying),
-            types.Tool("map_network", "Emit Graphviz DOT.", {
-                "path": {"type": "string"}, "depth": {"type": "integer", "optional": True}}, annotations=read_only),
-            types.Tool("disconnect_nodes", "Break wire.", {
-                "from_path": {"type": "string"}, "to_path": {"type": "string"},
-                "to_input": {"type": "integer", "optional": True}}, annotations=modifying),
-            types.Tool("get_connections", "Get wiring map.", {"path": {"type": "string"}}, annotations=read_only),
-            types.Tool("exec_node_method", "Call node method.", {
-                "path": {"type": "string"}, "method": {"type": "string"}, "args": {"type": "array", "optional": True}}, annotations=modifying),
-            types.Tool("snapshot_network", "Save .tox checkpoint.", {"path": {"type": "string"}}, annotations=modifying),
-            types.Tool("restore_network", "Restore .tox checkpoint.", {
-                "snapshot": {"type": "string"}, "target_parent": {"type": "string", "optional": True}}, annotations=modifying),
-            types.Tool("get_performance", "Profile cook times.", {"path": {"type": "string"}}, annotations=read_only),
-            types.Tool("validate_network", "Scene contract check.", {
-                "path": {"type": "string"}, "depth": {"type": "integer", "optional": True}}, annotations=read_only),
-            types.Tool("set_flags", "Toggle node flags.", {
-                "path": {"type": "string"}, "flags": {"type": "object"}}, annotations=modifying),
-            types.Tool("find_nodes", "Search by name/type.", {
-                "path": {"type": "string"}, "query": {"type": "string", "optional": True},
-                "type": {"type": "string", "optional": True}, "depth": {"type": "integer", "optional": True}}, annotations=read_only),
-            types.Tool("set_node_position", "Move node to (x,y).", {
-                "path": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"}}, annotations=modifying),
-            types.Tool("timeline", "Control global timeline.", {
-                "action": {"type": "string"}, "value": {"type": "number", "optional": True}}, annotations=modifying),
-            types.Tool("export_recipe", "Export recipe JSON.", {
-                "path": {"type": "string"}, "depth": {"type": "integer", "optional": True}}, annotations=read_only),
-            types.Tool("import_recipe", "Import recipe JSON.", {
-                "recipe": {"type": "object"}, "target_parent": {"type": "string", "optional": True}}, annotations=modifying),
-            types.Tool("save_tox", "Save COMP as .tox.", {
-                "path": {"type": "string"}, "file_path": {"type": "string", "optional": True}}, annotations=modifying),
+            types.Tool(name, desc, {"type": "object", "properties": props},
+                       annotations=tool_annotations(name))
+            for name, desc, props in _TOOL_META
         ]
 
     @app.call_tool()
@@ -728,25 +708,74 @@ def _run_http_server(host=DEFAULT_HTTP_HOST, port=DEFAULT_HTTP_PORT):
 
 
 # ---------------------------------------------------------------------------
-# Legacy CLI (kept for backward compat)
+# Legacy CLI (typed commands against the bridge)
 # ---------------------------------------------------------------------------
 def _main_legacy():
-    ap = argparse.ArgumentParser(description="td-mcp live bridge client")
-    ap.add_argument("--host", default=DEFAULT_HOST)
-    ap.add_argument("--port", type=int, default=DEFAULT_PORT)
+    ap = argparse.ArgumentParser(prog="td-mcp-live", description="td-mcp live bridge client")
+    ap.add_argument("--host", default=DEFAULT_HOST, help="bridge host")
+    ap.add_argument("--port", type=int, default=DEFAULT_PORT, help="bridge port")
     ap.add_argument("--anchor", action="store_true",
                     help="attach a doc 'shot' (RAG context) to each tool response")
     ap.add_argument("--auth-token", default=None, help="Bearer auth token")
-    ap.add_argument("--transport", choices=["http", "ws"], default="http",
-                    help="transport: http (default) or ws (WebSocket)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    # ... all existing subcommands (same as before, kept for compatibility)
-    # Omitted for brevity - they work the same via _client._call()
+    sub.add_parser("status", help="bridge + project status").add_argument("path", nargs="?", default="/project1")
+    p = sub.add_parser("create", help="create a node")
+    p.add_argument("path"); p.add_argument("type"); p.add_argument("--name", default=None)
+    sub.add_parser("delete", help="delete a node").add_argument("path")
+    p = sub.add_parser("set", help="set parameters (JSON object)"); p.add_argument("path"); p.add_argument("params")
+    sub.add_parser("get", help="get parameters").add_argument("path")
+    sub.add_parser("errors", help="get cook errors").add_argument("path")
+    p = sub.add_parser("exec", help="execute python in TD"); p.add_argument("code")
+    sub.add_parser("list", help="list child nodes").add_argument("path", nargs="?", default="/project1")
+    p = sub.add_parser("batch", help="batch ops (JSON array)"); p.add_argument("ops")
+    p = sub.add_parser("read", help="read a CHOP/TOP/DAT"); p.add_argument("path")
+    p.add_argument("--kind", choices=["chop", "top", "dat"], default="chop")
+    p.add_argument("--channel", default=None); p.add_argument("--samples", type=int, default=10)
+    p.add_argument("--rows", type=int, default=10); p.add_argument("--detail", default="brief")
+    p = sub.add_parser("scan", help="scan network topology"); p.add_argument("path", nargs="?", default="/project1")
+    p.add_argument("--depth", type=int, default=3)
+    p = sub.add_parser("find", help="find nodes by name/type"); p.add_argument("path", nargs="?", default="/project1")
+    p.add_argument("--query", default=None); p.add_argument("--type", default=None)
+    p.add_argument("--depth", type=int, default=4)
 
     args = ap.parse_args()
     client = TDClient(args.host, args.port, anchor=args.anchor, auth_token=args.auth_token)
-    # ... dispatch logic here
+    import json as _json
+
+    def _emit(res):
+        print(_json.dumps(res, indent=2, default=str))
+
+    cmd = args.cmd
+    if cmd == "status":
+        _emit(client.project_info())
+    elif cmd == "create":
+        _emit(client.create_node(args.path, args.type, name=args.name))
+    elif cmd == "delete":
+        _emit(client.delete_node(args.path))
+    elif cmd == "set":
+        _emit(client.set_parameters(args.path, _json.loads(args.params)))
+    elif cmd == "get":
+        _emit(client.get_parameters(args.path))
+    elif cmd == "errors":
+        _emit(client.get_errors(args.path))
+    elif cmd == "exec":
+        _emit(client.execute_python(args.code))
+    elif cmd == "list":
+        _emit(client.list_nodes(args.path))
+    elif cmd == "batch":
+        _emit(client.batch(_json.loads(args.ops)))
+    elif cmd == "read":
+        if args.kind == "top":
+            _emit(client.read_top(args.path, detail=args.detail))
+        elif args.kind == "dat":
+            _emit(client.read_dat(args.path, rows=args.rows))
+        else:
+            _emit(client.read_chop(args.path, channel=args.channel, samples=args.samples))
+    elif cmd == "scan":
+        _emit(client.scan_network(args.path, depth=args.depth))
+    elif cmd == "find":
+        _emit(client.find_nodes(args.path, query=args.query, type=args.type, depth=args.depth))
 
 
 def main():

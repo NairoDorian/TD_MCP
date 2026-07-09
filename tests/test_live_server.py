@@ -38,3 +38,20 @@ def test_live_tool_names():
     # The call_tool handler is registered under CallToolRequest.
     assert types.CallToolRequest in app.request_handlers
     print("ok  CallToolRequest handler present for new tools")
+
+
+def test_http_tool_meta_has_real_schemas():
+    from td_mcp.server_live import _http_tool_meta, TOOL_REGISTRY, _TOOL_META
+    # every registered tool must be described in the HTTP metadata
+    meta_names = {m[0] for m in _TOOL_META}
+    assert meta_names == set(TOOL_REGISTRY), meta_names ^ set(TOOL_REGISTRY)
+    tools = _http_tool_meta()
+    assert len(tools) == len(TOOL_REGISTRY)
+    for t in tools:
+        assert t["name"]
+        assert t["description"], t["name"]  # empty/None descriptions were a bug
+        schema = t["inputSchema"]
+        assert schema.get("type") == "object"
+        assert isinstance(schema.get("properties"), dict)
+        assert t["annotations"]["readOnlyHint"] in (True, False)
+    print("ok  HTTP tools/list exposes real schemas for", len(tools), "tools")

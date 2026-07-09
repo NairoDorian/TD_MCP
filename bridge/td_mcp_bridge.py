@@ -74,6 +74,11 @@ _ws_lock = threading.Lock()
 _sse_clients = set()
 
 
+def debug(*args):
+    """Bridge log helper (used by start/stop); overridable by the host."""
+    print("[td_mcp]", *args)
+
+
 def _ws_push(event):
     """Proactively notify connected WebSocket clients (chat UI) of tool activity
     or errors, so the agent's actions are visible in real time (tdmcp event stream)."""
@@ -1215,11 +1220,6 @@ class _Handler(StreamableHTTPMixin, BaseHTTPRequestHandler):
             self._handle_sse()
             return
 
-        # WebSocket upgrade
-        if self.headers.get("Upgrade", "").lower() == "websocket":
-            self._handle_websocket()
-            return
-
         if self.path in ("/", "/ui", "/chat"):
             try:
                 with open(_CHAT_UI_PATH, "rb") as f:
@@ -1280,8 +1280,9 @@ class _Handler(StreamableHTTPMixin, BaseHTTPRequestHandler):
         body = json.dumps(obj).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
-        # Allow the local Chat UI page to call back here
-        self.send_header("Access-Control-Allow-Origin", "*")
+        # Loopback-only CORS (CSRF-safe): reflect a localhost/127.0.0.1 Origin,
+        # never the old `*` wildcard.
+        self.send_header("Access-Control-Allow-Origin", _cors_origin(self.headers.get("Origin", "")))
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -1296,7 +1297,7 @@ class _Handler(StreamableHTTPMixin, BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", _cors_origin(self.headers.get("Origin", "")))
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.end_headers()
@@ -1372,58 +1373,6 @@ class _Handler(StreamableHTTPMixin, BaseHTTPRequestHandler):
             with _ws_lock:
                 _ws_clients.discard(self)
 
-    def do_GET(self):
-        # WebSocket upgrade
-        if self.headers.get("Upgrade", "").lower() == "websocket":
-            self._handle_websocket()
-            return
-        if self.path in ("/", "/ui", "/chat"):
-            # Serve Chat UI
-            try:
-                with open(_CHAT_UI_PATH, "rb") as f:
-                    self._send_html(f.read())
-            except FileNotFoundError:
-                self._send({"ok": False, "error": "chat_ui.html not found"})
-            return
-        if self.path == "/api/status":
-            self._send({"ok": True, "status": "running", "port": TD_MCP_PORT,
-                        "auth": True, "allow_exec": ALLOW_EXEC})
-        elif self.path.startswith("/api/resource?"):
-            m = re.search(r"uri=([^&]+)", self.path)
-            uri = _urldecode(m.group(1)) if m else ""
-            self._send(_wrap(_do_get_resource(uri)))
-        else:
-            self._send({"ok": False, "error": "not found"}, 404)
-
-    def do_POST(self):
-        if self.path != "/mcp":
-            self._send({"ok": False, "error": "not found"}, 404)
-            return
-        if not self._auth_ok():
-            self._send({"ok": False, "error": "unauthorized"}, 401)
-            return
-        length = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(length) if length else b"{}"
-        try:
-            req = json.loads(raw.decode("utf-8") or "{}")
-        except Exception:  # noqa: BLE001
-            self._send({"ok": False, "error": "bad json"}, 400)
-            return
-        tool = req.get("tool")
-        fn = _DISPATCH.get(tool)
-        if fn is None:
-            self._send({"ok": False, "error": f"unknown tool: {tool}"})
-            return
-        try:
-            with ui.undo:
-                result = _wrap(fn(req.get("args", {})))
-            ok = result.get("ok") if isinstance(result, dict) else True
-            _ws_push({"tool": tool, "ok": ok})
-            self._send(result or {"ok": True})
-        except Exception as e:  # noqa: BLE001
-            _ws_push({"tool": tool, "ok": False, "error": str(e)})
-            self._send(_wrap({"ok": False, "error": str(e)}), 500)
-
     def log_message(self, *args):
         pass
 
@@ -1431,6 +1380,21 @@ class _Handler(StreamableHTTPMixin, BaseHTTPRequestHandler):
 def _urldecode(s):
     from urllib.parse import unquote
     return unquote(s)
+
+
+def _cors_origin(request_origin):
+    """Reflect a *loopback* Origin (CSRF-safe); deny everything else.
+
+    The old `*` wildcard let any page that could persuade the user's browser to
+    hit 127.0.0.1 reach the bridge. We only echo back an Origin that is itself
+    localhost/127.0.0.1, otherwise fall back to a fixed loopback value so
+    same-origin Chat-UI requests still work."""
+    if not request_origin:
+        return "http://127.0.0.1"
+    host = request_origin.split("://", 1)[-1].split("/", 1)[0].split(":")[0].lower()
+    if host in ("localhost", "127.0.0.1", "::1", "[::1]"):
+        return request_origin
+    return "http://127.0.0.1"
 
 
 _server = None

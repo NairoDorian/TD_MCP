@@ -117,3 +117,40 @@ def test_scan_network_tool_in_agent_schema():
     names = [t["function"]["name"] for t in TOOLS_SCHEMA]
     assert "scan_network" in names, "scan_network not found in TOOLS_SCHEMA"
     print("ok  scan_network is declared in td_mcp_agent TOOLS_SCHEMA")
+
+
+# ---------------------------------------------------------------------------
+# Bridge structural regression tests (no live TD needed)
+# ---------------------------------------------------------------------------
+def _load_bridge():
+    import importlib.util
+    path = os.path.join(os.path.dirname(__file__), "..", "bridge", "td_mcp_bridge.py")
+    spec = importlib.util.spec_from_file_location("td_mcp_bridge_under_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_single_do_get_post():
+    """Regression: the _Handler must define do_GET/do_POST exactly once.
+
+    A previous refactor accidentally defined them twice; the second (stub)
+    definitions shadowed the real ones and silently killed SSE streaming and
+    root JSON-RPC support."""
+    mod = _load_bridge()
+    assert sum(1 for _ in dir(mod._Handler) if _ == "do_GET") == 1, "do_GET defined more than once"
+    assert sum(1 for _ in dir(mod._Handler) if _ == "do_POST") == 1, "do_POST defined more than once"
+    print("ok  _Handler defines do_GET/do_POST exactly once (SSE + root JSON-RPC intact)")
+
+
+def test_cors_reflects_loopback_blocks_external():
+    """CORS must only echo loopback Origins (CSRF-safe), never the old `*`.
+
+    An external Origin must be downgraded to a fixed loopback value so a
+    malicious page cannot drive the bridge from the user's browser."""
+    mod = _load_bridge()
+    assert mod._cors_origin("http://localhost:9980") == "http://localhost:9980"
+    assert mod._cors_origin("http://127.0.0.1") == "http://127.0.0.1"
+    assert mod._cors_origin("http://evil.example.com") == "http://127.0.0.1"
+    assert mod._cors_origin("") == "http://127.0.0.1"
+    print("ok  CORS reflects loopback Origins and blocks external ones")

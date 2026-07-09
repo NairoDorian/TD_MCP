@@ -9,6 +9,14 @@ from td_mcp.rag.retriever import build_retriever
 from td_mcp.rag.strategies import ParallelRetriever, RemoteMCPStrategy
 
 
+class _FakeReranker:
+    """Deterministic reranker: reverses the candidate order so we can prove
+    that the original per-document RRF score stays attached to the right doc
+    after reordering (regression test for the score-misassignment bug)."""
+    def rerank(self, query, chunks):
+        return list(chunks)[::-1]
+
+
 def _pr():
     return ParallelRetriever(build_retriever())
 
@@ -35,6 +43,22 @@ def test_per_source_fusion():
     ids = [c["id"] for c, _ in res]
     assert "glsl_fragment_template" in ids, ids
     print("ok  glsl source fused:", ids[:3])
+
+
+def test_rerank_keeps_scores():
+    # The reranker reverses order; each doc must keep its OWN rrf score,
+    # not the score of the doc that landed in its new position.
+    full = ParallelRetriever(build_retriever()).search("blur top parameters", k=1000)
+    expected = {c["id"]: s for c, s in full}
+
+    pr = ParallelRetriever(build_retriever(), reranker=_FakeReranker(), top_m=15)
+    res = pr.search("blur top parameters", k=15)
+    for c, s in res:
+        assert s is not None and s >= 0.0, (c["id"], s)
+        # score must equal the doc's own original rrf score (the bug reassigned
+        # by position, so this would mismatch)
+        assert s == expected.get(c["id"]), (c["id"], s, expected.get(c["id"]))
+    print("ok  rerank preserves per-doc scores:", [(c["id"], round(s, 4)) for c, s in res[:3]])
 
 
 def test_remote_fusion():
@@ -65,5 +89,6 @@ if __name__ == "__main__":
     test_basic_recall()
     test_version_filter()
     test_per_source_fusion()
+    test_rerank_keeps_scores()
     test_remote_fusion()
     print("\nALL RAG TESTS PASSED")
