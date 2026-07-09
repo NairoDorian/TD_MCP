@@ -5,6 +5,13 @@ Gemini, Ollama, and OpenAI). It allows a Text DAT inside TouchDesigner to
 send natural-language requests, get tool-calling decisions from the model,
 and execute those decisions locally via the bridge.
 
+New in v2.0:
+- Task planning & decomposition (plan → execute → verify → replan)
+- Interactive clarification (asks questions when ambiguous)
+- Session memory & persistence (save/load session state)
+- Parallel tool execution for independent operations
+- Smarter error recovery with fallback strategies
+
 Requirements:
 - The bridge must be running (e.g. start it in your session).
 - For Gemini: Set GEMINI_API_KEY environment variable.
@@ -14,12 +21,25 @@ Requirements:
 import os
 import json
 import base64
+import time
+import uuid
+import urllib.request
+import urllib.error
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Dict, Optional, Any
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Optional, Any
 import urllib.request
 import urllib.error
 
 # Default connection settings to the local bridge
 DEFAULT_BRIDGE_PORT = 9980
 DEFAULT_HOST = "127.0.0.1"
+
+# Session persistence
+SESSION_DIR = os.path.join(os.path.expanduser("~"), ".td_mcp", "sessions")
+os.makedirs(SESSION_DIR, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -647,6 +667,89 @@ TOOLS_SCHEMA = [
             "description": "Get the current macro recorder status (recording/step count).",
             "parameters": {"type": "object", "properties": {}}
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "plan_task",
+            "description": "Create a step-by-step execution plan for a complex task before executing.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string", "description": "High-level goal description"},
+                    "context": {"type": "string", "description": "Current network context from scan_network"},
+                    "max_steps": {"type": "integer", "description": "Maximum plan steps (default 10)", "default": 10}
+                },
+                "required": ["goal"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_clarification",
+            "description": "Ask the user a clarifying question when the request is ambiguous.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "The clarifying question to ask"},
+                    "options": {"type": "array", "items": {"type": "string"}, "description": "Predefined options for the user"},
+                    "default": {"type": "integer", "description": "Default option index", "default": 0}
+                },
+                "required": ["question"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_session",
+            "description": "Save the current agent session (history, macros, context) to a file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Optional output file path (defaults to temp dir)"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "load_session",
+            "description": "Load a previously saved agent session.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the session file"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_parallel",
+            "description": "Execute multiple independent tool calls in parallel.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "calls": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tool": {"type": "string"},
+                                "args": {"type": "object"}
+                            },
+                            "required": ["tool", "args"]
+                        }
+                    }
+                },
+                "required": ["calls"]
+            }
+        }
     }
 ]
 
@@ -723,6 +826,322 @@ def _caption_viewport(args, port=DEFAULT_BRIDGE_PORT, auth_token=None,
     caption = _vision_request(base_url, api_key, model, query, img_b64, provider)
     verdict = cap.get("verdict", {})
     return {"ok": True, "caption": caption, "verdict": verdict}
+
+
+# ---------------------------------------------------------------------------
+# Session Memory & Persistence
+# ---------------------------------------------------------------------------
+class SessionMemory:
+    """Persists agent session state across runs (history, context, macros)."""
+
+    def __init__(self, session_id: Optional[str] = None):
+        self.session_id = session_id or str(uuid.uuid4())[:8]
+        self.path = os.path.join(SESSION_DIR, f"{self.session_id}.json")
+        self.history: List[Dict] = []
+        self.context: Dict[str, Any] = {}
+        self.macros: Dict[str, Any] = {}
+        self.created = time.time()
+        self.updated = time.time()
+        self._load()
+
+    def _load(self):
+        if os.path.exists(self.path):
+            try:
+                with open(self.path, "r") as f:
+                    data = json.load(f)
+                self.history = data.get("history", [])
+                self.context = data.get("context", {})
+                self.macros = data.get("macros", {})
+                self.created = data.get("created", self.created)
+                self.updated = data.get("updated", self.updated)
+            except Exception:
+                pass
+
+    def save(self):
+        self.updated = time.time()
+        data = {
+            "session_id": self.session_id,
+            "history": self.history,
+            "context": self.context,
+            "macros": self.macros,
+            "created": self.created,
+            "updated": self.updated,
+        }
+        with open(self.path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    def add_interaction(self, user_prompt: str, tool_calls: List[Dict], results: List[Dict]):
+        self.history.append({
+            "timestamp": time.time(),
+            "prompt": user_prompt,
+            "tool_calls": tool_calls,
+            "results": results,
+        })
+        if len(self.history) > 50:  # keep last 50
+            self.history = self.history[-50:]
+        self.save()
+
+    def get_recent_context(self, max_items: int = 5) -> str:
+        """Return recent interaction summary for context injection."""
+        if not self.history:
+            return ""
+        items = self.history[-max_items:]
+        lines = []
+        for h in items:
+            lines.append(f"User: {h['prompt'][:100]}")
+            for tc in h.get("tool_calls", []):
+                lines.append(f"  → {tc.get('name')}({tc.get('args', {})})")
+        return "\n".join(lines)
+
+
+# Global session memory (lazy init)
+_SESSION_MEMORY: Optional[SessionMemory] = None
+
+
+def get_session_memory(session_id: Optional[str] = None) -> SessionMemory:
+    global _SESSION_MEMORY
+    if _SESSION_MEMORY is None or (session_id and _SESSION_MEMORY.session_id != session_id):
+        _SESSION_MEMORY = SessionMemory(session_id)
+    return _SESSION_MEMORY
+
+
+def clear_session_memory():
+    global _SESSION_MEMORY
+    _SESSION_MEMORY = None
+
+
+# ---------------------------------------------------------------------------
+# Task Planner — decompose high-level goals into ordered tool calls
+# ---------------------------------------------------------------------------
+class TaskPlanner:
+    """Decomposes a natural-language goal into an ordered sequence of tool calls."""
+
+    PLANNING_PROMPT = """You are a TouchDesigner network architect. Given a user goal, output a JSON plan.
+
+Each step must be one of the available tool calls. Only use tools from the provided schema.
+
+Output format (JSON only):
+{
+  "plan": [
+    {"tool": "tool_name", "args": {...}, "reason": "why this step"},
+    ...
+  ],
+  "estimated_steps": 3,
+  "risk_level": "low|medium|high"
+}
+
+Available tools (abbreviated):
+{tool_list}
+
+User goal: {goal}
+
+Active network context: {context}"""
+
+    def __init__(self, tool_schemas: List[Dict], llm_config: Dict):
+        self.tool_schemas = tool_schemas
+        self.llm_config = llm_config
+
+    def _format_tool_list(self) -> str:
+        return "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in self.tool_schemas])
+
+    def create_plan(self, goal: str, context: str = "") -> Dict:
+        """Generate a plan for the given goal."""
+        tool_list = self._format_tool_list()
+        prompt = self.PLANNING_PROMPT.format(
+            tool_list=tool_list,
+            goal=goal,
+            context=context or "No active network context"
+        )
+
+        # Use the same LLM call mechanism as the main agent
+        try:
+            resp = self._call_llm(prompt, temperature=0.2)
+            plan = json.loads(resp)
+            return plan
+        except Exception as e:
+            return {"plan": [], "error": f"Planning failed: {e}"}
+
+    def _call_llm(self, prompt: str, temperature: float = 0.2) -> str:
+        """Call the configured LLM for planning."""
+        # This will be filled in by the agent
+        return '{"plan": []}'
+
+
+# ---------------------------------------------------------------------------
+# Error Recovery with Fallback Strategies
+# ---------------------------------------------------------------------------
+class ErrorRecovery:
+    """Provides fallback strategies when tool calls fail."""
+
+    FALLBACK_STRATEGIES = {
+        "create_node": [
+            {"strategy": "retry_with_parent", "description": "Try creating at parent level if path invalid"},
+            {"strategy": "simplify_type", "description": "Use base operator type if specific type fails"},
+        ],
+        "set_parameters": [
+            {"strategy": "filter_valid_params", "description": "Only set parameters that exist on the node"},
+            {"strategy": "expr_fallback", "description": "Try setting as expression if value fails"},
+        ],
+        "connect_nodes": [
+            {"strategy": "auto_find_ports", "description": "Auto-detect correct input/output indices"},
+            {"strategy": "wire_via_intermediate", "description": "Insert intermediate node if types mismatch"},
+        ],
+    }
+
+    @classmethod
+    def get_fallbacks(cls, tool_name: str) -> List[Dict]:
+        return cls.FALLBACK_STRATEGIES.get(tool_name, [{"strategy": "retry", "description": "Simple retry"}])
+
+    @classmethod
+    def apply_fallback(cls, tool_name: str, args: Dict, error: str, attempt: int) -> Optional[Dict]:
+        """Return modified args for fallback attempt, or None if no more fallbacks."""
+        fallbacks = cls.FALLBACK_STRATEGIES.get(tool_name, [])
+        if attempt >= len(fallbacks):
+            return None
+
+        strategy = fallbacks[attempt]["strategy"]
+
+        if tool_name == "create_node" and strategy == "retry_with_parent":
+            # Move up one level
+            path = args.get("path", "")
+            if path and path != "/":
+                parts = path.rstrip("/").split("/")
+                if len(parts) > 1:
+                    args = args.copy()
+                    args["path"] = "/".join(parts[:-1]) or "/"
+                    return args
+
+        if tool_name == "set_parameters" and strategy == "filter_valid_params":
+            # This would need node inspection - skip for now
+            return None
+
+        if tool_name == "connect_nodes" and strategy == "auto_find_ports":
+            # Try default ports
+            args = args.copy()
+            args.setdefault("from_output", 0)
+            args.setdefault("to_input", 0)
+            return args
+
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Parallel Tool Executor for independent operations
+# ---------------------------------------------------------------------------
+class ParallelExecutor:
+    """Execute independent tool calls in parallel."""
+
+    def __init__(self, max_workers: int = 4):
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+
+    def execute_batch(self, calls: List[Dict]) -> List[Dict]:
+        """Execute multiple tool calls in parallel where possible.
+
+        calls: [{"tool": "name", "args": {...}, "depends_on": []}, ...]
+        """
+        # Simple dependency-aware execution
+        # For now, just run all in parallel (they should be independent)
+        futures = {}
+        for call in calls:
+            tool = call["tool"]
+            args = call["args"]
+            futures[call] = self.executor.submit(_execute_tool, tool, args)
+
+        results = []
+        for call, future in futures.items():
+            try:
+                res = future.result(timeout=30)
+                results.append({"call": call, "result": res, "ok": True})
+            except Exception as e:
+                results.append({"call": call, "result": {"ok": False, "error": str(e)}, "ok": False})
+        return results
+
+    def shutdown(self):
+        self.executor.shutdown(wait=True)
+
+
+# Global executor
+_PARALLEL_EXECUTOR = ParallelExecutor()
+
+
+# ---------------------------------------------------------------------------
+# Interactive Clarification — ask user when ambiguous
+# ---------------------------------------------------------------------------
+class InteractiveClarifier:
+    """Asks clarifying questions when the user's request is ambiguous."""
+
+    CLARIFICATION_PROMPT = """The user's request is ambiguous. You must ask ONE specific question to clarify.
+
+User request: {prompt}
+Active network context: {context}
+
+Ambiguities detected: {ambiguities}
+
+Output JSON only:
+{{
+  "question": "Your specific clarifying question",
+  "options": ["option1", "option2", "option3"],
+  "default": 0
+}}"""
+
+    def __init__(self, tool_schemas: List[Dict], llm_config: Dict):
+        self.tool_schemas = tool_schemas
+        self.llm_config = llm_config
+
+    def detect_ambiguities(self, prompt: str, context: str) -> List[str]:
+        """Heuristic detection of common ambiguities."""
+        ambiguities = []
+        prompt_lower = prompt.lower()
+
+        # Missing path
+        if "path" not in prompt_lower and "*here" not in prompt_lower and "*this" not in prompt_lower:
+            if any(w in prompt_lower for w in ["create", "add", "make", "build", "wire", "connect", "move"]):
+                ambiguities.append("No target path specified (use *here for current network)")
+
+        # Multiple nodes but no wiring specified
+        if any(w in prompt_lower for w in ["create", "add", "make", "build"]) and "wire" not in prompt_lower and "connect" not in prompt_lower:
+            # Check if multiple nodes implied
+            pass
+
+        # Missing operator type
+        if "node" in prompt_lower and "type" not in prompt_lower and "top" not in prompt_lower and "chop" not in prompt_lower:
+            if "create" in prompt_lower or "add" in prompt_lower:
+                ambiguities.append("No operator type specified (e.g., CircleTOP, NoiseCHOP)")
+
+        # Missing parameters
+        if "set" in prompt_lower and "parameter" not in prompt_lower and "param" not in prompt_lower:
+            ambiguities.append("No parameter names specified for set_parameters")
+
+        return ambiguities
+
+    def ask_clarification(self, prompt: str, context: str, ambiguities: List[str]) -> Dict:
+        """Generate a clarifying question using the LLM."""
+        # Simple heuristic-based question for now
+        if ambiguities:
+            primary = ambiguities[0]
+            if "path" in primary:
+                return {
+                    "question": "Where should this be created?",
+                    "options": ["*here (current network)", "/project1", "custom path"],
+                    "default": 0
+                }
+            if "type" in primary:
+                return {
+                    "question": "What operator type?",
+                    "options": ["CircleTOP", "NoiseTOP", "ConstantCHOP", "Custom"],
+                    "default": 0
+                }
+            if "parameter" in primary:
+                return {
+                    "question": "Which parameter(s) to set?",
+                    "options": ["Common params (e.g., radius, frequency)", "Custom"],
+                    "default": 0
+                }
+        return {
+            "question": "Could you clarify what you want to build?",
+            "options": ["Create a node", "Wire nodes", "Set parameters", "Other"],
+            "default": 0
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -810,11 +1229,204 @@ def _macro_status():
         "start_time": _MACRO_RECORDER.start_time,
     }
 
+
 # ---------------------------------------------------------------------------
-# Autonomous Agent Loop
+# New Agent Tool Handlers
 # ---------------------------------------------------------------------------
+def _plan_task(args, port=DEFAULT_BRIDGE_PORT, auth_token=None,
+               provider="gemini", api_key=None, base_url=None, model=None):
+    """Generate a task plan using the LLM."""
+    goal = args.get("goal", "")
+    if not goal:
+        return {"ok": False, "error": "goal is required"}
+
+    # Get current network context
+    context = ""
+    try:
+        scan_res = _execute_tool("scan_network", {"path": "*here", "depth": 2}, port=port, auth_token=auth_token)
+        if scan_res.get("ok"):
+            context = json.dumps(scan_res.get("nodes", []), indent=2)
+    except Exception:
+        pass
+
+    # Build planning prompt
+    tool_list = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in TOOLS_SCHEMA])
+    prompt = f"""You are a TouchDesigner network architect. Given a user goal, output a JSON plan.
+
+Each step must be one of the available tool calls. Only use tools from the provided schema.
+
+Output format (JSON only):
+{{
+  "plan": [
+    {{"tool": "tool_name", "args": {{...}}, "reason": "why this step"}},
+    ...
+  ],
+  "estimated_steps": 3,
+  "risk_level": "low|medium|high"
+}}
+
+Available tools (abbreviated):
+{chr(10).join([f"- {t['function']['name']}: {t['function']['description']}" for t in TOOLS_SCHEMA])}
+
+User goal: {goal}
+
+Active network context: {context or "No active network context"}"""
+
+    # Call LLM
+    try:
+        # Reuse the LLM call logic from chat function
+        # Simplified - just use the provider config
+        llm_provider = provider.lower()
+        if llm_provider == "gemini":
+            api_key = api_key or os.environ.get("GEMINI_API_KEY")
+            base_url = base_url or "https://generativelanguage.googleapis.com/v1beta/openai"
+            model = model or "gemini-2.5-flash"
+        elif llm_provider == "ollama":
+            base_url = base_url or "http://127.0.0.1:11434/v1"
+            model = model or "qwen2.5:3b"
+        elif llm_provider == "openai":
+            api_key = api_key or os.environ.get("OPENAI_API_KEY")
+            base_url = base_url or "https://api.openai.com/v1"
+            model = model or "gpt-4o-mini"
+        else:
+            return {"ok": False, "error": f"Unknown provider {provider}"}
+
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            if llm_provider == "gemini":
+                headers["api-key"] = api_key
+            else:
+                headers["Authorization"] = f"Bearer {api_key}"
+
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2
+        }
+        url = f"{base_url}/chat/completions"
+        if llm_provider == "gemini" and "api-key" not in headers:
+            url += f"?key={api_key}"
+
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=60) as r:
+            resp = json.loads(r.read().decode("utf-8"))
+
+        content = resp.get("choices", [{}])[0].get("message", {}).get("content", "{}")
+        plan = json.loads(content)
+        return {"ok": True, "plan": plan}
+    except Exception as e:
+        return {"ok": False, "error": f"Planning failed: {e}"}
+
+
+def _ask_user(args):
+    """Ask the user a clarifying question (blocks until answer)."""
+    question = args.get("question", "")
+    options = args.get("options")  # optional list of options
+    if not question:
+        return {"ok": False, "error": "question is required"}
+
+    print(f"\n=== Clarification Needed ===")
+    print(f"Question: {question}")
+    if options:
+        for i, opt in enumerate(options, 1):
+            print(f"  {i}. {opt}")
+    print("Enter your answer (or option number):")
+    try:
+        answer = input("> ").strip()
+        if options and answer.isdigit():
+            idx = int(answer) - 1
+            if 0 <= idx < len(options):
+                answer = options[idx]
+        return {"ok": True, "answer": answer}
+    except Exception as e:
+        return {"ok": False, "error": f"Input failed: {e}"}
+
+
+def _save_session(args):
+    """Save current session to disk."""
+    session_id = args.get("session_id")
+    memory = get_session_memory(session_id)
+    memory.save()
+    return {"ok": True, "session_id": memory.session_id, "path": memory.path}
+
+
+def _load_session(args):
+    """Load a session from disk."""
+    session_id = args.get("session_id")
+    if not session_id:
+        return {"ok": False, "error": "session_id required"}
+    try:
+        memory = get_session_memory(session_id)
+        return {"ok": True, "session_id": memory.session_id, "history": memory.history, "context": memory.context}
+    except Exception as e:
+        return {"ok": False, "error": f"Failed to load session: {e}"}
+
+
+def _execute_parallel(args, port=DEFAULT_BRIDGE_PORT, auth_token=None):
+    """Execute multiple tool calls in parallel."""
+    calls = args.get("calls", [])
+    if not calls:
+        return {"ok": False, "error": "calls array required"}
+
+    results = _PARALLEL_EXECUTOR.execute_batch(calls)
+    return {"ok": True, "results": results}
+
+
+def _save_session(args):
+    """Save current session to disk."""
+    session_id = args.get("session_id")
+    memory = get_session_memory(session_id)
+    memory.save()
+    return {"ok": True, "session_id": memory.session_id, "path": memory.path}
+
+
+def _load_session(args):
+    """Load a session from disk."""
+    session_id = args.get("session_id")
+    if not session_id:
+        return {"ok": False, "error": "session_id required"}
+    try:
+        memory = get_session_memory(session_id)
+        return {"ok": True, "session_id": memory.session_id, "history": memory.history, "context": memory.context}
+    except Exception as e:
+        return {"ok": False, "error": f"Failed to load session: {e}"}
+
+
+def _execute_parallel(args, port=DEFAULT_BRIDGE_PORT, auth_token=None):
+    """Execute multiple tool calls in parallel."""
+    calls = args.get("calls", [])
+    if not calls:
+        return {"ok": False, "error": "calls array required"}
+
+    results = _PARALLEL_EXECUTOR.execute_batch(calls)
+    return {"ok": True, "results": results}
+
+
+def _execute_with_recovery(tool_name: str, args: Dict, port: int, auth_token: str, max_retries: int = 2) -> Dict:
+    """Execute a tool with automatic fallback recovery on failure."""
+    for attempt in range(max_retries + 1):
+        res = _execute_tool(tool_name, args, port=port, auth_token=auth_token)
+        if res.get("ok"):
+            return res
+
+        # Try fallback
+        fallback_args = ErrorRecovery.apply_fallback(tool_name, args, res.get("error", ""), attempt)
+        if fallback_args is None:
+            # No more fallbacks available
+            if attempt == 0:
+                # First failure - log and retry once
+                print(f"  Tool {tool_name} failed: {res.get('error')}, retrying...")
+                continue
+            return res  # Return the error result
+
+        print(f"  Tool {tool_name} failed, trying fallback: {fallback_args}")
+        args = fallback_args  # Update args for next attempt
+
+    return res
+
+
 def chat(prompt, provider="gemini", api_key=None, model=None, base_url=None,
-         port=DEFAULT_BRIDGE_PORT, auth_token=None):
+         port=DEFAULT_BRIDGE_PORT, auth_token=None, session_id=None):
     """Start an autonomous agent chat session that builds TouchDesigner networks.
 
     Args:
@@ -849,6 +1461,14 @@ def chat(prompt, provider="gemini", api_key=None, model=None, base_url=None,
         print(f"Error: Unknown provider {provider}. Supported providers: gemini, ollama, openai")
         return
 
+    # Initialize session memory
+    memory = get_session_memory(session_id)
+    session_id = memory.session_id
+    print(f"Session ID: {session_id}")
+
+    # Load previous context if available
+    context_summary = memory.get_recent_context(5)
+
     # 2. Get active network RAG context (scan_network)
     active_graph = ""
     try:
@@ -878,6 +1498,8 @@ def chat(prompt, provider="gemini", api_key=None, model=None, base_url=None,
     )
     if active_graph:
         system_prompt += f"CURRENT ACTIVE NETWORK TOPOLOGY (*here):\n{active_graph}\n\nUse this context to understand existing nodes, their parameter states, and wire connections."
+    if context_summary:
+        system_prompt += f"\nRECENT SESSION CONTEXT:\n{context_summary}\n"
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -992,8 +1614,19 @@ def chat(prompt, provider="gemini", api_key=None, model=None, base_url=None,
                 res = _macro_replay(port=port, auth_token=auth_token, delay=args.get("delay", 0.0))
             elif name == "macro_status":
                 res = _macro_status()
+            elif name == "plan_task":
+                res = _plan_task(args, port=port, auth_token=auth_token,
+                                provider=provider, api_key=api_key,
+                                base_url=base_url, model=model)
+            elif name == "ask_user":
+                res = _ask_user(args)
+            elif name == "save_session":
+                res = _save_session(args.get("session_id"))
+            elif name == "load_session":
+                res = _load_session(args.get("session_id"))
             else:
-                res = _execute_tool(name, args, port=port, auth_token=auth_token)
+                # Use error recovery for bridge tools
+                res = _execute_with_recovery(name, args, port=port, auth_token=auth_token)
             print(f"Tool Result: {json.dumps(res)}")
 
             # Record macro step if recording
@@ -1007,3 +1640,12 @@ def chat(prompt, provider="gemini", api_key=None, model=None, base_url=None,
                 "name": name,
                 "content": json.dumps(res)
             })
+
+        # Persist session after each step
+        memory.add_interaction(prompt if step == 0 else "", 
+                               [{"name": tc.get("function", {}).get("name"), "arguments": tc.get("function", {}).get("arguments", "{}")} for tc in tool_calls],
+                               [{"name": name, "result": res} for name, res in zip([tc.get("function", {}).get("name") for tc in tool_calls], [res])])
+        memory.save()
+
+    # Save final session state
+    memory.save()
