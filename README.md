@@ -7,10 +7,10 @@ Local-first **TouchDesigner MCP (Model Context Protocol)** that fuses the best i
 - **Live Bridge MCP Server & CLI Client** (`td_mcp.server_live`) + **TD-side Bridge** (`bridge/td_mcp_bridge.py`) — control a running TD session over HTTP using stdio MCP or CLI. Every mutation is wrapped in `ui.undo` so one Ctrl+Z reverts a whole agent batch. Features spatial context markers (`*here` and `*this`) to resolve the currently active network or selected node.
 - **Autonomous in-TouchDesigner Agent** (`bridge/td_mcp_agent.py`) — a zero-dependency OpenAI-compatible agent script that runs natively inside TD Text DATs. Allows you to chat offline (using local Ollama) or online (Gemini/OpenAI) to build networks autonomously.
 
-Design notes and the full server catalog live alongside this repo:
-- `DOCUMENTATION/TouchDesigner_MCP_Servers.md` — catalog of every TD MCP server + brainstorm
-- `DOCUMENTATION/TD_MCP_Master_Plan.md` — the master plan this scaffold implements
-- `DOCUMENTATION/TouchDesigner_Links.md` — official docs / Python API / curriculum
+Design notes and the full server catalog are located in the repository root:
+- [TouchDesigner_MCP_Servers.md](file:///c:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp/TouchDesigner_MCP_Servers.md) — catalog of every TD MCP server + brainstorm
+- [TD_MCP_Master_Plan.md](file:///c:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp/TD_MCP_Master_Plan.md) — the master plan and future roadmap this scaffold implements
+- [TouchDesigner_Links.md](file:///c:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp/TouchDesigner_Links.md) — official docs / Python API / curriculum
 
 ## Layout
 
