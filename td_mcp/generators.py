@@ -9,6 +9,9 @@ and the live `build_and_verify` loop. They include:
   - create_glsl_shader
   - create_led_wall
   - create_dmx_fixture_pipeline
+  - create_video_pipeline
+  - create_midi_rig
+  - create_kinect_skeleton
 """
 
 import json
@@ -29,14 +32,6 @@ def _op_spec(op_type: str, name: str, params=None, inputs=None, position=None):
         spec["position"] = position
     return spec
 
-
-def _grid_pos(col: int, row: int = 0, spacing: int = 200) -> list:
-    return [col * spacing, row * spacing]
-
-
-# ---------------------------------------------------------------------------
-# Generators
-# ---------------------------------------------------------------------------
 
 
 def _grid_pos(index, cols=3, spacing=200):
@@ -375,6 +370,133 @@ def create_dmx_fixture_pipeline(name="dmx_fixture1", channels="chan1 chan2 chan3
     return specs
 
 
+def create_video_pipeline(name="vidpipe1", source_file="", apply_lut=True, apply_chromakey=False, params=None):
+    """Create a video playback and processing pipeline.
+
+    MovieFileIn -> (optional) Chroma Key TOP -> LUT TOP -> Level TOP -> Out TOP
+    Args:
+        source_file: Path to the movie file (can be set later)
+        apply_lut: Include a LUT TOP for colour grading
+        apply_chromakey: Include a Chroma Key TOP for green-screen removal
+    """
+    specs = []
+    base = name
+    last = f"{base}_src"
+
+    specs.append(_op_spec("Movie File In TOP", f"{base}_src",
+                          params={"file": source_file, "play": True, "loop": True},
+                          position=_grid_pos(0)))
+
+    if apply_chromakey:
+        specs.append(_op_spec("Chroma Key TOP", f"{base}_ckey",
+                              params={"keycolor": [0, 1, 0], "tolerance": 0.3},
+                              inputs=[last],
+                              position=_grid_pos(1)))
+        last = f"{base}_ckey"
+
+    if apply_lut:
+        specs.append(_op_spec("LUT TOP", f"{base}_lut",
+                              params={"luttype": "Film"},
+                              inputs=[last],
+                              position=_grid_pos(2 if apply_chromakey else 1)))
+        last = f"{base}_lut"
+
+    specs.append(_op_spec("Level TOP", f"{base}_lvl",
+                          params={"contrast": 1.05, "brightness": 0.0},
+                          inputs=[last],
+                          position=_grid_pos(3 if apply_lut else 1)))
+    last = f"{base}_lvl"
+
+    specs.append(_op_spec("Out TOP", f"{base}_out",
+                          inputs=[last],
+                          position=_grid_pos(4 if apply_lut else 2)))
+    return specs
+
+
+def create_midi_rig(name="midi1", device_id=0, params=None):
+    """Create a MIDI input rig: MIDI In CHOP -> Select CHOP -> Math CHOP (normalize) -> Out CHOP.
+
+    The normalized output can be exported to any parameter via CHOP export.
+    """
+    specs = []
+    base = name
+
+    specs.append(_op_spec("MIDI In CHOP", f"{base}_in",
+                          params={"device": device_id, "realtime": True},
+                          position=_grid_pos(0)))
+
+    specs.append(_op_spec("Select CHOP", f"{base}_sel",
+                          params={"chop": f"{base}_in", "channames": "*"},
+                          inputs=[f"{base}_in"],
+                          position=_grid_pos(1)))
+
+    specs.append(_op_spec("Math CHOP", f"{base}_norm",
+                          params={"from_range": [0.0, 127.0], "to_range": [0.0, 1.0]},
+                          inputs=[f"{base}_sel"],
+                          position=_grid_pos(2)))
+
+    specs.append(_op_spec("Filter CHOP", f"{base}_filt",
+                          params={"filter": "One-Pole", "cutoff": 0.15},
+                          inputs=[f"{base}_norm"],
+                          position=_grid_pos(3)))
+
+    specs.append(_op_spec("Out CHOP", f"{base}_out",
+                          inputs=[f"{base}_filt"],
+                          position=_grid_pos(4)))
+    return specs
+
+
+def create_kinect_skeleton(name="kinect1", tracked_joints=None, visualize=True, params=None):
+    """Create a Kinect Azure skeleton tracking rig.
+
+    Kinect Azure TOP/CHOP -> Body Track TOP -> SOP Conversion -> (optional) Point Sprite visualization
+    Args:
+        tracked_joints: Optional list of joint names to select (e.g. ['head', 'handleft'])
+        visualize:       Add a Point Sprite TOP for skeleton visualisation
+    """
+    specs = []
+    base = name
+    joints = tracked_joints or ["head", "shoulderleft", "shoulderright",
+                                  "handleft", "handright", "hipleft", "hipright"]
+
+    # 1. Kinect Azure CHOP (joint positions)
+    specs.append(_op_spec("Kinect Azure CHOP", f"{base}_joints",
+                          params={"datatype": "SkeletonJoint", "active": True},
+                          position=_grid_pos(0)))
+
+    # 2. Select CHOP (pick the joints we care about)
+    specs.append(_op_spec("Select CHOP", f"{base}_sel",
+                          params={"channames": " ".join(joints)},
+                          inputs=[f"{base}_joints"],
+                          position=_grid_pos(1)))
+
+    # 3. Math CHOP remap (-1..1 to 0..1)
+    specs.append(_op_spec("Math CHOP", f"{base}_remap",
+                          params={"from_range": [-1.0, 1.0], "to_range": [0.0, 1.0]},
+                          inputs=[f"{base}_sel"],
+                          position=_grid_pos(2)))
+
+    if visualize:
+        # CHOP to TOP -> Point Sprite TOP for skeleton overlay
+        specs.append(_op_spec("CHOP to TOP", f"{base}_c2t",
+                              params={"chop": f"{base}_remap"},
+                              inputs=[f"{base}_remap"],
+                              position=_grid_pos(3)))
+        specs.append(_op_spec("Point Sprite TOP", f"{base}_pts",
+                              params={"pointsize": 8.0},
+                              inputs=[f"{base}_c2t"],
+                              position=_grid_pos(4)))
+        specs.append(_op_spec("Out TOP", f"{base}_out",
+                              inputs=[f"{base}_pts"],
+                              position=_grid_pos(5)))
+    else:
+        specs.append(_op_spec("Out CHOP", f"{base}_out",
+                              inputs=[f"{base}_remap"],
+                              position=_grid_pos(3)))
+
+    return specs
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -386,6 +508,9 @@ GENERATORS = {
     "glsl": create_glsl_shader,
     "led_wall": create_led_wall,
     "dmx_fixture": create_dmx_fixture_pipeline,
+    "video_pipeline": create_video_pipeline,
+    "midi_rig": create_midi_rig,
+    "kinect_skeleton": create_kinect_skeleton,
 }
 
 

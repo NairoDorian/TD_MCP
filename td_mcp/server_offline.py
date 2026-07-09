@@ -22,14 +22,17 @@ from td_mcp.tools.risk import risk_class, tool_annotations
 DEFAULT_CHUNKS = os.path.join(os.path.dirname(__file__), "kb", "chunks.jsonl")
 
 
-def _fmt(results, query):
+def _fmt(results, query, max_chars=None):
     if not results:
         return f"No documentation matched: {query!r}. Try a different operator/Python class name."
     lines = [f"Found {len(results)} doc chunk(s) for {query!r}:\n"]
     for c, sc in results:
         head = f"### {c.get('title')}  [{c.get('family') or c.get('category')}]  (score {sc})"
         meta = f"source: {c.get('source', '')}"
-        lines.append(f"{head}\n{meta}\n{c.get('text','')}\n")
+        text = c.get('text', '')
+        if max_chars and len(text) > max_chars:
+            text = text[:max_chars].rstrip() + "…"
+        lines.append(f"{head}\n{meta}\n{text}\n")
     return "\n".join(lines)
 
 
@@ -363,10 +366,11 @@ def create_server():
         additive = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
         return [
             types.Tool("td_docs_search", "Hybrid search across scraped TouchDesigner docs (operators, Python classes, GLSL, tutorials).",
-                       {"query": {"type": "string"}, "family": {"type": "string", "optional": True},
-                        "category": {"type": "string", "optional": True}, "version": {"type": "string", "optional": True},
-                        "k": {"type": "integer", "optional": True}},
-                       annotations=read_only),
+                        {"query": {"type": "string"}, "family": {"type": "string", "optional": True},
+                         "category": {"type": "string", "optional": True}, "version": {"type": "string", "optional": True},
+                         "k": {"type": "integer", "optional": True},
+                         "detail": {"type": "string", "optional": True}},
+                        annotations=read_only),
             types.Tool("td_docs_operator", "Full parameter + connector spec for one operator (e.g. 'Noise TOP').",
                        {"name": {"type": "string"}, "k": {"type": "integer", "optional": True}},
                        annotations=read_only),
@@ -443,8 +447,10 @@ def create_server():
         a = arguments or {}
         try:
             if name == "td_docs_search":
-                out = _fmt(ret.search(a.get("query", ""), family=a.get("family"),
-                                       category=a.get("category"), version=a.get("version"), k=a.get("k", 5)), "")
+                _max = 500 if a.get("detail") == "brief" else None
+                out = (_fmt(ret.search(a.get("query", ""), family=a.get("family"),
+                                       category=a.get("category"), version=a.get("version"), k=a.get("k", 5)),
+                         a.get("query", ""), max_chars=_max), "")
             elif name == "td_docs_operator":
                 out = (td_docs_operator(a.get("name", ""), a.get("k", 3)), "")
             elif name == "td_docs_python":
