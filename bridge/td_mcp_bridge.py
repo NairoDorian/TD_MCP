@@ -27,12 +27,23 @@ Every mutating tool wraps op changes in ui.undo so one Ctrl+Z
 reverts a whole agent batch.
 """
 
+import base64
+import hashlib
 import json
 import os
 import re
 import secrets
+import struct
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+# Path to the chat UI HTML (relative to this script when running in TD)
+_BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else ""
+_CHAT_UI_PATH = os.path.join(_BRIDGE_DIR, "chat_ui.html")
+
+# WebSocket connected clients set (for future push events)
+_ws_clients = set()
+_ws_lock = threading.Lock()
 
 TD_MCP_PORT = int(os.environ.get("TD_MCP_PORT", "9980"))
 
@@ -190,6 +201,50 @@ def _do_list_nodes(path, detail="normal"):
     return {"ok": True, "nodes": kids}
 
 
+def _do_scan_network(path, depth=3):
+    start_node = _op(path) or root()
+    if start_node is None:
+        return {"ok": False, "error": "not found"}
+    scanned = []
+
+    def traverse(node, current_depth):
+        if node is None or current_depth > depth:
+            return
+        inputs = []
+        try:
+            inputs = [i.path for i in node.inputs if i is not None]
+        except Exception:
+            pass
+        non_defaults = {}
+        try:
+            for p in node.par:
+                if not p.isDefault:
+                    non_defaults[p.name] = p.val
+        except Exception:
+            pass
+        errors = []
+        try:
+            errors = [str(e) for e in node.errors]
+        except Exception:
+            pass
+        scanned.append({
+            "path": node.path,
+            "name": node.name,
+            "type": node.type,
+            "inputs": inputs,
+            "params": non_defaults,
+            "errors": errors
+        })
+        try:
+            for child in node.children:
+                traverse(child, current_depth + 1)
+        except Exception:
+            pass
+
+    traverse(start_node, 1)
+    return {"ok": True, "nodes": scanned}
+
+
 def _do_project_info():
     return {"ok": True, "td_build": app.version, "fps": project.cook.rate,
             "file": project.name}
@@ -323,6 +378,7 @@ _DISPATCH = {
     "read_chop": lambda a: _do_read_chop(a.get("path"), a.get("channel"), a.get("samples", 10)),
     "read_top": lambda a: _do_read_top(a.get("path"), a.get("detailLevel", "brief")),
     "read_dat": lambda a: _do_read_dat(a.get("path"), a.get("rows", 10)),
+    "scan_network": lambda a: _do_scan_network(a.get("path"), a.get("depth", 3)),
 }
 
 
@@ -335,6 +391,52 @@ def _wrap(result):
     return result
 
 
+# ---------------------------------------------------------------------------
+# Pure-Python WebSocket helpers (RFC 6455)
+# ---------------------------------------------------------------------------
+_WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def _ws_handshake_key(key):
+    return base64.b64encode(
+        hashlib.sha1((key + _WS_MAGIC).encode("utf-8")).digest()
+    ).decode("utf-8")
+
+
+def _ws_read_frame(rfile):
+    """Read one WebSocket data frame from the socket. Returns (opcode, payload bytes)."""
+    header = rfile.read(2)
+    if len(header) < 2:
+        return None, None
+    b0, b1 = header
+    opcode = b0 & 0x0F
+    masked = (b1 & 0x80) != 0
+    length = b1 & 0x7F
+    if length == 126:
+        length = struct.unpack(">H", rfile.read(2))[0]
+    elif length == 127:
+        length = struct.unpack(">Q", rfile.read(8))[0]
+    mask_key = rfile.read(4) if masked else b"\x00\x00\x00\x00"
+    data = bytearray(rfile.read(length))
+    if masked:
+        for i in range(len(data)):
+            data[i] ^= mask_key[i % 4]
+    return opcode, bytes(data)
+
+
+def _ws_make_frame(payload, opcode=0x1):
+    """Create a server-side (unmasked) WebSocket text frame."""
+    data = payload.encode("utf-8") if isinstance(payload, str) else payload
+    length = len(data)
+    if length <= 125:
+        header = bytes([0x80 | opcode, length])
+    elif length <= 65535:
+        header = bytes([0x80 | opcode, 126]) + struct.pack(">H", length)
+    else:
+        header = bytes([0x80 | opcode, 127]) + struct.pack(">Q", length)
+    return header + data
+
+
 class _Handler(BaseHTTPRequestHandler):
     def _send(self, obj, code=200):
         if isinstance(obj, dict) and obj.get("ok") is False:
@@ -342,20 +444,101 @@ class _Handler(BaseHTTPRequestHandler):
         body = json.dumps(obj).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "http://127.0.0.1")
+        # Allow the local Chat UI page to call back here
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_html(self, html_bytes, code=200):
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(html_bytes)))
+        self.end_headers()
+        self.wfile.write(html_bytes)
+
     def do_OPTIONS(self):
-        self._send({"ok": True})
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.end_headers()
 
     def _auth_ok(self):
         tok = self.headers.get("Authorization", "")
         return tok == f"Bearer {AUTH_TOKEN}"
 
+    def _handle_websocket(self):
+        """Upgrade connection to WebSocket and dispatch tool calls."""
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        accept = _ws_handshake_key(key)
+        self.send_response(101)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        self.wfile.flush()
+        with _ws_lock:
+            _ws_clients.add(self)
+        try:
+            # Authenticate via first message
+            opcode, raw = _ws_read_frame(self.rfile)
+            if opcode is None:
+                return
+            try:
+                auth_msg = json.loads(raw.decode("utf-8"))
+            except Exception:
+                auth_msg = {}
+            if auth_msg.get("type") == "auth":
+                if auth_msg.get("token") != AUTH_TOKEN:
+                    self.wfile.write(_ws_make_frame(json.dumps({"ok": False, "error": "unauthorized"})))
+                    self.wfile.flush()
+                    return
+                self.wfile.write(_ws_make_frame(json.dumps({"ok": True, "status": "authenticated"})))
+                self.wfile.flush()
+            # Main dispatch loop
+            while True:
+                opcode, raw = _ws_read_frame(self.rfile)
+                if opcode is None or opcode == 0x8:  # None or close frame
+                    break
+                try:
+                    req = json.loads(raw.decode("utf-8"))
+                except Exception:
+                    continue
+                msg_id = req.get("id")
+                tool = req.get("tool")
+                fn = _DISPATCH.get(tool)
+                if fn is None:
+                    resp = {"id": msg_id, "ok": False, "error": f"unknown tool: {tool}"}
+                else:
+                    try:
+                        with ui.undo:
+                            result = _wrap(fn(req.get("args", {})))
+                        resp = {"id": msg_id, "ok": True, "result": result}
+                    except Exception as e:  # noqa: BLE001
+                        resp = {"id": msg_id, "ok": False, "error": str(e)}
+                self.wfile.write(_ws_make_frame(json.dumps(resp)))
+                self.wfile.flush()
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            with _ws_lock:
+                _ws_clients.discard(self)
+
     def do_GET(self):
+        # WebSocket upgrade
+        if self.headers.get("Upgrade", "").lower() == "websocket":
+            self._handle_websocket()
+            return
+        if self.path in ("/", "/ui", "/chat"):
+            # Serve Chat UI
+            try:
+                with open(_CHAT_UI_PATH, "rb") as f:
+                    self._send_html(f.read())
+            except FileNotFoundError:
+                self._send({"ok": False, "error": "chat_ui.html not found"})
+            return
         if self.path == "/api/status":
             self._send({"ok": True, "status": "running", "port": TD_MCP_PORT,
                         "auth": True, "allow_exec": ALLOW_EXEC})

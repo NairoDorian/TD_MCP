@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.1.0] - 2026-07-09
+
+### Added
+- **Live Project RAG (Network Context Scanner)**: Implemented `_do_scan_network()` in `bridge/td_mcp_bridge.py`. Recursively walks the active TouchDesigner COMP graph up to configurable `depth`, collecting node paths, types, wiring inputs, non-default parameters, and cook errors into a structured JSON snapshot.
+- **Agent Context Injection**: Updated `bridge/td_mcp_agent.py` to automatically call `scan_network` at the start of every chat session and inject the live topology into the LLM system prompt so the model is always aware of what already exists in the project.
+- **`scan_network` MCP Tool**: Registered the new tool in `td_mcp/server_live.py` (`list_tools` schema + `call_tool` handler + `TDClient.scan_network` method).
+- **Natively Embedded Chat UI Panel** (`bridge/chat_ui.html`): A self-contained, zero-dependency HTML/CSS/JS chat interface with a premium glassmorphic dark-mode design. Features include: provider selector (Ollama / Gemini / OpenAI), persistent credential storage via `localStorage`, a live network node sidebar panel, health status indicator, and a full multi-step autonomous agent loop communicating directly with the bridge.
+- **Chat UI served on `GET /`**: Dropped a Web Render TOP at `http://localhost:9980/` loads the chat panel directly inside TouchDesigner.
+- **Pure-Python WebSocket Bi-directional Streaming**: Implemented RFC 6455 WebSocket support in `bridge/td_mcp_bridge.py` with no external dependencies — includes handshake key derivation (`_ws_handshake_key`), frame encoder (`_ws_make_frame`), frame decoder (`_ws_read_frame`), token-authenticated connection upgrade, and a tool-dispatch loop (`_handle_websocket`) that streams results back in real time.
+- **New Test Module** (`tests/test_scan_ws.py`): 6 tests covering WebSocket RFC 6455 handshake key derivation, small/medium payload frame roundtrips, close frame encoding, offline `scan_network` graceful failure, and agent tool schema validation.
+
+### Changed
+- Bridge `do_OPTIONS` now returns proper CORS headers for cross-origin access from the Chat UI.
+- `Access-Control-Allow-Origin` updated to `*` to allow the embedded HTML panel to communicate freely on localhost.
+
+---
+
 ## [1.0.0] - 2026-07-09
 
 This is the initial release of the TouchDesigner MCP (TD_MCP) "Ultimate" Super-Server, uniting the best features of the TouchDesigner MCP ecosystem (including parallel-RAG search, live network control, and autonomous in-app building) under a clean, unified structure.

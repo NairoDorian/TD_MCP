@@ -211,6 +211,21 @@ TOOLS_SCHEMA = [
                 "required": ["path", "op_type"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scan_network",
+            "description": "Recursively scan the TouchDesigner network topology, collecting connections and parameters.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Start path to scan (e.g. *here)"},
+                    "depth": {"type": "integer", "description": "Max depth to scan (default 3)"}
+                },
+                "required": []
+            }
+        }
     }
 ]
 
@@ -277,7 +292,16 @@ def chat(prompt, provider="gemini", api_key=None, model=None, base_url=None,
         print(f"Error: Unknown provider {provider}. Supported providers: gemini, ollama, openai")
         return
 
-    # 2. System Instructions
+    # 2. Get active network RAG context (scan_network)
+    active_graph = ""
+    try:
+        scan_res = _execute_tool("scan_network", {"path": "*here", "depth": 2}, port=port, auth_token=auth_token)
+        if scan_res.get("ok"):
+            active_graph = json.dumps(scan_res.get("nodes"), indent=2)
+    except Exception:
+        pass
+
+    # 3. System Instructions
     system_prompt = (
         "You are an expert TouchDesigner developer agent. Your goal is to help the user build "
         "and edit their node networks. You have access to real TouchDesigner live-control tools.\n"
@@ -286,8 +310,10 @@ def chat(prompt, provider="gemini", api_key=None, model=None, base_url=None,
         "2. Set parameter values accurately. Common param names are lowercased.\n"
         "3. When referring to the active network, use spatial marker '*here' as the path.\n"
         "4. Always call get_errors on newly created or modified nodes to verify they cook without errors.\n"
-        "5. Be concise in your explanations. State clearly what you created."
+        "5. Be concise in your explanations. State clearly what you created.\n\n"
     )
+    if active_graph:
+        system_prompt += f"CURRENT ACTIVE NETWORK TOPOLOGY (*here):\n{active_graph}\n\nUse this context to understand existing nodes, their parameter states, and wire connections."
 
     messages = [
         {"role": "system", "content": system_prompt},

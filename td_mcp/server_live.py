@@ -108,6 +108,9 @@ class TDClient:
     def get_resource(self, uri):
         return self._call("get_resource", {"uri": uri})
 
+    def scan_network(self, path, depth=3):
+        return self._call("scan_network", {"path": path, "depth": depth})
+
     def describe_td_tools(self):
         return self._call("describe_td_tools", {})
 
@@ -261,6 +264,9 @@ def create_server(host=DEFAULT_HOST, port=DEFAULT_PORT, auth_token=None, anchor=
             types.Tool("read_dat", "Read rows of data from a DAT.",
                        {"path": {"type": "string"}, "rows": {"type": "integer", "optional": True}},
                        annotations=read_only),
+            types.Tool("scan_network", "Recursively scan the TouchDesigner network topology, collecting connections and parameters.",
+                       {"path": {"type": "string"}, "depth": {"type": "integer", "optional": True}},
+                       annotations=read_only),
             types.Tool("build_and_verify", "Create -> verify (errors) -> preview (viewport verdict) loop for a node.",
                        {"path": {"type": "string"}, "op_type": {"type": "string"}, "params": {"type": "object", "optional": True}},
                        annotations=modifying),
@@ -300,6 +306,8 @@ def create_server(host=DEFAULT_HOST, port=DEFAULT_PORT, auth_token=None, anchor=
                 res = client.read_top(a.get("path"), a.get("detail", "brief"))
             elif name == "read_dat":
                 res = client.read_dat(a.get("path"), a.get("rows", 10))
+            elif name == "scan_network":
+                res = client.scan_network(a.get("path"), a.get("depth", 3))
             elif name == "build_and_verify":
                 res = client.build_and_verify(a.get("path"), a.get("op_type"), a.get("params"))
             else:
