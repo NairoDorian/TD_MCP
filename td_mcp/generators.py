@@ -252,8 +252,6 @@ def create_3d_scene(name="scene1", complexity="simple", params=None):
                           position=_grid_pos(6)))
 
     return specs
-
-
 def create_glsl_shader(name="glsl1", template="basic", params=None):
     """GLSL TOP with a ready-to-tweak shader template.
 
@@ -309,6 +307,74 @@ void main() {
     return specs
 
 
+def create_led_wall(name="ledwall1", width=16, height=16, protocol="art-net", params=None):
+    """Create a pixel-mapping pipeline for an LED wall.
+
+    Noise TOP (Source) -> Resolution TOP (Scale to width x height) -> TOP to CHOP (Extract pixel channels) -> DMX Out CHOP (Send via DMX)
+    """
+    specs = []
+    base = name
+
+    # 1. Visual source (Noise TOP)
+    specs.append(_op_spec("Noise TOP", f"{base}_source",
+                          params={"type": "Random", "amplitude": 1.0},
+                          position=_grid_pos(0)))
+
+    # 2. Downscale to pixel grid dimensions (Resolution TOP)
+    specs.append(_op_spec("Resolution TOP", f"{base}_scale",
+                          params={"outputresolution": "custom", "resolutionw": width, "resolutionh": height},
+                          inputs=[f"{base}_source"],
+                          position=_grid_pos(1)))
+
+    # 3. Extract RGB values (TOP to CHOP)
+    specs.append(_op_spec("TOP to CHOP", f"{base}_topto",
+                          params={"top": f"{base}_scale", "rgball": "rgb"},
+                          position=_grid_pos(2)))
+
+    # 4. DMX output (DMX Out CHOP)
+    dmx_format = "artnet" if protocol.lower() == "art-net" else "sacn"
+    specs.append(_op_spec("DMX Out CHOP", f"{base}_dmx",
+                          params={"format": dmx_format, "universe": 1},
+                          inputs=[f"{base}_topto"],
+                          position=_grid_pos(3)))
+
+    return specs
+
+
+def create_dmx_fixture_pipeline(name="dmx_fixture1", channels="chan1 chan2 chan3", protocol="sacn", params=None):
+    """Create a DMX input pipeline to receive sACN/Art-Net control channels.
+
+    DMX In CHOP -> Select CHOP (choose channels) -> Math CHOP (map range) -> Out CHOP
+    """
+    specs = []
+    base = name
+
+    # 1. DMX Input
+    dmx_format = "sacn" if protocol.lower() == "sacn" else "artnet"
+    specs.append(_op_spec("DMX In CHOP", f"{base}_in",
+                          params={"format": dmx_format, "universe": 1},
+                          position=_grid_pos(0)))
+
+    # 2. Channel Select
+    specs.append(_op_spec("Select CHOP", f"{base}_select",
+                          params={"channames": channels},
+                          inputs=[f"{base}_in"],
+                          position=_grid_pos(1)))
+
+    # 3. Normalize range (0-255 DMX -> 0-1 TD range)
+    specs.append(_op_spec("Math CHOP", f"{base}_math",
+                          params={"from_range": [0.0, 255.0], "to_range": [0.0, 1.0]},
+                          inputs=[f"{base}_select"],
+                          position=_grid_pos(2)))
+
+    # 4. Out
+    specs.append(_op_spec("Out CHOP", f"{base}_out",
+                          inputs=[f"{base}_math"],
+                          position=_grid_pos(3)))
+
+    return specs
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -318,12 +384,13 @@ GENERATORS = {
     "particles": create_particle_system,
     "3d_scene": create_3d_scene,
     "glsl": create_glsl_shader,
+    "led_wall": create_led_wall,
+    "dmx_fixture": create_dmx_fixture_pipeline,
 }
 
 
 def list_generators():
     return list(GENERATORS.keys())
-
 
 def generate(name, **kwargs):
     fn = GENERATORS.get(name)

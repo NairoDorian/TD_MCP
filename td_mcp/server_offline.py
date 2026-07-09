@@ -319,6 +319,16 @@ def td_build_glsl_shader(spec):
     return td_build_network(gen.create_glsl_shader(**_json_loads(spec)))
 
 
+def td_build_led_wall(spec):
+    """Create a pixel-mapping pipeline for an LED wall."""
+    return td_build_network(gen.create_led_wall(**_json_loads(spec)))
+
+
+def td_build_dmx_fixture(spec):
+    """Create a DMX input pipeline to receive sACN/Art-Net control channels."""
+    return td_build_network(gen.create_dmx_fixture_pipeline(**_json_loads(spec)))
+
+
 def _json_loads(s):
     import json as _json
     return _json.loads(s) if isinstance(s, str) else s
@@ -420,6 +430,12 @@ def create_server():
             types.Tool("td_build_glsl_shader", "Create a GLSL TOP with a shader template.",
                        {"spec": {"type": "string"}},
                        annotations=additive),
+            types.Tool("td_build_led_wall", "Create a pixel-mapping pipeline for an LED wall (Noise -> Resolution -> TOP to CHOP -> DMX Out).",
+                       {"spec": {"type": "string"}},
+                       annotations=additive),
+            types.Tool("td_build_dmx_fixture", "Create a DMX input pipeline to receive sACN/Art-Net control channels (DMX In -> Select -> Math -> Out).",
+                       {"spec": {"type": "string"}},
+                       annotations=additive),
         ]
 
     @app.call_tool()
@@ -471,6 +487,10 @@ def create_server():
                 out = (td_build_3d_scene(a.get("spec", "{}")), "")
             elif name == "td_build_glsl_shader":
                 out = (td_build_glsl_shader(a.get("spec", "{}")), "")
+            elif name == "td_build_led_wall":
+                out = (td_build_led_wall(a.get("spec", "{}")), "")
+            elif name == "td_build_dmx_fixture":
+                out = (td_build_dmx_fixture(a.get("spec", "{}")), "")
             else:
                 out = ("unknown tool", "")
         except Exception as e:  # noqa: BLE001
