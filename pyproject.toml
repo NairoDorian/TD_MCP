@@ -1,0 +1,26 @@
+[project]
+name = "td-mcp"
+version = "0.1.0"
+description = "Local-first TouchDesigner MCP: offline doc/RAG server + live bridge client + TD-side bridge."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.0", "anyio"]
+rag = ["sentence-transformers"]   # dense vectors + CrossEncoder reranker
+scrape = ["requests", "beautifulsoup4"]
+# faiss-cpu is an optional speed upgrade for the dense scorer (numpy fallback works)
+
+[project.scripts]
+td-mcp-offline = "td_mcp.server_offline:main"
+td-mcp-live = "td_mcp.server_live:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["td_mcp", "td_mcp.rag", "td_mcp.kb", "td_mcp.tdn",
+            "td_mcp.showcontrol", "td_mcp.led_mapping"]

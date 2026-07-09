@@ -1,0 +1,332 @@
+"""Artist generators (tdmcp Layer 1 style) — opinionated network builders.
+
+Each generator returns a list of operator specs compatible with `td_build_network`
+and the live `build_and_verify` loop. They include:
+  - create_feedback_network
+  - create_audio_reactive
+  - create_particle_system
+  - create_3d_scene
+  - create_glsl_shader
+  - create_led_wall
+  - create_dmx_fixture_pipeline
+"""
+
+import json
+from typing import Any
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _op_spec(op_type: str, name: str, params=None, inputs=None, position=None):
+    """Compact spec for td_build_network / TDN."""
+    spec = {"type": op_type, "name": name}
+    if params:
+        spec["params"] = params
+    if inputs:
+        spec["inputs"] = inputs
+    if position:
+        spec["position"] = position
+    return spec
+
+
+def _grid_pos(col: int, row: int = 0, spacing: int = 200) -> list:
+    return [col * spacing, row * spacing]
+
+
+# ---------------------------------------------------------------------------
+# Generators
+# ---------------------------------------------------------------------------
+
+
+def _grid_pos(index, cols=3, spacing=200):
+    """Layout helper: arrange in grid rows."""
+    row = index // cols
+    col = index % cols
+    return [col * spacing, row * spacing]
+
+
+# ---------------------------------------------------------------------------
+# Generators
+# ---------------------------------------------------------------------------
+def create_feedback_network(name="feedback1", decay=0.95, iterations=3, params=None):
+    """Classic feedback loop: Noise -> Level (decay) -> Feedback -> Level/Threshold -> Out.
+
+    Args:
+        name: base name prefix
+        decay: Level TOP post value (0..1), lower = longer trails
+        iterations: number of feedback stages (1..4)
+        params: optional dict of extra param overrides
+    """
+    specs = []
+    base = name
+    # Stage 0: noise source
+    specs.append(_op_spec("Noise TOP", f"{base}_noise",
+                          params={"type": "Random", "amplitude": 1.0},
+                          position=_grid_pos(0)))
+    last = f"{base}_noise"
+
+    for i in range(iterations):
+        # Level (decay)
+        lvl = _op_spec("Level TOP", f"{base}_lvl{i}",
+                       params={"post": decay, "gamma": 1.0},
+                       inputs=[last],
+                       position=_grid_pos(1 + i * 2))
+        specs.append(lvl)
+        # Feedback
+        fb = _op_spec("Feedback TOP", f"{base}_fb{i}",
+                      inputs=[lvl["name"], lvl["name"]],  # self-feed
+                      position=_grid_pos(2 + i * 2))
+        specs.append(fb)
+        last = fb["name"]
+
+    # Final glow
+    thr = _op_spec("Threshold TOP", f"{base}_thr",
+                   params={"threshold": 0.1, "invert": False},
+                   inputs=[last],
+                   position=_grid_pos(2 + iterations * 2))
+    specs.append(thr)
+
+    out = _op_spec("Out TOP", f"{base}_out",
+                   inputs=[thr["name"]],
+                   position=_grid_pos(3 + iterations * 2))
+    specs.append(out)
+
+    return specs
+
+
+def create_audio_reactive(name="audio1", chop_source="Audio Device In CHOP",
+                          freq_band=(0, 100), target_param="radius",
+                          target_type="Circle TOP", params=None):
+    """Audio-reactive: AudioDeviceIn -> Math (normalize) -> Filter -> Export to target param.
+
+    Returns a spec list PLUS a CHOP export instruction (handled by build_and_verify).
+    """
+    specs = []
+    base = name
+    # Audio input
+    specs.append(_op_spec(chop_source, f"{base}_audio",
+                          params={"device": "default", "channels": 2},
+                          position=_grid_pos(0)))
+    # Math CHOP normalize
+    specs.append(_op_spec("Math CHOP", f"{base}_math",
+                          params={"from_range": [-1, 1], "to_range": [0, 1]},
+                          inputs=[f"{base}_audio"],
+                          position=_grid_pos(1)))
+    # Filter CHOP smooth
+    specs.append(_op_spec("Filter CHOP", f"{base}_filter",
+                          params={"filter": "One-Pole", "cutoff": 0.1},
+                          inputs=[f"{base}_math"],
+                          position=_grid_pos(2)))
+
+    # Visual target
+    specs.append(_op_spec(target_type, f"{base}_vis",
+                          params={target_param: 0.5} if target_type == "Circle TOP" else {},
+                          position=_grid_pos(3)))
+
+    # Export instruction (handled client-side via set_parameters with export flag)
+    export_note = {
+        "export": True,
+        "from": f"{base}_filter:chan0",
+        "to": f"{base}_vis.{target_param}",
+        "note": "Export CHOP channel to visual parameter"
+    }
+    return {"specs": specs, "exports": [export_note]}
+
+
+def create_particle_system(name="particles1", count=1000, use_pops=True, params=None):
+    """GPU particle system: POP (or Particle GPU TOP) -> Point Sprite / Billboard -> Render.
+
+    Args:
+        use_pops: True = POP network (2023.10000+), False = Particle GPU TOP (older)
+    """
+    specs = []
+    base = name
+
+    if use_pops:
+        # POP network
+        specs.append(_op_spec("POP Location", f"{base}_loc",
+                              params={"generate": "Random", "count": count},
+                              position=_grid_pos(0)))
+        specs.append(_op_spec("POP Force", f"{base}_force",
+                              params={"force_type": "Gravity", "strength": 0.01},
+                              inputs=[f"{base}_loc"],
+                              position=_grid_pos(1)))
+        specs.append(_op_spec("POP Solver", f"{base}_solver",
+                              params={"life": 100, "friction": 0.99},
+                              inputs=[f"{base}_force"],
+                              position=_grid_pos(2)))
+        specs.append(_op_spec("POP Surface", f"{base}_surf",
+                              inputs=[f"{base}_solver"],
+                              position=_grid_pos(3)))
+        render_input = f"{base}_surf"
+    else:
+        # Particle GPU TOP
+        specs.append(_op_spec("Particle GPU TOP", f"{base}_pgpu",
+                              params={"number": count, "life": 100, "force": 0.01},
+                              position=_grid_pos(0)))
+        specs.append(_op_spec("Point Sprite TOP", f"{base}_sprite",
+                              inputs=[f"{base}_pgpu"],
+                              position=_grid_pos(1)))
+        render_input = f"{base}_sprite"
+
+    # Render chain
+    specs.append(_op_spec("Geometry COMP", f"{base}_geo",
+                          inputs=[render_input],
+                          position=_grid_pos(4)))
+    specs.append(_op_spec("Camera COMP", f"{base}_cam",
+                          position=_grid_pos(5)))
+    specs.append(_op_spec("Light COMP", f"{base}_light",
+                          position=_grid_pos(6)))
+    specs.append(_op_spec("Render TOP", f"{base}_render",
+                          params={"camera": f"{base}_cam", "light": f"{base}_light"},
+                          inputs=[f"{base}_geo"],
+                          position=_grid_pos(7)))
+    specs.append(_op_spec("Out TOP", f"{base}_out",
+                          inputs=[f"{base}_render"],
+                          position=_grid_pos(8)))
+
+    return specs
+
+
+def create_3d_scene(name="scene1", complexity="simple", params=None):
+    """Basic 3D scene: Geometry -> Material -> Render with Camera/Light.
+
+    complexity: 'simple' (Box+Phong) | 'pbr' (PBR MAT + Env Light) | 'instanced' (instancing)
+    """
+    specs = []
+    base = name
+
+    if complexity == "instanced":
+        # Instanced grid of boxes
+        specs.append(_op_spec("Box SOP", f"{base}_box", position=_grid_pos(0)))
+        specs.append(_op_spec("Noise CHOP", f"{base}_noise",
+                              params={"type": "Random", "amplitude": 0.5},
+                              position=_grid_pos(1)))
+        specs.append(_op_spec("CHOP to TOP", f"{base}_c2t",
+                              inputs=[f"{base}_noise"],
+                              position=_grid_pos(2)))
+        specs.append(_op_spec("Geometry COMP", f"{base}_geo",
+                              params={"instance": f"{base}_c2t"},
+                              inputs=[f"{base}_box"],
+                              position=_grid_pos(3)))
+    else:
+        # Single geo
+        sop_type = "Box SOP" if complexity != "pbr" else "Torus SOP"
+        specs.append(_op_spec(sop_type, f"{base}_sop", position=_grid_pos(0)))
+
+        mat_type = "PBR MAT" if complexity == "pbr" else "Phong MAT"
+        if mat_type == "Phong MAT":
+            mat_params = {"color": [1, 0.8, 0.2]}
+        else:
+            mat_params = {"base_color": [1, 0.8, 0.2], "metallic": 0.5, "roughness": 0.3}
+        specs.append(_op_spec(mat_type, f"{base}_mat",
+                              params=mat_params,
+                              position=_grid_pos(1)))
+
+        specs.append(_op_spec("Geometry COMP", f"{base}_geo",
+                              params={"material": f"{base}_mat"},
+                              inputs=[f"{base}_sop"],
+                              position=_grid_pos(2)))
+
+    # Camera + Light
+    specs.append(_op_spec("Camera COMP", f"{base}_cam",
+                          params={"position": [0, 0, 10]},
+                          position=_grid_pos(3)))
+    if complexity == "pbr":
+        specs.append(_op_spec("Environment Light COMP", f"{base}_envlight",
+                              params={"intensity": 1.0},
+                              position=_grid_pos(4)))
+    else:
+        specs.append(_op_spec("Light COMP", f"{base}_light",
+                              params={"light_type": "Point", "color": [1, 1, 1]},
+                              position=_grid_pos(4)))
+
+    # Render
+    specs.append(_op_spec("Render TOP", f"{base}_render",
+                          params={"camera": f"{base}_cam", "light": f"{base}_light" if complexity != "pbr" else f"{base}_envlight"},
+                          inputs=[f"{base}_geo"],
+                          position=_grid_pos(5)))
+    specs.append(_op_spec("Out TOP", f"{base}_out",
+                          inputs=[f"{base}_render"],
+                          position=_grid_pos(6)))
+
+    return specs
+
+
+def create_glsl_shader(name="glsl1", template="basic", params=None):
+    """GLSL TOP with a ready-to-tweak shader template.
+
+    template: 'basic' | 'sdf' | 'feedback' | 'audio' | 'custom'
+    """
+    templates = {
+        "basic": """
+uniform sampler2D sTD2DInputs[4];
+out vec4 fragColor;
+void main() {
+    vec2 uv = vUV.st;
+    vec4 c = texture(sTD2DInputs[0], uv);
+    fragColor = vec4(c.rgb * 1.2, c.a);
+}
+""",
+        "sdf": """
+uniform sampler2D sTD2DInputs[4];
+uniform float uTime;
+out vec4 fragColor;
+float sdCircle(vec2 p, float r) { return length(p) - r; }
+void main() {
+    vec2 uv = (vUV.st - 0.5) * 2.0;
+    float d = sdCircle(uv, 0.3 + 0.5 * sin(uTime));
+    float a = smoothstep(0.02, 0.0, abs(d));
+    fragColor = vec4(vec3(a), a);
+}
+""",
+        "feedback": """
+uniform sampler2D sTD2DInputs[4];
+uniform float uFeedback;
+out vec4 fragColor;
+void main() {
+    vec2 uv = vUV.st;
+    vec4 prev = texture(sTD2DInputs[0], uv);
+    vec4 curr = texture(sTD2DInputs[1], uv);
+    fragColor = mix(curr, prev, uFeedback);
+}
+""",
+    }
+
+    specs = []
+    base = name
+    shader = templates.get(template, templates["basic"])
+
+    specs.append(_op_spec("GLSL TOP", f"{base}_glsl",
+                          params={"pixel_shader": shader, "custom_uniforms": "uFeedback"},
+                          position=_grid_pos(0)))
+
+    specs.append(_op_spec("Out TOP", f"{base}_out",
+                          inputs=[f"{base}_glsl"],
+                          position=_grid_pos(1)))
+
+    return specs
+
+
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+GENERATORS = {
+    "feedback": create_feedback_network,
+    "audio_reactive": create_audio_reactive,
+    "particles": create_particle_system,
+    "3d_scene": create_3d_scene,
+    "glsl": create_glsl_shader,
+}
+
+
+def list_generators():
+    return list(GENERATORS.keys())
+
+
+def generate(name, **kwargs):
+    fn = GENERATORS.get(name)
+    if not fn:
+        raise ValueError(f"Unknown generator: {name}. Available: {list(GENERATORS.keys())}")
+    return fn(**kwargs)

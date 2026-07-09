@@ -1,0 +1,83 @@
+"""Tool risk classification (TrueFiasco 4-class, MIT-safe reimpl).
+
+Each tool gets a risk class; the live bridge can enforce policies:
+  * READ_ONLY         - readOnlyHint=true,  no mutations
+  * WRITE_ADDITIVE    - creates new nodes/params, no deletion
+  * WRITE_CHECKPOINT  - mutates but idempotent (save/checkpoint)
+  * DESTRUCTIVE       - deletes/overwrites, needs confirm/undo
+
+These map to MCP tool annotations: readOnlyHint, destructiveHint, idempotentHint.
+"""
+
+RISK_CLASS = {
+    # Offline (doc/RAG) tools — READ_ONLY
+    "td_docs_search":        "READ_ONLY",
+    "td_docs_operator":      "READ_ONLY",
+    "td_docs_python":        "READ_ONLY",
+    "td_docs_glsl":          "READ_ONLY",
+    "td_docs_template":      "READ_ONLY",
+    "td_docs_version":       "READ_ONLY",
+    "td_docs_family":        "READ_ONLY",
+    "td_docs_parameter":     "READ_ONLY",
+    "td_docs_glossary":      "READ_ONLY",
+    "td_docs_compare":       "READ_ONLY",
+    "td_docs_connections":   "READ_ONLY",
+    "td_docs_workflow":      "READ_ONLY",
+    "td_docs_version_info":  "READ_ONLY",
+    "td_docs_related":       "READ_ONLY",
+    "td_build_network":      "READ_ONLY",   # generates YAML, no TD mutation
+
+    # Show-control / LED planning — READ_ONLY
+    "td_showcontrol_plan":   "READ_ONLY",
+    "td_led_map":            "READ_ONLY",
+
+    # Live bridge tools
+    "create_node":           "WRITE_ADDITIVE",
+    "set_parameters":        "WRITE_ADDITIVE",
+    "get_parameters":        "READ_ONLY",
+    "get_errors":            "READ_ONLY",
+    "execute_python":        "DESTRUCTIVE",  # arbitrary code
+    "list_nodes":            "READ_ONLY",
+    "project_info":          "READ_ONLY",
+    "delete_node":           "DESTRUCTIVE",
+    "capture_viewport":      "READ_ONLY",
+    "get_resource":          "READ_ONLY",
+    "describe_td_tools":     "READ_ONLY",
+    "batch":                 "WRITE_ADDITIVE",  # mixed, but creates more than deletes
+    "read_chop":             "READ_ONLY",
+    "read_top":              "READ_ONLY",
+    "read_dat":              "READ_ONLY",
+}
+
+
+# MCP annotation mapping per risk class
+ANNOTATIONS = {
+    "READ_ONLY":        {"readOnlyHint": True,  "destructiveHint": False, "idempotentHint": True},
+    "WRITE_ADDITIVE":   {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False},
+    "WRITE_CHECKPOINT": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True},
+    "DESTRUCTIVE":      {"readOnlyHint": False, "destructiveHint": True,  "idempotentHint": False},
+}
+
+
+def risk_class(tool_name):
+    return RISK_CLASS.get(tool_name, "WRITE_ADDITIVE")
+
+
+def tool_annotations(tool_name):
+    return ANNOTATIONS[risk_class(tool_name)]
+
+
+# Optional: live bridge can enforce a global policy
+#   TD_BUILDER_LIVE_READONLY=1  -> all live tools become READ_ONLY
+#   TD_MCP_MAX_RISK=WRITE_ADDITIVE  -> block DESTRUCTIVE
+def enforce_policy(tool_name, env=None):
+    import os
+    env = env or os.environ
+    if env.get("TD_BUILDER_LIVE_READONLY") == "1":
+        return "READ_ONLY"
+    max_risk = env.get("TD_MCP_MAX_RISK", "DESTRUCTIVE")
+    order = ["READ_ONLY", "WRITE_ADDITIVE", "WRITE_CHECKPOINT", "DESTRUCTIVE"]
+    tc = risk_class(tool_name)
+    if order.index(tc) > order.index(max_risk):
+        return max_risk
+    return tc
