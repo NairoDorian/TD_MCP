@@ -1,49 +1,42 @@
-# td-mcp
+# TouchDesigner MCP (TD_MCP)
 
-Local-first **TouchDesigner MCP** that fuses the best ideas from the
-TD-MCP ecosystem into one tool:
+Local-first **TouchDesigner MCP (Model Context Protocol)** that fuses the best ideas from the TD-MCP ecosystem into one tool:
 
-- **Offline doc/RAG server** (`td_mcp.server_offline`) — **parallel multi-RAG**:
-  several retrieval backends (global BM25, per-source BM25 for
-  operators/python/glsl/tutorials, optional MiniLM dense + HyDE, title
-  boost) run concurrently and fuse via **Reciprocal Rank Fusion**,
-  with an optional CrossEncoder reranker. Version-aware, no cloud/keys.
-- **Eval harness** (`td_mcp.rag.eval`) — recall@k / MRR / nDCG over
-  labelled queries, so quality is provable and regressions are caught.
-  (Zero-dep over 216 chunks / 30 labelled queries: k=5 recall 0.88,
-  MRR 0.74, nDCG 0.74, zero version-gating violations.)
-- **Live bridge client** (`td_mcp.server_live`) + **TD-side bridge**
-  (`bridge/td_mcp_bridge.py`) — control a running TD session over HTTP.
-  Every mutation is wrapped in `ui.undo` so one Ctrl+Z reverts a whole
-  agent batch.
+- **Offline doc/RAG server** (`td_mcp.server_offline`) — **parallel multi-RAG**: several retrieval backends (global BM25, per-source BM25 for operators/python/glsl/tutorials, optional MiniLM dense + HyDE, title boost) run concurrently and fuse via **Reciprocal Rank Fusion**, with an optional CrossEncoder reranker. Version-aware, no cloud/keys.
+- **Eval harness** (`td_mcp.rag.eval`) — recall@k / MRR / nDCG over labelled queries, so quality is provable and regressions are caught. Includes 1091 chunks (TOP 49 / CHOP 35 / SOP 32 / DAT 24 / Python 22 / COMP 21 / tutorial 19 / POP 8 / GLSL 6 / etc. seed + tdmcp/bottobot corpora): **k=5 recall 0.966**, zero version-gating violations.
+- **Live Bridge MCP Server & CLI Client** (`td_mcp.server_live`) + **TD-side Bridge** (`bridge/td_mcp_bridge.py`) — control a running TD session over HTTP using stdio MCP or CLI. Every mutation is wrapped in `ui.undo` so one Ctrl+Z reverts a whole agent batch. Features spatial context markers (`*here` and `*this`) to resolve the currently active network or selected node.
+- **Autonomous in-TouchDesigner Agent** (`bridge/td_mcp_agent.py`) — a zero-dependency OpenAI-compatible agent script that runs natively inside TD Text DATs. Allows you to chat offline (using local Ollama) or online (Gemini/OpenAI) to build networks autonomously.
 
-Design notes, the full server catalog, and the merged "super server"
-roadmap live alongside this repo in `../DOCUMENTATION/`:
-
-- `TouchDesigner_MCP_Servers.md` — catalog of every TD MCP server + brainstorm
-- `TD_MCP_Master_Plan.md` — the merge design this scaffold implements
-- `TouchDesigner_Links.md` — official docs / Python API / curriculum
+Design notes and the full server catalog live alongside this repo:
+- `DOCUMENTATION/TouchDesigner_MCP_Servers.md` — catalog of every TD MCP server + brainstorm
+- `DOCUMENTATION/TD_MCP_Master_Plan.md` — the master plan this scaffold implements
+- `DOCUMENTATION/TouchDesigner_Links.md` — official docs / Python API / curriculum
 
 ## Layout
 
 ```
 td-mcp/
 ├── pyproject.toml
+├── HOW_TO_USE.md
+├── README.md
+├── setup_env.ps1
 ├── td_mcp/
 │   ├── server_offline.py     # doc/RAG MCP server + CLI (uses ParallelRetriever)
 │   ├── server_live.py        # client for the TD bridge (+ --anchor "shots")
 │   ├── rag/
-│   │   ├── retriever.py     # Index (BM25 + dense + version resolver)
+│   │   ├── retriever.py      # Index (BM25 + dense + version resolver)
 │   │   ├── strategies.py     # per-source + dense + HyDE strategies, RRF fusion
 │   │   ├── rerank.py         # optional CrossEncoder reranker
-│   │   └── eval.py          # recall@k / MRR / nDCG harness
+│   │   └── eval.py           # recall@k / MRR / nDCG harness
 │   └── kb/
-│       ├── chunks.jsonl       # 216 curated chunks (real TD facts, source+min_version+aliases)
+│       ├── chunks.jsonl       # 1091 built chunks (real TD facts, source+min_version+aliases)
 │       ├── build_kb.py        # regenerates chunks.jsonl from authored records
 │       ├── embeddings.jsonl   # MiniLM vectors (after TD_MCP_DENSE=1)
 │       ├── scrape.py          # crawl docs.derivative.ca
 │       └── build_index.py     # validate / dense-embed
-├── bridge/td_mcp_bridge.py  # paste into a Text DAT in TD
+├── bridge/
+│   ├── td_mcp_bridge.py      # paste into a Text DAT in TD (bridge server)
+│   └── td_mcp_agent.py       # paste into a Text DAT in TD (autonomous builder agent)
 └── skills/td-building/       # Claude Code skill
 ```
 
@@ -59,45 +52,45 @@ uv run python -m td_mcp.server_offline --parameter "movie"  # param spec by nick
 uv run python -m td_mcp.server_offline --glossary          # full KB index
 ```
 
-## Run as an MCP server
+## Run as MCP Servers
 
-```bash
-uv add mcp anyio
-TD_MCP_MODE=mcp uv run python -m td_mcp.server_offline --mcp
-```
-
-Register in `claude_desktop_config.json` / `.mcp.json`:
+Register in your AI client (Claude Desktop: `%APPDATA%\Claude\claude_desktop_config.json`; Cursor: `%USERPROFILE%\.cursor\mcp.json`):
 
 ```json
 {
   "mcpServers": {
-    "td-mcp-docs": {
+    "td-mcp-offline": {
       "command": "uv",
-      "args": ["--directory", "/path/to/td-mcp", "run", "python", "-m",
-               "td_mcp.server_offline", "--mcp"]
+      "args": ["run", "--project", "C:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp", "td-mcp-offline", "--mcp"]
+    },
+    "td-mcp-live": {
+      "command": "uv",
+      "args": ["run", "--project", "C:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp", "td-mcp-live", "--mcp"],
+      "env": {
+        "TD_MCP_AUTH_TOKEN": "YOUR_AUTO_GENERATED_TOKEN"
+      }
     }
   }
 }
 ```
 
-Exposed tools: `td_docs_search`, `td_docs_operator`, `td_docs_python`,
-`td_docs_glsl`, `td_docs_template`, `td_docs_version`, `td_docs_family`,
-`td_docs_parameter`, `td_docs_glossary`.
+Exposed Offline Tools: `td_docs_search`, `td_docs_operator`, `td_docs_python`, `td_docs_glsl`, `td_docs_template`, `td_docs_version`, `td_docs_family`, `td_docs_parameter`, `td_docs_compare`, `td_docs_connections`, `td_docs_workflow`, `td_docs_version_info`, `td_docs_related`, `td_build_network`, `td_showcontrol_plan`, `td_led_map`, `td_docs_glossary`, `td_build_feedback`, `td_build_audio_reactive`, `td_build_particle`, `td_build_3d_scene`, `td_build_glsl_shader`.
+
+Exposed Live Tools: `create_node`, `delete_node`, `set_parameters`, `get_parameters`, `get_errors`, `execute_python`, `list_nodes`, `project_info`, `capture_viewport`, `get_resource`, `describe_td_tools`, `batch`, `read_chop`, `read_top`, `read_dat`, `build_and_verify`.
 
 ## Control a live TouchDesigner
 
 1. In TD, create a Text DAT, paste `bridge/td_mcp_bridge.py`, and run:
-   `op('text1').module.start()` — it listens on `127.0.0.1:9980`.
-2. From the shell:
+   `op('text1').module.start()` — it listens on `127.0.0.1:9980` and prints the authorization token.
+2. From the shell (CLI mode):
 
 ```bash
-uv run python -m td_mcp.server_live status
-uv run python -m td_mcp.server_live create /project1 CircleTOP TOP
-uv run python -m td_mcp.server_live set /project1/circle1 '{"radius": 0.5}'
-uv run python -m td_mcp.server_live exec "print([c.name for c in op('/project1').children])"
+$env:TD_MCP_AUTH_TOKEN="YOUR_AUTO_GENERATED_TOKEN"
+uv run td-mcp-live status
+uv run td-mcp-live create /project1 CircleTOP --name my_circle
+uv run td-mcp-live set /project1/my_circle '{"radius": 0.5}'
+uv run td-mcp-live exec "print([c.name for c in op('/project1').children])"
 ```
-
-Healthy? `curl http://127.0.0.1:9980/api/status`.
 
 ## Grow the knowledge base
 
