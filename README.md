@@ -242,7 +242,7 @@ td-mcp/
 ├── scripts/
 │   └── generate_summary.py   # generates SUMMARY.md (code-free file/architecture overview)
 ├── td_mcp/
-│   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (40 tools)
+│   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (45 tools)
 │   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server for the bridge (39 tools)
 │   ├── streamable_http.py    # Streamable-HTTP transport mixin (SSE, sessions, DNS-rebind guard)
 │   ├── heal.py                # self-healing orchestrator: validate → score → auto-repair → hints
@@ -287,7 +287,7 @@ td-mcp/
 
 ## Tool catalog
 
-**Offline server (40 tools)** — `td_docs_search`, `td_docs_operator`, `td_docs_python`,
+**Offline server (45 tools)** — `td_docs_search`, `td_docs_operator`, `td_docs_python`,
 `td_docs_glsl`, `td_docs_template`, `td_docs_version`, `td_docs_family`, `td_docs_parameter`,
 `td_docs_compare`, `td_docs_connections`, `td_docs_workflow`, `td_docs_version_info`,
 `td_docs_related`, `td_docs_glossary`, `td_build_network`, `td_showcontrol_plan`, `td_led_map`,
@@ -296,7 +296,8 @@ td-mcp/
 `td_build_midi_rig`, `td_build_kinect_skeleton`, `td_glsl_pattern`, `td_network_template`,
 `td_expert_prompt`, `td_compat_check`, `td_score_build`, `td_validate_build`, `td_self_heal`,
 `td_mediaserver`, `td_analyze_performance`, `td_discover`, `td_memory_save`, `td_memory_recall`,
-`td_scaffold_recipe`.
+`td_scaffold_recipe`, `td_analyze_build`, `td_diff_networks`, `td_optimize_layout`,
+`td_resolve_params`, `td_docs_combos`.
 
 **Live server (39 tools)** — `create_node`, `delete_node`, `set_parameters`, `get_parameters`,
 `get_errors`, `execute_python`, `list_nodes`, `project_info`, `capture_viewport`, `get_resource`,

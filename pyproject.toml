@@ -1,6 +1,6 @@
 [project]
 name = "td-mcp"
-version = "1.8.0"
+version = "1.9.0"
 description = "Local-first TouchDesigner MCP: offline doc/RAG server + live bridge client + TD-side bridge."
 readme = "README.md"
 requires-python = ">=3.10"

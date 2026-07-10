@@ -9,6 +9,8 @@ Powers `related_operators`, `suggest_chain` and the offline
 `td_docs_workflow` enrichment without an LLM. Pure stdlib + networkx.
 """
 
+from typing import Dict, List
+
 from td_mcp.kb import corpus
 
 
@@ -85,3 +87,56 @@ def suggest_chain(query, k=6):
                 if r:
                     chain.append(r.get("displayName") or r.get("name"))
     return chain
+
+
+def _kn(s: str) -> str:
+    return (s or "").strip().lower().replace(" ", "").replace("_", "")
+
+
+def combo_related(name: str, k: int = 8) -> List[str]:
+    """Operators that *work together* with ``name`` (relationship expansion).
+
+    Builds co-occurrence from each operator's ``workflowPatterns`` text and from
+    ``name``'s own patterns — i.e. "show me real networks that use Noise with X".
+    Pure corpus scan, no LLM. Returns display names ranked by co-occurrence.
+    """
+    rec = corpus.operator_record(name)
+    if rec is None:
+        return []
+    key = rec.get("id")
+
+    ops = corpus.load_operators()
+    name_to_id: Dict[str, str] = {}
+    for kk, rr in ops.items():
+        dn = rr.get("displayName") or rr.get("name") or ""
+        nm = rr.get("name") or ""
+        if dn:
+            name_to_id[_kn(dn)] = kk
+        if nm:
+            name_to_id[_kn(nm)] = kk
+
+    target_norm = _kn(rec.get("displayName") or rec.get("name"))
+    scores: Dict[str, int] = {}
+
+    # Others whose workflowPatterns mention the target.
+    for kk, rr in ops.items():
+        if kk == key:
+            continue
+        blob = _kn(" ".join(str(p) for p in (rr.get("workflowPatterns") or [])))
+        if target_norm and target_norm in blob:
+            scores[kk] = scores.get(kk, 0) + 1
+
+    # Target's own patterns mentioning others.
+    for p in (rec.get("workflowPatterns") or []):
+        blob = _kn(str(p))
+        for nn, iid in name_to_id.items():
+            if iid != key and nn and nn in blob:
+                scores[iid] = scores.get(iid, 0) + 1
+
+    ranked = sorted(scores.items(), key=lambda kv: -kv[1])[:k]
+    out = []
+    for iid, _ in ranked:
+        r = ops.get(iid)
+        if r:
+            out.append(r.get("displayName") or r.get("name"))
+    return out

@@ -115,3 +115,55 @@ def _find(operators: List[Dict[str, Any]], name: str) -> Optional[Dict[str, Any]
 
 def _w(code: str, name: Any, message: str, detail: Dict[str, Any]) -> Dict[str, Any]:
     return {"code": code, "name": name, "message": message, "detail": detail}
+
+
+def boxes_overlap(a_pos: Tuple[float, float], a_size: Tuple[float, float],
+                  b_pos: Tuple[float, float], b_size: Tuple[float, float]) -> bool:
+    """AABB overlap test (half-extent) between two operator boxes."""
+    ax, ay = a_pos
+    aw, ah = a_size
+    bx, by = b_pos
+    bw, bh = b_size
+    return (abs(ax - bx) < (aw / 2 + bw / 2)) and (abs(ay - by) < (ah / 2 + bh / 2))
+
+
+def first_free_cell(occupied: List[Tuple[Tuple[float, float], Tuple[float, float]]],
+                    size: Tuple[float, float] = (100, 100),
+                    spacing: float = DEFAULT_SPACING,
+                    anchor: Tuple[float, float] = (0, 0),
+                    cols: int = 8) -> Tuple[float, float]:
+    """Deterministic first grid cell that does not overlap any occupied box.
+
+    Sweeps a left-to-right, top-to-bottom grid starting at ``anchor`` and returns
+    the center of the first cell with ``>= spacing`` clearance from every box in
+    ``occupied`` (each entry is ``(pos, size)``). Guarantees non-overlapping
+    placement (tdmcp / touchdesigner_agent_mcp idea).
+    """
+    sw, sh = size
+    row = 0
+    while True:
+        for col in range(cols):
+            cx = anchor[0] + col * (sw + spacing)
+            cy = anchor[1] - row * (sh + spacing)
+            cand = (cx, cy)
+            clash = any(boxes_overlap(cand, size, p, s) for (p, s) in occupied)
+            if not clash:
+                return cand
+        row += 1
+
+
+def spread_positions(operators: List[Dict[str, Any]],
+                     spacing: float = DEFAULT_SPACING,
+                     size: Tuple[float, float] = (100, 100),
+                     cols: int = 8) -> List[Dict[str, Any]]:
+    """Reassign non-overlapping positions to a list of operator dicts in place-safe
+    fashion. Preserves each operator's other fields. Returns the relocated list."""
+    out: List[Dict[str, Any]] = []
+    occupied: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
+    for op in operators:
+        new_op = dict(op)
+        pos = first_free_cell(occupied, size=size, spacing=spacing, cols=cols)
+        new_op["position"] = [pos[0], pos[1]]
+        occupied.append((pos, size))
+        out.append(new_op)
+    return out

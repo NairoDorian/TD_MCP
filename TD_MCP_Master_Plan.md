@@ -150,7 +150,7 @@ td-mcp/
 │   ├── generate_summary.py   # code-free SUMMARY.md (list/architecture/tree/per-file)
 │   └── bump_version.py       # bump pyproject + top CHANGELOG heading in one step
 ├── td_mcp/
-│   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (40 tools)
+│   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (45 tools)
 │   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server (39 tools)
 │   ├── streamable_http.py    # Streamable-HTTP transport mixin
 │   ├── heal.py / validation.py / scoring.py   # self-healing build pipeline

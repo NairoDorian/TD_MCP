@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.9.0] - 2026-07-10
+
+Ultimate-merge pass: features mined from the 13 reference TD-MCP repos
+(`github-mcp/`) and folded into the Python codebase.
+
+### Added
+- **`td_analyze_build`** — liveness/dead-weight analysis of a network description
+  (tdmcp idea): flags isolated nodes, only-fed nodes, empty COMPs, and broken
+  file/path dependencies (ISOLATED / NO_OUTPUT / EMPTY_COMP / BROKEN_FILE_DEP).
+- **`td_diff_networks`** — structural A/B diff of two builds (twozero /
+  TD_Builder idea): added/removed/changed operators with parameter deltas and
+  connection deltas.
+- **`td_optimize_layout`** — deterministic, collision-free node placement
+  (tdmcp / Embody idea) so generated nodes never pile up at the origin.
+- **`td_resolve_params`** — normalizes friendly parameter names (`freq`) and
+  loose menu values (`0`) to exact TD codes via the corpus schema
+  (TD_Builder `param_name_resolver`); prevents silent no-op params.
+- **`td_docs_combos`** — operators that commonly work *together* with a given
+  one, from corpus `workflowPatterns` co-occurrence (relationship expansion).
+- **Output budgeting** (`td_mcp/util/output_budget.py`): doc-search responses
+  are capped by `TD_MCP_OUTPUT_MAX_CHARS` and report an explicit omission marker
+  instead of silently truncating (TD_Builder `output_budget` idea).
+- **MCP `prompts` are now first-class** in both the offline and live servers:
+  `prompts/list` + `prompts/get` expose the expert personas and phase prompts.
+- **Knowledge-graph co-occurrence** (`rag/knowledge_graph.combo_related`) for
+  workflow/relationship queries.
+
+### Changed
+- Offline tool catalog is now **45** tools (was 40); live server unchanged at 39.
+
+---
+
 ## [1.8.0] - 2026-07-10
 
 Review pass: fix runtime crashes found during a full code + docs review.

@@ -693,14 +693,34 @@ def _run_stdio_server(host=DEFAULT_HOST, port=DEFAULT_PORT, auth_token=None, anc
         except Exception as e:
             return [types.TextContent(type="text", text=f"error: {e}")]
 
-    # Prompts (empty but registered for compat)
+    # Prompts — expose expert personas + phase prompts as discoverable MCP prompts.
+    from td_mcp import prompts as prompts_mod
+
     @app.list_prompts()
     async def list_prompts():
-        return []
+        prompts = []
+        for pname in prompts_mod.list_experts():
+            prompts.append(types.Prompt(pname, description=f"Expert persona: {pname}",
+                                        arguments=[]))
+        for phase in ("plan", "build", "self_improve"):
+            prompts.append(types.Prompt(
+                f"phase_{phase}",
+                description=f"Combined system prompt for the '{phase}' build phase.",
+                arguments=[]))
+        return prompts
 
     @app.get_prompt()
     async def get_prompt(name, arguments):
-        return types.GetPromptResult(description="", messages=[])
+        if name in prompts_mod.list_experts():
+            text = prompts_mod.get_expert_prompt(name) or ""
+        elif name.startswith("phase_"):
+            text = prompts_mod.build_phase_prompt(name[len("phase_"):])
+        else:
+            text = prompts_mod.build_phase_prompt("build")
+        return types.GetPromptResult(
+            description=name,
+            messages=[types.PromptMessage(role="user",
+                       content=types.TextContent(type="text", text=text))])
 
     # Resources (empty but registered for compat)
     @app.list_resources()

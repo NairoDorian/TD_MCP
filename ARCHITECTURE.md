@@ -44,7 +44,7 @@ td-mcp/
 ├── scripts/
 │   └── generate_summary.py   # generates SUMMARY.md (code-free file/architecture overview)
 ├── td_mcp/
-│   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (40 tools)
+│   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (45 tools)
 │   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server for the bridge (39 tools)
 │   ├── streamable_http.py    # Streamable-HTTP transport mixin (SSE, sessions, DNS-rebind guard)
 │   ├── heal.py               # self-healing orchestrator: validate → score → auto-repair → hints

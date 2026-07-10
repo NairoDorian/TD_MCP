@@ -267,3 +267,172 @@ def auto_repair(desc: Dict[str, Any], report: Optional[Dict[str, Any]] = None
 def _f(stage: str, severity: str, code: str, message: str, target: Any) -> Dict[str, Any]:
     return {"stage": stage, "severity": severity, "code": code,
             "message": message, "target": target}
+
+
+# Parameters whose value is a filesystem path worth existence-checking.
+_FILE_PARAM_HINTS = ("file", "path", "moviefile", "audiofile", "image", "folder", "url")
+
+
+def analyze_build(desc: Dict[str, Any]) -> Dict[str, Any]:
+    """Dead-weight / liveness analysis of a network description (tdmcp idea).
+
+    Extends :func:`validate_build` (which checks *validity*) with *usage*:
+
+      * ``isolated``   — a node with no connections at all (pure dead weight)
+      * ``no_output``  — a node that is only fed, never consumed (likely unused)
+      * ``empty_comp`` — a COMP with zero connections (possible empty container)
+      * ``broken_file_dep`` — a file/path parameter pointing at a missing file
+
+    Runs on the pure description dict; file checks are best-effort (a missing
+    path is reported, but relative project paths may legitimately not exist yet).
+
+    Returns a structured report with per-category findings.
+    """
+    ops = desc.get("operators") or []
+    conns = desc.get("connections") or []
+
+    by_name: Dict[str, Dict] = {}
+    for op in ops:
+        nm = op.get("name")
+        if nm is not None:
+            by_name[nm] = op
+
+    # Build edge lists (explicit + inline inputs).
+    outgoing: Dict[str, int] = {nm: 0 for nm in by_name}
+    incoming: Dict[str, int] = {nm: 0 for nm in by_name}
+    edges = []
+    for c in conns:
+        f, t = c.get("from"), c.get("to")
+        edges.append((f, t))
+        if f in outgoing:
+            outgoing[f] += 1
+        if t in incoming:
+            incoming[t] += 1
+    for op in ops:
+        nm = op.get("name")
+        for src in op.get("inputs", []) or []:
+            if src:
+                edges.append((src, nm))
+                if src in outgoing:
+                    outgoing[src] += 1
+                if nm in incoming:
+                    incoming[nm] += 1
+
+    findings: List[Dict[str, Any]] = []
+    for op in ops:
+        nm = op.get("name", "<unnamed>")
+        fam = _family_of(op.get("type")) if op.get("type") else None
+        out_n = outgoing.get(nm, 0)
+        in_n = incoming.get(nm, 0)
+
+        if out_n == 0 and in_n == 0:
+            findings.append(_f("usage", "warning", "ISOLATED",
+                               f"{nm} has no connections (dead weight)", target=nm))
+        elif out_n == 0:
+            findings.append(_f("usage", "info", "NO_OUTPUT",
+                               f"{nm} is only fed, never consumed (likely unused)",
+                               target=nm))
+        if fam == "COMP" and out_n == 0 and in_n == 0:
+            findings.append(_f("usage", "warning", "EMPTY_COMP",
+                               f"{nm} is a COMP with no connections (possible empty container)",
+                               target=nm))
+
+        # Broken file dependencies.
+        for pname, pval in (op.get("parameters") or {}).items():
+            if not isinstance(pval, str) or not pval:
+                continue
+            low = pname.lower()
+            if any(h in low for h in _FILE_PARAM_HINTS) and _looks_like_path(pval):
+                import os as _os
+                if not _os.path.exists(pval):
+                    findings.append(_f("usage", "warning", "BROKEN_FILE_DEP",
+                                       f"{nm}.{pname} -> {pval!r} does not exist",
+                                       target=nm))
+
+    cats = {}
+    for f in findings:
+        cats.setdefault(f["code"], []).append(f["target"])
+    return {
+        "ok": True,
+        "operator_count": len(ops),
+        "connection_count": len(conns),
+        "categories": cats,
+        "finding_count": len(findings),
+        "findings": findings,
+        "summary": f"{len(findings)} usage finding(s) across {len(ops)} operator(s)",
+    }
+
+
+def _looks_like_path(value: str) -> bool:
+    v = value.strip()
+    if v.startswith(("http://", "https://", "td://", "$")):
+        return False
+    return ("/" in v or "\\" in v or v.lower().endswith(
+        (".toe", ".tox", ".png", ".jpg", ".jpeg", ".mov", ".mp4", ".wav",
+         ".aif", ".aiff", ".mp3", ".txt", ".dat", ".bmp", ".exr", ".tif", ".tiff")))
+
+
+def diff_networks(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
+    """Structural A/B diff of two network descriptions (twozero / TD_Builder idea).
+
+    Compares operators (by name), their parameters, and connections (by
+    ``from -> to``). Useful for "what changed between build v1 and v2".
+
+    Returns added / removed / changed operators, parameter deltas, and a
+    connection delta, each as a concrete, machine-readable list.
+    """
+    a_ops = {o.get("name"): o for o in (a.get("operators") or []) if o.get("name")}
+    b_ops = {o.get("name"): o for o in (b.get("operators") or []) if o.get("name")}
+
+    added = [n for n in b_ops if n not in a_ops]
+    removed = [n for n in a_ops if n not in b_ops]
+
+    changed = []
+    for n in a_ops:
+        if n not in b_ops:
+            continue
+        pa = a_ops[n].get("parameters") or {}
+        pb = b_ops[n].get("parameters") or {}
+        param_deltas = {}
+        for k in set(pa) | set(pb):
+            va, vb = pa.get(k), pb.get(k)
+            if va != vb:
+                param_deltas[k] = {"from": va, "to": vb}
+        ta = a_ops[n].get("type")
+        tb = b_ops[n].get("type")
+        type_changed = ta != tb
+        if param_deltas or type_changed:
+            changed.append({
+                "name": n,
+                "type_changed": type_changed,
+                "type": {"from": ta, "to": tb} if type_changed else None,
+                "parameters": param_deltas,
+            })
+
+    def _conn_set(desc):
+        s = set()
+        for c in (desc.get("connections") or []):
+            s.add((c.get("from"), c.get("to"), c.get("from_output", 0), c.get("to_input", 0)))
+        for op in (desc.get("operators") or []):
+            for i, src in enumerate(op.get("inputs", []) or []):
+                if src:
+                    s.add((src, op.get("name"), 0, i))
+        return s
+
+    ca, cb = _conn_set(a), _conn_set(b)
+    conns_added = [{"from": f, "to": t, "from_output": fo, "to_input": ti}
+                   for (f, t, fo, ti) in sorted(cb - ca)]
+    conns_removed = [{"from": f, "to": t, "from_output": fo, "to_input": ti}
+                     for (f, t, fo, ti) in sorted(ca - cb)]
+
+    return {
+        "ok": True,
+        "operators": {"added": added, "removed": removed, "changed": changed,
+                      "added_count": len(added), "removed_count": len(removed),
+                      "changed_count": len(changed)},
+        "connections": {"added": conns_added, "removed": conns_removed,
+                        "added_count": len(conns_added), "removed_count": len(conns_removed)},
+        "summary": (f"{len(added)} added, {len(removed)} removed, "
+                    f"{len(changed)} changed operator(s); "
+                    f"{len(conns_added)} added, {len(conns_removed)} removed connection(s)"),
+    }

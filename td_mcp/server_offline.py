@@ -27,7 +27,11 @@ from td_mcp import discover as discover_mod
 from td_mcp import memory as memory_mod
 from td_mcp import recipe_vault as recipe_vault_mod
 from td_mcp import heal as heal_mod
+from td_mcp import validation as validation_mod
+from td_mcp.tools import layout as layout_mod
+from td_mcp import param_resolver as param_resolver_mod
 from td_mcp.tools.risk import risk_class, tool_annotations
+from td_mcp.util.output_budget import truncate_text, DEFAULT_MAX_CHARS
 
 DEFAULT_CHUNKS = os.path.join(os.path.dirname(__file__), "kb", "chunks.jsonl")
 
@@ -40,8 +44,12 @@ def _fmt(results, query, max_chars=None):
         head = f"### {c.get('title')}  [{c.get('family') or c.get('category')}]  (score {sc})"
         meta = f"source: {c.get('source', '')}"
         text = c.get('text', '')
-        if max_chars and len(text) > max_chars:
-            text = text[:max_chars].rstrip() + "…"
+        # Explicit per-call cap wins; otherwise honor the env-tunable cap.
+        cap = max_chars or DEFAULT_MAX_CHARS
+        if cap:
+            text, truncated, _info = truncate_text(text, cap)
+            if truncated:
+                text += f"\n[{_info['omitted_chars']} chars omitted by output budget]"
         lines.append(f"{head}\n{meta}\n{text}\n")
     return "\n".join(lines)
 
@@ -460,6 +468,79 @@ def td_validate_build(spec):
     return _json_dumps(heal_mod.assess_build(data))
 
 
+def td_analyze_build(spec):
+    """Dead-weight / liveness analysis of a network description (tdmcp idea).
+
+    Beyond *validity* (td_validate_build), this flags *usage* problems:
+    isolated nodes (no connections at all), only-fed nodes (never consumed),
+    empty COMPs, and broken file/path dependencies. Pure (no running TD)."""
+    import json as _json
+    data = _parse_build_spec(spec)
+    if isinstance(data, str):
+        return data
+    return _json_dumps(validation_mod.analyze_build(data))
+
+
+def td_diff_networks(a, b):
+    """Structural A/B diff of two network descriptions (twozero / TD_Builder idea).
+
+    Reports operators added / removed / changed (with parameter deltas) and
+    connection deltas between build ``a`` and build ``b``. Each spec accepts the
+    same TDN/YAML/JSON format as the other build tools."""
+    import json as _json
+    da = _parse_build_spec(a)
+    db = _parse_build_spec(b)
+    if isinstance(da, str):
+        return da
+    if isinstance(db, str):
+        return db
+    return _json_dumps(validation_mod.diff_networks(da, db))
+
+
+def td_optimize_layout(spec):
+    """De-overlap a network description's node positions (tdmcp / Embody idea).
+
+    Reassigns deterministic, collision-free positions (left-to-right grid with
+    clearance) so generated nodes never pile up at the origin. Returns the
+    relocated spec as JSON; other fields are preserved."""
+    import json as _json
+    data = _parse_build_spec(spec)
+    if isinstance(data, str):
+        return data
+    ops = layout_mod.spread_positions(data.get("operators") or [])
+    out = {"operators": ops, "connections": [dict(c) for c in (data.get("connections") or [])]}
+    return _json_dumps(out)
+
+
+def td_resolve_params(spec):
+    """Normalize an operator spec's parameter names + menu values (TD_Builder idea).
+
+    Agents often emit friendly names (``freq``) and loose menu values (``0``)
+    that silently no-op in TouchDesigner. This maps them to the exact TD
+    parameter codes / valid menu items using the corpus schema and returns the
+    corrected spec plus per-operator warnings."""
+    import json as _json
+    data = _parse_build_spec(spec)
+    if isinstance(data, str):
+        return data
+    resolved, warnings, ok = param_resolver_mod.resolve_build(data)
+    return _json_dumps({"ok": ok, "resolved_spec": resolved, "warnings": warnings})
+
+
+def td_docs_combos(name, k=8):
+    """Operators that work *together* with ``name`` (relationship expansion).
+
+    Surfaces real co-occurrence from the corpus ``workflowPatterns`` — e.g.
+    "show me networks that use Noise with X". Complements td_docs_related
+    (graph neighbours) and td_docs_workflow (keyword chains)."""
+    combos = knowledge_graph.combo_related(name, k=k)
+    if not combos:
+        return f"No co-occurrence data found for {name!r}."
+    return f"Operators that commonly work with {name!r}:\n" + "\n".join(
+        f"  {i+1}. {c}" for i, c in enumerate(combos)
+    )
+
+
 def td_mediaserver(name="resolume"):
     """Plan a connector to a media server (Millumin/Resolume/Notch/Disguise…)."""
     return _json_dumps(sc.media_server(name))
@@ -639,6 +720,21 @@ def create_server():
             types.Tool("td_validate_build", "Validate + score a network description and attach recovery hints for each finding (pure, no running TD).",
                         {"spec": {"type": "string"}},
                         annotations=read_only),
+            types.Tool("td_analyze_build", "Liveness/dead-weight analysis of a network description: isolated nodes, only-fed nodes, empty COMPs, broken file paths (pure, no running TD).",
+                        {"spec": {"type": "string"}},
+                        annotations=read_only),
+            types.Tool("td_diff_networks", "Structural A/B diff of two network descriptions: added/removed/changed operators + parameter deltas + connection deltas.",
+                        {"a": {"type": "string"}, "b": {"type": "string"}},
+                        annotations=read_only),
+            types.Tool("td_optimize_layout", "De-overlap a network description's node positions with deterministic, collision-free placement.",
+                        {"spec": {"type": "string"}},
+                        annotations=read_only),
+            types.Tool("td_resolve_params", "Normalize friendly parameter names + menu values to exact TD codes via the corpus (prevents silent no-op params).",
+                        {"spec": {"type": "string"}},
+                        annotations=read_only),
+            types.Tool("td_docs_combos", "Operators that commonly work together with the given one (corpus workflowPatterns co-occurrence).",
+                        {"name": {"type": "string"}, "k": {"type": "integer", "optional": True}},
+                        annotations=read_only),
             types.Tool("td_self_heal", "Self-heal a network description: validate -> auto-repair -> re-assess with recovery hints (pure, no running TD).",
                         {"spec": {"type": "string"}},
                         annotations=read_only),
@@ -734,6 +830,16 @@ def create_server():
                 out = (td_score_build(a.get("spec", "[]")), "")
             elif name == "td_validate_build":
                 out = (td_validate_build(a.get("spec", "[]")), "")
+            elif name == "td_analyze_build":
+                out = (td_analyze_build(a.get("spec", "[]")), "")
+            elif name == "td_diff_networks":
+                out = (td_diff_networks(a.get("a", "[]"), a.get("b", "[]")), "")
+            elif name == "td_optimize_layout":
+                out = (td_optimize_layout(a.get("spec", "[]")), "")
+            elif name == "td_resolve_params":
+                out = (td_resolve_params(a.get("spec", "[]")), "")
+            elif name == "td_docs_combos":
+                out = (td_docs_combos(a.get("name", ""), a.get("k", 8)), "")
             elif name == "td_self_heal":
                 out = (td_self_heal(a.get("spec", "[]")), "")
             elif name == "td_mediaserver":
@@ -753,6 +859,35 @@ def create_server():
         except Exception as e:  # noqa: BLE001
             out = (f"error: {e}", "")
         return [types.TextContent(type="text", text=out[0])]
+
+    @app.list_prompts()
+    async def list_prompts():
+        # Expose the expert personas + phase prompts as discoverable MCP prompts
+        # (Touchdesigner___MCP_server PROMPT_TEMPLATES idea) so clients can pull
+        # the right workflow prompt without knowing tool names.
+        prompts = []
+        for name in prompts_mod.list_experts():
+            prompts.append(types.Prompt(name, description=f"Expert persona: {name}",
+                                        arguments=[]))
+        for phase in ("plan", "build", "self_improve"):
+            prompts.append(types.Prompt(
+                f"phase_{phase}",
+                description=f"Combined system prompt for the '{phase}' build phase.",
+                arguments=[]))
+        return prompts
+
+    @app.get_prompt()
+    async def get_prompt(name, arguments):
+        if name in prompts_mod.list_experts():
+            text = prompts_mod.get_expert_prompt(name) or ""
+        elif name.startswith("phase_"):
+            text = prompts_mod.build_phase_prompt(name[len("phase_"):])
+        else:
+            text = prompts_mod.build_phase_prompt("build")
+        return types.GetPromptResult(
+            description=name,
+            messages=[types.PromptMessage(role="user",
+                       content=types.TextContent(type="text", text=text))])
 
     return app
 
