@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.7.2] - 2026-07-10
+
+### Added
+- **`COMMIT.md`** — pre-commit checklist: regenerate `SUMMARY.md`, full Markdown
+  documentation pass (edit all `.md` to match current code), sync `pyproject.toml`,
+  update this changelog, run tests, then explicit stage / commit / push.
+
+---
+
 ## [1.7.1] - 2026-07-10
 
 Repository cleanup and a code-free summary generator.
