@@ -101,3 +101,27 @@ def write_configs(target_dir: str, project_dir: str = PROJECT,
             json.dump(generate_mcp_json(project_dir, auth_token=auth_token), f, indent=2)
         paths["desktop_config"] = cfg
     return paths
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """CLI entry point: generate configs into the current directory."""
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Generate td-mcp client configs + skill.")
+    ap.add_argument("--target", default=os.getcwd(), help="output directory (default: cwd)")
+    ap.add_argument("--client", default="claude",
+                    choices=["claude", "claude-desktop", "cursor", "codex"],
+                    help="which client config to emit")
+    ap.add_argument("--project", default=PROJECT, help="path to the td-mcp repo")
+    ap.add_argument("--auth-token", default=None, help="TD_MCP_AUTH_TOKEN to embed")
+    args = ap.parse_args(argv)
+
+    paths = write_configs(args.target, project_dir=args.project,
+                          client=args.client, auth_token=args.auth_token)
+    for kind, path in paths.items():
+        print(f"[config_gen] wrote {kind}: {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

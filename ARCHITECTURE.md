@@ -35,13 +35,21 @@ live bridge would then materialise inside TD.
 ```
 td-mcp/
 ├── pyproject.toml            # deps: pyyaml/mcp/anyio (base) + networkx/sentence-transformers (rag extra)
+├── setup_env.ps1             # one-shot env bootstrap (pins Python 3.11.10)
+├── LICENSE                   # MIT
+├── README.md / ARCHITECTURE.md / HOW_TO_USE.md / SUMMARY.md / COMMIT.md
+├── CHANGELOG.md              # versioned change log
+├── TD_MCP_Master_Plan.md / TouchDesigner_MCP_Servers.md / TouchDesigner_Links.md  # brainstorm/docs
+├── repomix.config.json       # config for `repomix` full source pack (optional)
+├── scripts/
+│   └── generate_summary.py   # generates SUMMARY.md (code-free file/architecture overview)
 ├── td_mcp/
 │   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (40 tools)
 │   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server for the bridge (39 tools)
 │   ├── streamable_http.py    # Streamable-HTTP transport mixin (SSE, sessions, DNS-rebind guard)
 │   ├── heal.py               # self-healing orchestrator: validate → score → auto-repair → hints
-│   ├── validation.py         # 5-stage build validation + auto-repair (pure, TD-free)
-│   ├── scoring.py            # score_build (0..100 A–F) + repair_network
+│   ├── validation.py          # 5-stage build validation + auto-repair (pure, TD-free)
+│   ├── scoring.py             # score_build (0..100 A–F) + repair_network
 │   ├── generators.py         # artist network generators (feedback/audio/particle/3D/GLSL/LED/DMX/video/midi/kinect)
 │   ├── eval.py               # offline build eval gate (TrendGate, metrics)
 │   ├── compat.py             # version-compat checks + error cache
@@ -50,28 +58,27 @@ td-mcp/
 │   ├── bundle.py             # .mcpb project bundling (zip-slip guarded)
 │   ├── macro.py              # macro record/replay
 │   ├── memory.py             # session memory (cross-session continuity)
-│   ├── config_gen.py         # per-client .mcp.json / skill generation
+│   ├── config_gen.py         # per-client .mcp.json / skill generation (+ CLI `main`)
 │   ├── recipe_vault.py       # recipe blueprint storage
 │   ├── discover.py           # multi-instance TD discovery (injectable probe)
 │   ├── prompts.py            # expert prompts per build phase
 │   ├── vision.py             # viewport caption / histogram analysis
 │   ├── glsl_patterns.py      # GLSL pattern + template helpers
 │   ├── spatial.py            # *here / *this / *parent resolution helpers
-│   ├── tdn/                  # Diffable YAML (TDN) importer/exporter
-│   ├── showcontrol/          # show-control network builders (Art-Net/sACN/OSC/MIDI/timecode)
+│   ├── tdn/                  # Diffable YAML (TDN) serialization
+│   ├── showcontrol/          # show-control network builders (Art-Net/sACN/OSC/MIDI/timecode/media-server)
 │   ├── led_mapping/          # LED pixel layout matrices + DMX mapping
-│   ├── tools/
-│   │   ├── risk.py           # risk-tier classification (READ_ONLY / WRITE_ADDITIVE / DESTRUCTIVE)
-│   │   ├── recovery.py       # recovery hints (Embody-style)
-│   │   ├── logs.py           # token-efficient ring-buffer logs
-│   │   └── layout.py         # network layout lint (overlap / origin / dock)
-│   ├── rag/                  # retrieval: Index (BM25+dense), strategies (RRF fusion), rerank, knowledge_graph, eval
-│   └── kb/                   # corpus records, build_kb, import_corpus, scrape, build_index, chunks.jsonl
-└── bridge/
-    ├── td_mcp_bridge.py      # paste into a Text DAT in TD (JSON-RPC/WS/SSE/chat UI server)
-    ├── td_mcp_agent.py       # paste into a Text DAT (autonomous builder agent)
-    ├── chat_ui.html          # glassmorphic chat panel served at GET /
-    └── bootstrap.py          # one-click bootstrap helper
+│   ├── tools/                # risk / recovery / logs / layout helpers
+│   ├── rag/                  # retrieval: retriever (BM25+dense), strategies (RRF fusion), rerank, knowledge_graph, eval
+│   └── kb/                   # corpus records, build_kb, import_corpus, scrape, build_index (chunks.jsonl is generated)
+├── bridge/                   # paste into TouchDesigner Text DATs (not a pip package)
+│   ├── td_mcp_bridge.py      # TD-side bridge server (JSON-RPC/WS/SSE/chat UI)
+│   ├── td_mcp_agent.py       # TD-side autonomous builder agent
+│   ├── chat_ui.html          # glassmorphic chat panel served at GET /
+│   └── bootstrap.py          # one-click bootstrap helper
+├── skills/
+│   └── td-building/          # agent skill (SKILL.md)
+└── tests/                    # pytest suite (RAG fusion, validation, scoring, heal, bridge, etc.)
 ```
 
 ---
@@ -144,7 +151,7 @@ A full code review (see commit history: `fix: resolve review findings…` and
 - `perf` now accepts the bridge `cooks` shape — fixed
 - declared runtime dependencies in `pyproject.toml` — fixed
 
-**Test suite:** `pytest` — 154 tests covering RAG fusion, validation, scoring,
+**Test suite:** `pytest` — 150+ tests covering RAG fusion, validation, scoring,
 heal, generators, bridge mocking, config/risk/logs/layout/macro/perf, etc.
 Run with `uv run pytest` (or the repo's `python -m tests.test_*` entrypoints).
 
@@ -186,8 +193,9 @@ TD_MCP_RERANK=1  uv run td-mcp-offline "blur top"
   get_errors → capture_viewport but does **not** yet call `validation`/`scoring`/
   `heal` (those run on the offline side). Wiring the live loop to the offline
   orchestrator is the main remaining integration step.
-- `bridge/td_mcp_agent.py` still carries some dead scaffolding
-  (`TaskPlanner`, `InteractiveClarifier`) that is not used by `chat`.
+- `bridge/td_mcp_agent.py` previously carried dead scaffolding
+  (`TaskPlanner`, `InteractiveClarifier`); this was removed — `chat` uses the
+  lighter `_plan_task` / `_ask_user` helpers instead.
 - `td_mcp/rag/strategies.py` `RemoteMCPStrategy` launches a subprocess per
   query (cached per identical query); a persistent session would remove the
   launch cost entirely.

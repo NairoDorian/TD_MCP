@@ -5,6 +5,7 @@ __pycache__/
 build/
 dist/
 embeddings.jsonl
+td_mcp/kb/chunks.jsonl
 .pytest_cache/
 .DS_Store
 repomix-output.md

@@ -1,4 +1,4 @@
-"""td_mcp_agent — run an autonomous building agent directly inside TouchDesigner.
+"""td_mcp_agent â€” run an autonomous building agent directly inside TouchDesigner.
 
 This script runs a zero-dependency OpenAI-compatible agent loop (supporting
 Gemini, Ollama, and OpenAI). It allows a Text DAT inside TouchDesigner to
@@ -6,7 +6,7 @@ send natural-language requests, get tool-calling decisions from the model,
 and execute those decisions locally via the bridge.
 
 New in v2.0:
-- Task planning & decomposition (plan → execute → verify → replan)
+- Task planning & decomposition (plan â†’ execute â†’ verify â†’ replan)
 - Interactive clarification (asks questions when ambiguous)
 - Session memory & persistence (save/load session state)
 - Parallel tool execution for independent operations
@@ -886,7 +886,7 @@ class SessionMemory:
         for h in items:
             lines.append(f"User: {h['prompt'][:100]}")
             for tc in h.get("tool_calls", []):
-                lines.append(f"  → {tc.get('name')}({tc.get('args', {})})")
+                lines.append(f"  â†’ {tc.get('name')}({tc.get('args', {})})")
         return "\n".join(lines)
 
 
@@ -905,243 +905,8 @@ def clear_session_memory():
     global _SESSION_MEMORY
     _SESSION_MEMORY = None
 
-
 # ---------------------------------------------------------------------------
-# Task Planner — decompose high-level goals into ordered tool calls
-# ---------------------------------------------------------------------------
-class TaskPlanner:
-    """Decomposes a natural-language goal into an ordered sequence of tool calls."""
-
-    PLANNING_PROMPT = """You are a TouchDesigner network architect. Given a user goal, output a JSON plan.
-
-Each step must be one of the available tool calls. Only use tools from the provided schema.
-
-Output format (JSON only):
-{
-  "plan": [
-    {"tool": "tool_name", "args": {...}, "reason": "why this step"},
-    ...
-  ],
-  "estimated_steps": 3,
-  "risk_level": "low|medium|high"
-}
-
-Available tools (abbreviated):
-{tool_list}
-
-User goal: {goal}
-
-Active network context: {context}"""
-
-    def __init__(self, tool_schemas: List[Dict], llm_config: Dict):
-        self.tool_schemas = tool_schemas
-        self.llm_config = llm_config
-
-    def _format_tool_list(self) -> str:
-        return "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in self.tool_schemas])
-
-    def create_plan(self, goal: str, context: str = "") -> Dict:
-        """Generate a plan for the given goal."""
-        tool_list = self._format_tool_list()
-        prompt = self.PLANNING_PROMPT.format(
-            tool_list=tool_list,
-            goal=goal,
-            context=context or "No active network context"
-        )
-
-        # Use the same LLM call mechanism as the main agent
-        try:
-            resp = self._call_llm(prompt, temperature=0.2)
-            plan = json.loads(resp)
-            return plan
-        except Exception as e:
-            return {"plan": [], "error": f"Planning failed: {e}"}
-
-    def _call_llm(self, prompt: str, temperature: float = 0.2) -> str:
-        """Call the configured LLM for planning."""
-        # This will be filled in by the agent
-        return '{"plan": []}'
-
-
-# ---------------------------------------------------------------------------
-# Error Recovery with Fallback Strategies
-# ---------------------------------------------------------------------------
-class ErrorRecovery:
-    """Provides fallback strategies when tool calls fail."""
-
-    FALLBACK_STRATEGIES = {
-        "create_node": [
-            {"strategy": "retry_with_parent", "description": "Try creating at parent level if path invalid"},
-            {"strategy": "simplify_type", "description": "Use base operator type if specific type fails"},
-        ],
-        "set_parameters": [
-            {"strategy": "filter_valid_params", "description": "Only set parameters that exist on the node"},
-            {"strategy": "expr_fallback", "description": "Try setting as expression if value fails"},
-        ],
-        "connect_nodes": [
-            {"strategy": "auto_find_ports", "description": "Auto-detect correct input/output indices"},
-            {"strategy": "wire_via_intermediate", "description": "Insert intermediate node if types mismatch"},
-        ],
-    }
-
-    @classmethod
-    def get_fallbacks(cls, tool_name: str) -> List[Dict]:
-        return cls.FALLBACK_STRATEGIES.get(tool_name, [{"strategy": "retry", "description": "Simple retry"}])
-
-    @classmethod
-    def apply_fallback(cls, tool_name: str, args: Dict, error: str, attempt: int) -> Optional[Dict]:
-        """Return modified args for fallback attempt, or None if no more fallbacks."""
-        fallbacks = cls.FALLBACK_STRATEGIES.get(tool_name, [])
-        if attempt >= len(fallbacks):
-            return None
-
-        strategy = fallbacks[attempt]["strategy"]
-
-        if tool_name == "create_node" and strategy == "retry_with_parent":
-            # Move up one level
-            path = args.get("path", "")
-            if path and path != "/":
-                parts = path.rstrip("/").split("/")
-                if len(parts) > 1:
-                    args = args.copy()
-                    args["path"] = "/".join(parts[:-1]) or "/"
-                    return args
-
-        if tool_name == "set_parameters" and strategy == "filter_valid_params":
-            # This would need node inspection - skip for now
-            return None
-
-        if tool_name == "connect_nodes" and strategy == "auto_find_ports":
-            # Try default ports
-            args = args.copy()
-            args.setdefault("from_output", 0)
-            args.setdefault("to_input", 0)
-            return args
-
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Parallel Tool Executor for independent operations
-# ---------------------------------------------------------------------------
-class ParallelExecutor:
-    """Execute independent tool calls in parallel."""
-
-    def __init__(self, max_workers: int = 4):
-        self.executor = ThreadPoolExecutor(max_workers=max_workers)
-
-    def execute_batch(self, calls: List[Dict]) -> List[Dict]:
-        """Execute multiple tool calls in parallel where possible.
-
-        calls: [{"tool": "name", "args": {...}, "depends_on": []}, ...]
-        """
-        # Simple dependency-aware execution
-        # For now, just run all in parallel (they should be independent)
-        futures = {}
-        for call in calls:
-            tool = call["tool"]
-            args = call["args"]
-            futures[call] = self.executor.submit(_execute_tool, tool, args)
-
-        results = []
-        for call, future in futures.items():
-            try:
-                res = future.result(timeout=30)
-                results.append({"call": call, "result": res, "ok": True})
-            except Exception as e:
-                results.append({"call": call, "result": {"ok": False, "error": str(e)}, "ok": False})
-        return results
-
-    def shutdown(self):
-        self.executor.shutdown(wait=True)
-
-
-# Global executor
-_PARALLEL_EXECUTOR = ParallelExecutor()
-
-
-# ---------------------------------------------------------------------------
-# Interactive Clarification — ask user when ambiguous
-# ---------------------------------------------------------------------------
-class InteractiveClarifier:
-    """Asks clarifying questions when the user's request is ambiguous."""
-
-    CLARIFICATION_PROMPT = """The user's request is ambiguous. You must ask ONE specific question to clarify.
-
-User request: {prompt}
-Active network context: {context}
-
-Ambiguities detected: {ambiguities}
-
-Output JSON only:
-{{
-  "question": "Your specific clarifying question",
-  "options": ["option1", "option2", "option3"],
-  "default": 0
-}}"""
-
-    def __init__(self, tool_schemas: List[Dict], llm_config: Dict):
-        self.tool_schemas = tool_schemas
-        self.llm_config = llm_config
-
-    def detect_ambiguities(self, prompt: str, context: str) -> List[str]:
-        """Heuristic detection of common ambiguities."""
-        ambiguities = []
-        prompt_lower = prompt.lower()
-
-        # Missing path
-        if "path" not in prompt_lower and "*here" not in prompt_lower and "*this" not in prompt_lower:
-            if any(w in prompt_lower for w in ["create", "add", "make", "build", "wire", "connect", "move"]):
-                ambiguities.append("No target path specified (use *here for current network)")
-
-        # Multiple nodes but no wiring specified
-        if any(w in prompt_lower for w in ["create", "add", "make", "build"]) and "wire" not in prompt_lower and "connect" not in prompt_lower:
-            # Check if multiple nodes implied
-            pass
-
-        # Missing operator type
-        if "node" in prompt_lower and "type" not in prompt_lower and "top" not in prompt_lower and "chop" not in prompt_lower:
-            if "create" in prompt_lower or "add" in prompt_lower:
-                ambiguities.append("No operator type specified (e.g., CircleTOP, NoiseCHOP)")
-
-        # Missing parameters
-        if "set" in prompt_lower and "parameter" not in prompt_lower and "param" not in prompt_lower:
-            ambiguities.append("No parameter names specified for set_parameters")
-
-        return ambiguities
-
-    def ask_clarification(self, prompt: str, context: str, ambiguities: List[str]) -> Dict:
-        """Generate a clarifying question using the LLM."""
-        # Simple heuristic-based question for now
-        if ambiguities:
-            primary = ambiguities[0]
-            if "path" in primary:
-                return {
-                    "question": "Where should this be created?",
-                    "options": ["*here (current network)", "/project1", "custom path"],
-                    "default": 0
-                }
-            if "type" in primary:
-                return {
-                    "question": "What operator type?",
-                    "options": ["CircleTOP", "NoiseTOP", "ConstantCHOP", "Custom"],
-                    "default": 0
-                }
-            if "parameter" in primary:
-                return {
-                    "question": "Which parameter(s) to set?",
-                    "options": ["Common params (e.g., radius, frequency)", "Custom"],
-                    "default": 0
-                }
-        return {
-            "question": "Could you clarify what you want to build?",
-            "options": ["Create a node", "Wire nodes", "Set parameters", "Other"],
-            "default": 0
-        }
-
-
-# ---------------------------------------------------------------------------
-# Macro Recorder — record/replay agent tool sequences (tdmcp macro_recorder)
+# Macro Recorder â€” record/replay agent tool sequences (tdmcp macro_recorder)
 # ---------------------------------------------------------------------------
 class MacroRecorder:
     """Record a sequence of tool calls and replay them deterministically."""
@@ -1455,7 +1220,7 @@ def chat(prompt, provider="gemini", api_key=None, model=None, base_url=None,
         "4. Always call get_errors on newly created or modified nodes to verify they cook without errors.\n"
         "5. Be concise in your explanations. State clearly what you created.\n"
         "6. After creating multiple nodes, always call auto_layout to arrange them cleanly.\n"
-        "7. Use connect_nodes to wire nodes after creating them — never leave wires disconnected.\n"
+        "7. Use connect_nodes to wire nodes after creating them â€” never leave wires disconnected.\n"
         "8. Use set_node_color to color-code nodes by role: blue for inputs, orange for effects, green for output.\n"
         "9. Use map_network to sanity-check topology/wiring before declaring a task complete.\n"
         "10. After finishing, run validate_network to catch unplaced/overlapping nodes or cook errors.\n"

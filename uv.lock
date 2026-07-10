@@ -2279,7 +2279,7 @@ wheels = [
 
 [[package]]
 name = "td-mcp"
-version = "1.7.0"
+version = "1.7.3"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },

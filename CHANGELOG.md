@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.7.3] - 2026-07-10
+
+Repository review pass: consistency, dead-code removal, and public-repo hygiene.
+
+### Added
+- **`.github/workflows/ci.yml`** — GitHub Actions running `uv run pytest` on push/PR.
+- **`.gitattributes`** — normalize line endings to LF across OSes.
+- **`CONTRIBUTING.md`** — contribution guide pointing at `COMMIT.md`.
+
+### Changed
+- `pyproject.toml` version bumped to `1.7.3` (now matches the changelog head).
+- `ARCHITECTURE.md` layout tree completed (skills/, scripts/, tests/, docs, configs);
+  test count described as "150+"; dead-scaffolding limitation note updated (removed).
+- `README.md` layout tree + docs table updated (CI badge, COMMIT/CONTRIBUTING, .github).
+
+### Fixed
+- `td_mcp/config_gen.py` gained a `main()` / `__main__` block so
+  `uv run python -m td_mcp.config_gen` actually writes configs (was a silent no-op).
+- Removed dead `TaskPlanner` / `InteractiveClarifier` classes from
+  `bridge/td_mcp_agent.py` (unused; `chat` uses `_plan_task` / `_ask_user`).
+
+### Cleaned
+- `td_mcp/kb/chunks.jsonl` (generated) untracked and added to `.gitignore`.
+
+---
+
 ## [1.7.2] - 2026-07-10
 
 ### Added

@@ -3,6 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org)
 [![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)](#tests)
+[![CI](https://github.com/NairoDorian/TD_MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/NairoDorian/TD_MCP/actions/workflows/ci.yml)
 
 **Local-first TouchDesigner [MCP](https://modelcontextprotocol.io) toolkit** that unifies the
 best ideas of the public TD‑MCP ecosystem into one cohesive package:
@@ -231,7 +232,13 @@ TD_MCP_REMOTE_MCP="uv run td-docs-mcp" uv run td-mcp-offline "blur top"
 td-mcp/
 ├── pyproject.toml            # deps: pyyaml/mcp/anyio (base) + networkx/sentence-transformers (rag extra)
 ├── setup_env.ps1             # one-shot env bootstrap (pins Python 3.11.10)
-├── repomix.config.json       # config for `repomix` full source pack
+├── .gitattributes            # normalize line endings (LF) across OSes
+├── .github/workflows/ci.yml  # GitHub Actions: runs `uv run pytest`
+├── LICENSE                   # MIT
+├── README.md / ARCHITECTURE.md / HOW_TO_USE.md / SUMMARY.md / COMMIT.md / CONTRIBUTING.md
+├── CHANGELOG.md              # versioned change log
+├── TD_MCP_Master_Plan.md / TouchDesigner_MCP_Servers.md / TouchDesigner_Links.md  # brainstorm/docs
+├── repomix.config.json       # config for `repomix` full source pack (optional)
 ├── scripts/
 │   └── generate_summary.py   # generates SUMMARY.md (code-free file/architecture overview)
 ├── td_mcp/
@@ -309,6 +316,8 @@ td-mcp/
 | [`README.md`](README.md) | This file — quick start, install, usage, tool catalog. |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Module map, two‑server model, request lifecycles, review status. |
 | [`SUMMARY.md`](SUMMARY.md) | Code‑free, file‑by‑file overview of the whole repo (generated). |
+| [`COMMIT.md`](COMMIT.md) | Pre‑commit checklist to follow before every commit. |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to contribute. |
 | [`HOW_TO_USE.md`](HOW_TO_USE.md) | Step‑by‑step bridge setup, AI‑client config, autonomous agent. |
 | [`CHANGELOG.md`](CHANGELOG.md) | Versioned change log. |
 | [`TD_MCP_Master_Plan.md`](TD_MCP_Master_Plan.md) | Master plan / roadmap this scaffold implements. |
