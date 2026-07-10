@@ -1,0 +1,42 @@
+{
+  "output": {
+    "filePath": "repomix-output.md",
+    "style": "markdown",
+    "headerText": "td-mcp — full repomix pack (ALL source inlined). For a code-free summary, run scripts/generate_summary.py instead.",
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "topFilesLength": 0,
+    "showLineNumbers": false
+  },
+  "include": [
+    "**/*.py",
+    "**/*.md",
+    "**/*.toml",
+    "**/*.ps1",
+    "**/*.html",
+    "**/*.json",
+    "**/*.jsonl",
+    "**/*.cfg",
+    "**/*.ini"
+  ],
+  "exclude": [
+    "**/.venv/**",
+    "**/.git/**",
+    "**/__pycache__/**",
+    "**/*.egg-info/**",
+    "**/.pytest_cache/**",
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/uv.lock",
+    "**/embeddings.jsonl",
+    "SUMMARY.md",
+    "repomix-output.md"
+  ],
+  "security": {
+    "enableSecurityCheck": true
+  },
+  "tokenCount": {
+    "encoding": "o200k_base"
+  }
+}

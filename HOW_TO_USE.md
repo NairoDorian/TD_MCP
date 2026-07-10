@@ -1,4 +1,4 @@
-# How to Use TouchDesigner MCP
+﻿# How to Use TouchDesigner MCP
 
 This guide covers setting up the TouchDesigner bridge, launching the MCP servers (offline and live), configuring your AI client (Claude Desktop, Cursor, VS Code, Gemini, etc.), and using the toolset.
 
@@ -19,7 +19,7 @@ To allow the live server to control TouchDesigner, you must start the python bri
 
 1. Open your project in TouchDesigner.
 2. Create a new **Text DAT** (e.g., name it `mcp_bridge`).
-3. Paste the contents of [bridge/td_mcp_bridge.py](file:///c:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp/bridge/td_mcp_bridge.py) into the Text DAT.
+3. Paste the contents of [bridge/td_mcp_bridge.py](bridge/td_mcp_bridge.py) into the Text DAT.
 4. Open the TouchDesigner Textport (`Alt+T`) and run:
    ```python
    op('mcp_bridge').module.start()
@@ -94,7 +94,7 @@ Usually located at `%APPDATA%\Claude\claude_desktop_config.json`:
       "args": [
         "run",
         "--project",
-        "C:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp",
+        "<REPO_DIR>",
         "td-mcp-offline",
         "--mcp"
       ]
@@ -104,7 +104,7 @@ Usually located at `%APPDATA%\Claude\claude_desktop_config.json`:
       "args": [
         "run",
         "--project",
-        "C:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp",
+        "<REPO_DIR>",
         "td-mcp-live",
         "--mcp"
       ],
@@ -123,10 +123,10 @@ Usually located at `%USERPROFILE%\.cursor\mcp.json`. Add the following configura
 {
   "mcpServers": {
     "td-mcp-offline": {
-      "command": "uv run --project C:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp td-mcp-offline --mcp"
+      "command": "uv run --project <REPO_DIR> td-mcp-offline --mcp"
     },
     "td-mcp-live": {
-      "command": "uv run --project C:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp td-mcp-live --mcp",
+      "command": "uv run --project <REPO_DIR> td-mcp-live --mcp",
       "env": {
         "TD_MCP_AUTH_TOKEN": "YOUR_AUTO_GENERATED_TOKEN"
       }
@@ -168,7 +168,7 @@ uv run td-mcp-live --http
 
 ## 6. Running an Autonomous Agent Node Natively inside TouchDesigner
 
-If you want an **AI agent to run entirely inside TouchDesigner** and add nodes autonomously by itself without needing external IDE chat panels, you can use the zero-dependency script [bridge/td_mcp_agent.py](file:///c:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp/bridge/td_mcp_agent.py).
+If you want an **AI agent to run entirely inside TouchDesigner** and add nodes autonomously by itself without needing external IDE chat panels, you can use the zero-dependency script [bridge/td_mcp_agent.py](bridge/td_mcp_agent.py).
 
 ### How to set it up:
 1. Paste the contents of `bridge/td_mcp_agent.py` into a new **Text DAT** inside TouchDesigner (e.g. name it `mcp_agent`).

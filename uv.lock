@@ -2279,8 +2279,13 @@ wheels = [
 
 [[package]]
 name = "td-mcp"
-version = "0.1.0"
+version = "1.7.0"
 source = { editable = "." }
+dependencies = [
+    { name = "anyio" },
+    { name = "mcp" },
+    { name = "pyyaml" },
+]
 
 [package.optional-dependencies]
 mcp = [
@@ -2288,6 +2293,8 @@ mcp = [
     { name = "mcp" },
 ]
 rag = [
+    { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "sentence-transformers" },
 ]
 scrape = [
@@ -2297,9 +2304,13 @@ scrape = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio" },
     { name = "anyio", marker = "extra == 'mcp'" },
     { name = "beautifulsoup4", marker = "extra == 'scrape'" },
+    { name = "mcp", specifier = ">=1.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0" },
+    { name = "networkx", marker = "extra == 'rag'" },
+    { name = "pyyaml" },
     { name = "requests", marker = "extra == 'scrape'" },
     { name = "sentence-transformers", marker = "extra == 'rag'" },
 ]

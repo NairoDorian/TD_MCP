@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.7.1] - 2026-07-10
+
+Repository cleanup and a code-free summary generator.
+
+### Added
+- **Code-free repository summary generator** (`scripts/generate_summary.py`) — walks the
+  repo and emits `SUMMARY.md` (overview, architecture, directory tree, and a short
+  description of every tracked file) with **no source code inlined**. A `repomix.config.json`
+  is provided for anyone who wants a full source pack via `npx repomix` (off by default).
+- **`LICENSE`** (MIT) — previously only referenced in the docs.
+- **`td_mcp/tools/__init__.py`** — explicit package marker; `td_mcp.tools` added to the
+  `pyproject.toml` `packages` list.
+
+### Changed
+- `README.md` rewritten: accurate layout tree, full 40/39 tool catalog, relative doc
+  links, fixed the stale chunk count (216 → 1,091) and recall figure.
+- `HOW_TO_USE.md` hardcoded absolute repo paths replaced with `<REPO_DIR>`.
+- `pyproject.toml` version bumped `0.1.0` → `1.7.0` to match this changelog.
+
+### Cleaned
+- `.gitignore` extended (`repomix-output.md`, `.td_mcp/`).
+
+---
+
 ## [1.7.0] - 2026-07-10
 
 Third inspiration sweep — orchestration / continuity / packaging ideas from the

@@ -166,6 +166,9 @@ uv run python -m td_mcp.rag.eval
 
 # Tests
 uv run pytest
+
+# Code-free repository summary (file/architecture overview, no source inlined)
+uv run python scripts/generate_summary.py   # writes SUMMARY.md
 ```
 
 Optional quality upgrades (lazy, never forced):

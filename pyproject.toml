@@ -1,6 +1,6 @@
 [project]
 name = "td-mcp"
-version = "0.1.0"
+version = "1.7.0"
 description = "Local-first TouchDesigner MCP: offline doc/RAG server + live bridge client + TD-side bridge."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,4 +23,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["td_mcp", "td_mcp.rag", "td_mcp.kb", "td_mcp.tdn",
-            "td_mcp.showcontrol", "td_mcp.led_mapping"]
+            "td_mcp.showcontrol", "td_mcp.led_mapping", "td_mcp.tools"]

@@ -7,3 +7,5 @@ dist/
 embeddings.jsonl
 .pytest_cache/
 .DS_Store
+repomix-output.md
+.td_mcp/
