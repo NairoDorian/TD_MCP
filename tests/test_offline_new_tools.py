@@ -14,6 +14,9 @@ from td_mcp.server_offline import (
     td_score_build,
     td_self_heal,
     td_validate_build,
+    td_build_video_pipeline,
+    td_build_midi_rig,
+    td_build_kinect_skeleton,
 )
 
 
@@ -74,3 +77,18 @@ def test_td_self_heal_and_validate_build_tools():
     assert "validation" in v and "score" in v
     h = json.loads(td_self_heal(spec))
     assert "fixed_desc" in h and "iterations" in h
+
+
+def test_td_build_video_pipeline_tool():
+    out = td_build_video_pipeline("{}")
+    assert "Movie File In TOP" in out and "Out TOP" in out
+
+
+def test_td_build_midi_rig_tool():
+    out = td_build_midi_rig("{}")
+    assert "MIDI In CHOP" in out and "Out CHOP" in out
+
+
+def test_td_build_kinect_skeleton_tool():
+    out = td_build_kinect_skeleton("{}")
+    assert "Kinect Azure CHOP" in out

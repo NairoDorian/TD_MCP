@@ -28,12 +28,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 
 try:
-    import websocket
-    WS_AVAILABLE = True
-except ImportError:
-    WS_AVAILABLE = False
-
-try:
     from mcp.server import Server
     import mcp.types as types
     MCP_AVAILABLE = True
@@ -458,7 +452,11 @@ class MCPStreamableHandler(BaseHTTPRequestHandler):
                 responses.append({"jsonrpc": "2.0", "id": req_id,
                                  "error": {"code": -32601, "message": f"Method not found: {method}"}})
 
-        # Batch returns array, single returns single object
+        # JSON-RPC framing: a batch request yields an ARRAY of full
+        # {"jsonrpc","id","result"} objects; a single request yields ONE such
+        # object. `responses` already holds complete envelopes, so we must pass
+        # the *inner* result/id, never the whole envelope (a previous bug
+        # double-wrapped single responses, which MCP clients cannot parse).
         if isinstance(payload, list):
             self._send_jsonrpc(None, result=responses)
         else:

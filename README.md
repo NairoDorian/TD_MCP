@@ -12,6 +12,7 @@ Design notes and the full server catalog are located in the repository root:
 - [TouchDesigner_MCP_Servers.md](file:///c:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp/TouchDesigner_MCP_Servers.md) — catalog of every TD MCP server + brainstorm
 - [TD_MCP_Master_Plan.md](file:///c:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp/TD_MCP_Master_Plan.md) — the master plan and future roadmap this scaffold implements
 - [TouchDesigner_Links.md](file:///c:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp/TouchDesigner_Links.md) — official docs / Python API / curriculum
+- [ARCHITECTURE.md](file:///c:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp/ARCHITECTURE.md) — module map, request lifecycles, review/health status
 
 ## Layout
 
@@ -22,7 +23,7 @@ td-mcp/
 ├── README.md
 ├── setup_env.ps1
 ├── td_mcp/
-│   ├── server_offline.py     # doc/RAG MCP server + CLI (35 tools, ParallelRetriever)
+│   ├── server_offline.py     # doc/RAG MCP server + CLI (40 tools, ParallelRetriever)
 │   ├── server_live.py        # Streamable HTTP + SSE + stdio client for the TD bridge (39 tools)
 │   ├── streamable_http.py    # Streamable-HTTP transport mixin (SSE, sessions, DNS-rebind guard)
 │   ├── generators.py         # artist network generators (feedback / audio-reactive / particle / 3D / GLSL / LED / DMX)
@@ -75,11 +76,11 @@ Register in your AI client (Claude Desktop: `%APPDATA%\Claude\claude_desktop_con
   "mcpServers": {
     "td-mcp-offline": {
       "command": "uv",
-      "args": ["run", "--project", "C:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp", "td-mcp-offline", "--mcp"]
+      "args": ["run", "--project", "<REPO_DIR>", "td-mcp-offline", "--mcp"]
     },
     "td-mcp-live": {
       "command": "uv",
-      "args": ["run", "--project", "C:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp", "td-mcp-live", "--mcp"],
+      "args": ["run", "--project", "<REPO_DIR>", "td-mcp-live", "--mcp"],
       "env": {
         "TD_MCP_AUTH_TOKEN": "YOUR_AUTO_GENERATED_TOKEN"
       }
@@ -88,7 +89,7 @@ Register in your AI client (Claude Desktop: `%APPDATA%\Claude\claude_desktop_con
 }
 ```
 
-Exposed Offline Tools (35): `td_docs_search`, `td_docs_operator`, `td_docs_python`, `td_docs_glsl`, `td_docs_template`, `td_docs_version`, `td_docs_family`, `td_docs_parameter`, `td_docs_compare`, `td_docs_connections`, `td_docs_workflow`, `td_docs_version_info`, `td_docs_related`, `td_docs_glossary`, `td_build_network`, `td_showcontrol_plan`, `td_led_map`, `td_build_feedback`, `td_build_audio_reactive`, `td_build_particle`, `td_build_3d_scene`, `td_build_glsl_shader`, `td_build_led_wall`, `td_build_dmx_fixture`, `td_glsl_pattern`, `td_network_template`, `td_expert_prompt`, `td_compat_check`, `td_score_build`, `td_mediaserver`, `td_analyze_performance`, `td_discover`, `td_memory_save`, `td_memory_recall`, `td_scaffold_recipe`.
+Exposed Offline Tools (40): `td_docs_search`, `td_docs_operator`, `td_docs_python`, `td_docs_glsl`, `td_docs_template`, `td_docs_version`, `td_docs_family`, `td_docs_parameter`, `td_docs_compare`, `td_docs_connections`, `td_docs_workflow`, `td_docs_version_info`, `td_docs_related`, `td_docs_glossary`, `td_build_network`, `td_showcontrol_plan`, `td_led_map`, `td_build_feedback`, `td_build_audio_reactive`, `td_build_particle`, `td_build_3d_scene`, `td_build_glsl_shader`, `td_build_led_wall`, `td_build_dmx_fixture`, `td_build_video_pipeline`, `td_build_midi_rig`, `td_build_kinect_skeleton`, `td_glsl_pattern`, `td_network_template`, `td_expert_prompt`, `td_compat_check`, `td_score_build`, `td_validate_build`, `td_self_heal`, `td_mediaserver`, `td_analyze_performance`, `td_discover`, `td_memory_save`, `td_memory_recall`, `td_scaffold_recipe`.
 
 Exposed Live Tools (39): `create_node`, `delete_node`, `set_parameters`, `get_parameters`, `get_errors`, `execute_python`, `list_nodes`, `project_info`, `capture_viewport`, `get_resource`, `describe_td_tools`, `batch`, `read_chop`, `read_top`, `read_dat`, `scan_network`, `build_and_verify`, `connect_nodes`, `rename_node`, `copy_node`, `auto_layout`, `get_node`, `set_node_color`, `set_node_comment`, `map_network`, `disconnect_nodes`, `get_connections`, `exec_node_method`, `snapshot_network`, `restore_network`, `get_performance`, `validate_network`, `set_flags`, `find_nodes`, `set_node_position`, `timeline`, `export_recipe`, `import_recipe`, `save_tox`.
 

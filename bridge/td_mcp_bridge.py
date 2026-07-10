@@ -56,7 +56,6 @@ from urllib.parse import unquote
 try:
     from td_mcp.streamable_http import (
         StreamableHTTPMixin,
-        make_legacy_handler,
         start_session_cleanup,
         stop_session_cleanup,
     )

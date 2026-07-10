@@ -23,15 +23,11 @@ import json
 import base64
 import time
 import uuid
+import threading
 import urllib.request
 import urllib.error
-from concurrent.futures import ThreadPoolExecutor
-from typing import List, Dict, Optional, Any
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Any
-import urllib.request
-import urllib.error
 
 # Default connection settings to the local bridge
 DEFAULT_BRIDGE_PORT = 9980

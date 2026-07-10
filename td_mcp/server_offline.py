@@ -349,6 +349,21 @@ def td_build_dmx_fixture(spec):
     return td_build_network(gen.create_dmx_fixture_pipeline(**_json_loads(spec)))
 
 
+def td_build_video_pipeline(spec):
+    """Create a video playback/processing pipeline (Movie File In -> LUT/Key -> Level -> Out)."""
+    return td_build_network(gen.create_video_pipeline(**_json_loads(spec)))
+
+
+def td_build_midi_rig(spec):
+    """Create a MIDI input rig (MIDI In -> Select -> Math normalize -> Filter -> Out)."""
+    return td_build_network(gen.create_midi_rig(**_json_loads(spec)))
+
+
+def td_build_kinect_skeleton(spec):
+    """Create a Kinect Azure skeleton-tracking rig (joints -> select -> remap -> visualize)."""
+    return td_build_network(gen.create_kinect_skeleton(**_json_loads(spec)))
+
+
 def td_docs_glossary(limit=200):
     """Compact index of every KB entry — exploration / autocomplete over the whole documentation source."""
     ret = get_pr()
@@ -596,6 +611,15 @@ def create_server():
             types.Tool("td_build_dmx_fixture", "Create a DMX input pipeline to receive sACN/Art-Net control channels (DMX In -> Select -> Math -> Out).",
                         {"spec": {"type": "string"}},
                         annotations=additive),
+            types.Tool("td_build_video_pipeline", "Create a video playback/processing pipeline (Movie File In -> optional Chroma Key -> LUT -> Level -> Out).",
+                        {"spec": {"type": "string"}},
+                        annotations=additive),
+            types.Tool("td_build_midi_rig", "Create a MIDI input rig (MIDI In -> Select -> Math normalize -> Filter -> Out CHOP).",
+                        {"spec": {"type": "string"}},
+                        annotations=additive),
+            types.Tool("td_build_kinect_skeleton", "Create a Kinect Azure skeleton-tracking rig (joints -> select -> remap -> optional Point Sprite visualization).",
+                        {"spec": {"type": "string"}},
+                        annotations=additive),
             types.Tool("td_glsl_pattern", "Return a named, paste-ready GLSL fragment shader (simple_noise / rgb_shift / hue_cycle / feedback_blend / kaleidoscope / scanline).",
                         {"name": {"type": "string", "optional": True}},
                         annotations=read_only),
@@ -691,6 +715,12 @@ def create_server():
                 out = (td_build_led_wall(a.get("spec", "{}")), "")
             elif name == "td_build_dmx_fixture":
                 out = (td_build_dmx_fixture(a.get("spec", "{}")), "")
+            elif name == "td_build_video_pipeline":
+                out = (td_build_video_pipeline(a.get("spec", "{}")), "")
+            elif name == "td_build_midi_rig":
+                out = (td_build_midi_rig(a.get("spec", "{}")), "")
+            elif name == "td_build_kinect_skeleton":
+                out = (td_build_kinect_skeleton(a.get("spec", "{}")), "")
             elif name == "td_glsl_pattern":
                 out = (td_glsl_pattern(a.get("name", "simple_noise")), "")
             elif name == "td_network_template":
