@@ -199,7 +199,7 @@ RECORDS += [
        ["touch in", "network", "stream"], aliases=["touch in top"]),
     op("TOP", "Touch Out TOP",
        "Touch Out TOP sends a TOP over the network to a Touch In TOP. Set Active to broadcast. Pair with Touch In TOP for node-to-node streaming.",
-       ["touch out", "network", "stream"], "stream", aliases=["touch out top"]),
+        ["touch out", "network", "stream"], aliases=["touch out top"]),
     op("TOP", "Audio Spectrum TOP",
        "Audio Spectrum TOP visualizes an audio signal as a spectrum texture. Input is an Audio Device In CHOP / audio CHOP; output is a TOP showing frequency bins. Use for audio-reactive visuals.",
        ["audio", "spectrum", "visualizer", "fft"], aliases=["audio spectrum top", "audiospectrum"]),

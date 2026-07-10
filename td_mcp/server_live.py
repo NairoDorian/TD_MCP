@@ -669,7 +669,7 @@ def _run_stdio_server(host=DEFAULT_HOST, port=DEFAULT_PORT, auth_token=None, anc
         print("mcp package not installed. pip install mcp", file=sys.stderr)
         sys.exit(1)
 
-    app = Server("td-mcp-live")
+    app = Server("td-mcp-live", version=__version__)
     client = _get_client()
 
     @app.list_tools()
@@ -833,7 +833,17 @@ def main():
         _run_http_server(host=args.host, port=args.port)
     elif os.environ.get("TD_MCP_MODE") == "mcp" or "--mcp" in sys.argv:
         sys.argv = [a for a in sys.argv if a != "--mcp"]
-        _run_stdio_server()
+        app = _run_stdio_server()
+        from mcp.server.stdio import stdio_server
+        import anyio
+
+        async def _serve_stdio():
+            async with stdio_server() as (read_stream, write_stream):
+                await app.run(
+                    read_stream, write_stream, app.create_initialization_options()
+                )
+
+        anyio.run(_serve_stdio)
     else:
         _main_legacy()
 

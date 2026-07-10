@@ -37,6 +37,21 @@ DEFAULT_HOST = "127.0.0.1"
 SESSION_DIR = os.path.join(os.path.expanduser("~"), ".td_mcp", "sessions")
 os.makedirs(SESSION_DIR, exist_ok=True)
 
+# Parallel executor for independent bridge tool calls
+_PARALLEL_EXECUTOR = ThreadPoolExecutor(max_workers=8)
+
+# Recovery hints (self-healing guidance on tool failure). Falls back to a
+# minimal inline implementation if td_mcp is not importable.
+try:
+    from td_mcp.tools.recovery import recovery_hint as _recovery_hint
+except Exception:  # pragma: no cover - td_mcp may be unavailable in some TD contexts
+    def _recovery_hint(tool, error):
+        return {
+            "cause": "Unrecognized error from the bridge or TouchDesigner.",
+            "action": "Inspect the raw error, then use describe_td_tools / get_errors to gather context before retrying.",
+            "next_tools": ["describe_td_tools", "get_errors"],
+        }
+
 
 # ---------------------------------------------------------------------------
 # Tool Schemas (OpenAI-compatible function definitions)
@@ -1124,36 +1139,40 @@ def _load_session(args):
 
 
 def _execute_parallel(args, port=DEFAULT_BRIDGE_PORT, auth_token=None):
-    """Execute multiple tool calls in parallel."""
+    """Execute multiple independent tool calls in parallel."""
     calls = args.get("calls", [])
     if not calls:
         return {"ok": False, "error": "calls array required"}
 
-    results = _PARALLEL_EXECUTOR.execute_batch(calls)
+    def _run(call):
+        tool = call.get("tool")
+        try:
+            return {"tool": tool, "result": _execute_tool(tool, call.get("args", {}), port=port, auth_token=auth_token)}
+        except Exception as e:  # pragma: no cover - _execute_tool surfaces errors as dicts
+            return {"tool": tool, "error": str(e)}
+
+    # Preserve call order in the results.
+    results = list(_PARALLEL_EXECUTOR.map(_run, calls))
     return {"ok": True, "results": results}
 
 
 def _execute_with_recovery(tool_name: str, args: Dict, port: int, auth_token: str, max_retries: int = 2) -> Dict:
-    """Execute a tool with automatic fallback recovery on failure."""
+    """Execute a bridge tool, retrying on failure and attaching a recovery hint."""
+    last = None
     for attempt in range(max_retries + 1):
         res = _execute_tool(tool_name, args, port=port, auth_token=auth_token)
         if res.get("ok"):
             return res
-
-        # Try fallback
-        fallback_args = ErrorRecovery.apply_fallback(tool_name, args, res.get("error", ""), attempt)
-        if fallback_args is None:
-            # No more fallbacks available
-            if attempt == 0:
-                # First failure - log and retry once
-                print(f"  Tool {tool_name} failed: {res.get('error')}, retrying...")
-                continue
-            return res  # Return the error result
-
-        print(f"  Tool {tool_name} failed, trying fallback: {fallback_args}")
-        args = fallback_args  # Update args for next attempt
-
-    return res
+        last = res
+        if attempt < max_retries:
+            print(f"  Tool {tool_name} failed (attempt {attempt + 1}/{max_retries + 1}): "
+                  f"{res.get('error')}, retrying...")
+    # Final failure: enrich with a structured self-healing hint.
+    try:
+        last["recovery"] = _recovery_hint(tool_name, last.get("error", ""))
+    except Exception:
+        pass
+    return last
 
 
 def chat(prompt, provider="gemini", api_key=None, model=None, base_url=None,
@@ -1351,6 +1370,8 @@ def chat(prompt, provider="gemini", api_key=None, model=None, base_url=None,
                                 base_url=base_url, model=model)
             elif name == "ask_user":
                 res = _ask_user(args)
+            elif name == "execute_parallel":
+                res = _execute_parallel(args, port=port, auth_token=auth_token)
             elif name == "save_session":
                 res = _save_session(args.get("session_id"))
             elif name == "load_session":

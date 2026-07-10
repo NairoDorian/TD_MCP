@@ -60,4 +60,4 @@ follow them instead of retrying the same call verbatim. Common patterns:
 - Docs: https://docs.derivative.ca
 - Python: https://docs.derivative.ca/TouchDesigner_Python_Classes
 - Curriculum: https://learn.derivative.ca
-- Server catalog + merge plan: see the `DOCUMENTATION/` notes.
+- Server catalog + merge plan: see `TouchDesigner_MCP_Servers.md`.

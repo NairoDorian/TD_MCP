@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.8.0] - 2026-07-10
+
+Review pass: fix runtime crashes found during a full code + docs review.
+
+### Fixed
+- **In-TD bridge JSON-RPC was completely broken.** `td_mcp_bridge.py` called
+  `self._handle_jsonrpc(...)` which was never defined, so every request to the
+  `/jsonrpc` (Streamable HTTP) endpoint raised `AttributeError`. Implemented a
+  real JSON-RPC 2.0 handler (`_handle_jsonrpc`) supporting `initialize`, `ping`,
+  `tools/list`, `tools/call`, `resources/*`, `prompts/list`, JSON-RPC **batches**,
+  and **notifications** (no longer hangs / 500s).
+- **Live stdio MCP server never started.** `TD_MCP_MODE=mcp` / `--mcp` discarded
+  the `Server` returned by `_run_stdio_server()` and exited. It now runs the
+  server over stdio via `mcp.server.stdio`.
+- **Agent recovery crashed on every tool failure.** `_execute_with_recovery`
+  referenced an undefined `ErrorRecovery.apply_fallback`, and `_execute_parallel`
+  referenced an undefined `_PARALLEL_EXECUTOR` (so the `execute_parallel` tool
+  also crashed). Both now work: parallel calls run through a `ThreadPoolExecutor`
+  and failures attach a structured recovery hint from `td_mcp.tools.recovery`.
+- **`build_kb.py` mis-assigned a knowledge-base field.** A stray `"stream"`
+  positional for *Touch Out TOP* was captured as `min_version` instead of being
+  dropped; removed.
+- **`bootstrap.py`** had a duplicated module header (executed at import) and a
+  dead tail that redefined `AUTH_TOKEN` at import time; both cleaned up.
+
+### Changed
+- Live stdio MCP server now reports `td_mcp.__version__` in `serverInfo`
+  (already done for the HTTP transport), so both transports are consistent.
+- Removed an unused import (`python_class_for_operator`) from `server_offline.py`.
+
+---
+
 ## [1.7.4] - 2026-07-10
 
 Server improvement + master-plan cleanup.

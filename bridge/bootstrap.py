@@ -22,34 +22,6 @@ import textwrap
 TD_MCP_PORT = int(os.environ.get("TD_MCP_PORT", "9980"))
 ALLOW_EXEC = os.environ.get("TD_MCP_ALLOW_EXEC", "1") != "0"
 PROTECTED_PATHS = [p.strip() for p in os.environ.get("TD_MCP_PROTECTED_PATHS", "/sys,/ui,/local").split(",") if p.strip()]
-
-# ---------------------------------------------------------------------------
-# The bridge source code (kept in sync with td_mcp_bridge.py)
-# ---------------------------------------------------------------------------
-#!/usr/bin/env python3
-"""One-shot TouchDesigner bridge bootstrap (bottobot style).
-
-Paste this entire script into a Textport (or run `exec(open('bootstrap.py').read())`)
-and it will:
-  1. Create /td_mcp COMP with a WebServer DAT on TD_MCP_PORT (default 9980)
-  2. Install the bridge logic into the WebServer DAT's onHTTPRequest callback
-  3. Create an Execute DAT that mints + prints the auth token on start
-  4. Set up protected paths, exec gate, and the full tool surface
-  5. Print the connection URL and Bearer token for MCP client config
-
-Requires TouchDesigner 2022+. No external dependencies.
-"""
-
-import os
-import secrets
-import textwrap
-
-# ---------------------------------------------------------------------------
-# Configuration (env-overridable)
-# ---------------------------------------------------------------------------
-TD_MCP_PORT = int(os.environ.get("TD_MCP_PORT", "9980"))
-ALLOW_EXEC = os.environ.get("TD_MCP_ALLOW_EXEC", "1") != "0"
-PROTECTED_PATHS = [p.strip() for p in os.environ.get("TD_MCP_PROTECTED_PATHS", "/sys,/ui,/local").split(",") if p.strip()]
 AUTH_TOKEN = os.environ.get("TD_MCP_AUTH_TOKEN") or secrets.token_urlsafe(24)
 
 # ---------------------------------------------------------------------------
@@ -1116,10 +1088,3 @@ def onStop():
     print(f"\nMCP client config (Claude Desktop / Cursor):")
     print(f'  {{"td-mcp-live": {{"url": "http://127.0.0.1:{TD_MCP_PORT}/mcp", "headers": {{"Authorization": "Bearer {AUTH_TOKEN}"}}}}}}')
     print("=" * 60)
-
-if __name__ == "__main__":
-    main()
-'''
-'''
-
-AUTH_TOKEN = secrets.token_urlsafe(24)

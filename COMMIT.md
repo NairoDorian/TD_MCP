@@ -52,7 +52,7 @@ The version lives in exactly **two** places and `scripts/bump_version.py` keeps
 them aligned in one command:
 
 ```bash
-uv run python scripts/bump_version.py 1.7.4
+uv run python scripts/bump_version.py 1.8.0
 ```
 
 This updates `pyproject.toml` (`version = "..."`) **and** the top

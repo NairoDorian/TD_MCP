@@ -1179,6 +1179,88 @@ class _Handler(StreamableHTTPMixin, BaseHTTPRequestHandler):
 
         self._send({"ok": False, "error": "not found"}, 404)
 
+    # ---------------------------------------------------------------------------
+    # JSON-RPC 2.0 (MCP Streamable HTTP) handling
+    # ---------------------------------------------------------------------------
+    @staticmethod
+    def _jsonrpc_result(req_id, result):
+        return {"jsonrpc": "2.0", "id": req_id, "result": result}
+
+    @staticmethod
+    def _jsonrpc_error(req_id, code, message):
+        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+
+    def _handle_jsonrpc(self, payload, session_id, session):
+        """Process a JSON-RPC request (or batch) into response envelope(s).
+
+        Returns:
+          * None for notifications (no HTTP body is written -> 202 Accepted)
+          * a single response dict for a request
+          * a list of response dicts for a batch
+        """
+        if isinstance(payload, list):
+            out = []
+            for item in payload:
+                r = self._handle_jsonrpc(item, session_id, session)
+                if r is not None:
+                    out.append(r)
+            return out if out else None
+
+        if not isinstance(payload, dict):
+            return None
+
+        method = payload.get("method")
+        req_id = payload.get("id")
+        params = payload.get("params") or {}
+
+        # Notifications carry no id and expect no response.
+        if method == "notifications/initialized":
+            return None
+        if method == "initialize":
+            return self._jsonrpc_result(req_id, {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
+                "serverInfo": {"name": "td-mcp-bridge"},
+            })
+        if method == "ping":
+            return self._jsonrpc_result(req_id, {})
+        if method == "tools/list":
+            tools = [
+                {
+                    "name": name,
+                    "description": f"Bridge tool: {name}",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": True,
+                    },
+                }
+                for name in _DISPATCH
+            ]
+            return self._jsonrpc_result(req_id, {"tools": tools})
+        if method == "tools/call":
+            name = params.get("name")
+            arguments = params.get("arguments") or {}
+            fn = _DISPATCH.get(name)
+            if fn is None:
+                return self._jsonrpc_error(req_id, -32601, f"unknown tool: {name}")
+            try:
+                result = _wrap(fn(arguments))
+            except Exception as e:  # pragma: no cover - handlers return dicts
+                result = {"ok": False, "error": str(e)}
+            return self._jsonrpc_result(req_id, {
+                "content": [
+                    {"type": "text", "text": json.dumps(result, indent=2, default=str)}
+                ]
+            })
+        if method == "resources/list":
+            return self._jsonrpc_result(req_id, {"resources": []})
+        if method == "resources/read":
+            return self._jsonrpc_result(req_id, {"content": []})
+        if method == "prompts/list":
+            return self._jsonrpc_result(req_id, {"prompts": []})
+        return self._jsonrpc_error(req_id, -32601, f"method not found: {method}")
+
     def _handle_jsonrpc_post(self):
         # Session management
         self._current_session_id, session = self._get_or_create_session()
@@ -1198,9 +1280,17 @@ class _Handler(StreamableHTTPMixin, BaseHTTPRequestHandler):
             self._send_jsonrpc_response(None, error={"code": -32700, "message": "Parse error"})
             return
 
-        # Process JSON-RPC
+        # Process JSON-RPC (may be a single request, a batch, or a notification)
         response = self._handle_jsonrpc(payload, self._current_session_id, session)
-        if response is not None:
+        if response is None:
+            # Notification (e.g. notifications/initialized): accept, no body.
+            self.send_response(202)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Mcp-Session-Id", self._current_session_id)
+            self.end_headers()
+        elif isinstance(response, list):
+            self._send_jsonrpc_response(None, result=response)
+        else:
             self._send_jsonrpc_response(response.get("id"), response.get("result"), response.get("error"))
 
     def _auth_ok_for_session(self, session):

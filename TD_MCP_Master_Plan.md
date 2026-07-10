@@ -78,8 +78,9 @@ TouchDesigner.
 ### 2.3 Autonomous in-app agent (`bridge/td_mcp_agent.py`)
 
 - Zero-dependency OpenAI-compatible agent (runs inside TD Text DATs).
-- **≈48 function-calling tool schemas** (all 39 live bridge tools plus
-  `macro_record` / `macro_replay`, `plan_task`, `ask_clarification`,
+- **≈51 function-calling tool schemas** (all 39 live bridge tools plus the
+  agent-only tools: `macro_start` / `macro_stop` / `macro_save` / `macro_load`
+  / `macro_replay` / `macro_status`, `plan_task`, `ask_clarification`,
   `save_session` / `load_session`, `execute_parallel`, `caption_viewport`).
 - Capabilities: task **planning & decomposition** (`_plan_task`: plan → execute
   → verify → replan), **clarification** when ambiguous (`_ask_user`),

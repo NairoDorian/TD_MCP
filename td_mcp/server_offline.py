@@ -12,7 +12,7 @@ from td_mcp.rag.retriever import build_retriever
 from td_mcp.rag.strategies import ParallelRetriever
 from td_mcp import __version__
 from td_mcp.kb import corpus
-from td_mcp.kb.corpus import _str, python_class_for_operator
+from td_mcp.kb.corpus import _str
 from td_mcp.tdn import export_network, new_network, operator as tdn_operator
 from td_mcp.rag import knowledge_graph
 from td_mcp import showcontrol as sc
