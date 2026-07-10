@@ -65,9 +65,9 @@ def lint_layout(operators: List[Dict[str, Any]],
             warnings.append(_w("ZERO_SIZE", name,
                                f"operator has non-positive size {[w, h]}",
                                {"size": [w, h]}))
-        # Overlap with any previously seen node (center distance test).
-        for prev_name, (px, py), _ in seen:
-            if ((x - px) ** 2 + (y - py) ** 2) ** 0.5 < OVERLAP_DIST:
+        # Overlap with any previously seen node (AABB half-extent test).
+        for prev_name, (px, py), (pw, ph) in seen:
+            if abs(x - px) < (w / 2 + pw / 2) and abs(y - py) < (h / 2 + ph / 2):
                 warnings.append(_w("OVERLAP", name,
                                    f"operator overlaps {prev_name!r}",
                                    {"position": [x, y], "other": prev_name}))

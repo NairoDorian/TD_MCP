@@ -142,6 +142,13 @@ def import_corpus(research_root=None):
     for key, rec in list(tdmcp_py.items()) + list(bot_py.items()):
         classes[key] = merge_class(classes.get(key), rec)
 
+    if not operators and not classes:
+        raise SystemExit(
+            "import_corpus produced an empty corpus. The research root "
+            f"({research}) appears to be missing or have no operator/Python "
+            "sources. Point TD_MCP_RESEARCH at the sibling github-mcp repo or "
+            "pass research_root=.")
+
     os.makedirs(VERSIONS_DIR, exist_ok=True)
     for name in ("version-manifest", "operator-compatibility", "python-api-compatibility", "experimental-builds"):
         for src in (os.path.join(research, TDMCP_VERS, name + ".json"),

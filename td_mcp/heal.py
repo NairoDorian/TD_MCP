@@ -1,9 +1,10 @@
 """Self-healing build orchestrator (capstone of the self-healing theme).
 
 Combines ``validation`` (TD_Builder 5-stage), ``scoring`` (tdmcp scoreBuild),
-``macro``/``repair``, and ``recovery`` (Embody) into one assessable unit the
-live ``build_and_verify`` loop can call: validate -> score -> auto-repair ->
-attach recovery hints for anything still unresolved. Pure, fully testable.
+``macro``/``repair``, and ``recovery`` (Embody) into one assessable unit:
+validate -> score -> auto-repair -> attach recovery hints for anything still
+unresolved. Pure, fully testable, and exposed on the offline server as
+``td_validate_build`` / ``td_self_heal`` (no running TD required).
 
 Run:  uv run python -m tests.test_heal
 """

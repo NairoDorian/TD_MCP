@@ -232,17 +232,24 @@ def import_vault(path: str, merge: bool = True) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Bridge tool helpers (to be registered in td_mcp_bridge.py)
 # ---------------------------------------------------------------------------
+def _tags_to_list(tags):
+    if tags is None:
+        return None
+    if isinstance(tags, str):
+        return tags.split(",") if tags else None
+    return list(tags)
+
+
 def _do_vault_save(recipe, name, tags=None, description="", author="",
-                   metadata=None, difficulty="beginner", td_version_min=None,
-                   technique=None):
+                    metadata=None, difficulty="beginner", td_version_min=None,
+                    technique=None):
     return save_recipe(recipe, name, tags, description, author, metadata,
-                       difficulty=difficulty, td_version_min=td_version_min,
-                       technique=technique)
+                        difficulty=difficulty, td_version_min=td_version_min,
+                        technique=technique)
 
 
 def _do_vault_list(query="", tags=None, limit=50, offset=0):
-    tag_list = tags.split(",") if tags else None
-    return list_recipes(query, tag_list, limit, offset)
+    return list_recipes(query, _tags_to_list(tags), limit, offset)
 
 
 def _do_vault_get(rid):
@@ -250,8 +257,7 @@ def _do_vault_get(rid):
 
 
 def _do_vault_update(rid, name=None, tags=None, description=None, recipe=None):
-    tag_list = tags.split(",") if tags else None
-    return update_recipe(rid, name, tag_list, description, recipe)
+    return update_recipe(rid, name, _tags_to_list(tags), description, recipe)
 
 
 def _do_vault_delete(rid):

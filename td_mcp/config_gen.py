@@ -13,9 +13,12 @@ Run:  uv run python -m tests.test_config_gen
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict, List, Optional
 
-PROJECT = "C:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp"
+# Default to this package's project root so generated configs point at the
+# real install location instead of a hardcoded absolute path.
+PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def generate_mcp_json(project_dir: str = PROJECT, include_offline: bool = True,

@@ -243,9 +243,15 @@ def auto_repair(desc: Dict[str, Any], report: Optional[Dict[str, Any]] = None
                     break
             op["name"] = nm
             valid_names.add(nm)
-        # Repair inline inputs: drop dangling sources.
-        op["inputs"] = [s for s in op.get("inputs", []) or [] if s in valid_names or s is None]
         kept.append(op)
+
+    # Only surviving (typed) nodes can be referenced; rebuild the valid-name
+    # set from the survivors so inline-input references to dropped nodes are
+    # also removed (avoids DANGLING_SRC on the repaired description).
+    kept_names = {o["name"] for o in kept}
+    for op in kept:
+        # Repair inline inputs: drop dangling sources.
+        op["inputs"] = [s for s in op.get("inputs", []) or [] if s in kept_names or s is None]
     desc["operators"] = kept
 
     # Repair explicit connections: drop dangling edges.

@@ -42,7 +42,7 @@ RISK_CLASS = {
 
     # Session memory + discovery + recipe scaffolding — READ_ONLY (local only)
     "td_discover":           "READ_ONLY",
-    "td_memory_save":        "READ_ONLY",
+    "td_memory_save":        "WRITE_ADDITIVE",
     "td_memory_recall":      "READ_ONLY",
     "td_scaffold_recipe":    "READ_ONLY",
 

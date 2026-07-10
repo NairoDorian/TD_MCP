@@ -26,7 +26,8 @@ class MacroRecorder:
             "tool": tool,
             "args": args or {},
             "result": result,
-            "ok": ok if ok is not None else (isinstance(result, dict) and result.get("ok") is not False),
+            "ok": ok if ok is not None else (
+                True if not isinstance(result, dict) else result.get("ok") is not False),
             "ts": time.time(),
         })
 

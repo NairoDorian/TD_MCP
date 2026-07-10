@@ -9,16 +9,12 @@ Powers `related_operators`, `suggest_chain` and the offline
 `td_docs_workflow` enrichment without an LLM. Pure stdlib + networkx.
 """
 
-import os
-
-import networkx as nx
-
 from td_mcp.kb import corpus
-
-GRAPH_PATH = os.path.join(os.path.dirname(__file__), "kb", "corpus", "graph.gpickle")
 
 
 def build_graph():
+    import networkx as nx
+
     g = nx.Graph()
     ops = corpus.load_operators()
     classes = corpus.load_python_api()

@@ -20,9 +20,16 @@ def analyze_performance(perf: Dict[str, Any]) -> Dict[str, Any]:
                                 "cpu": 80, "gpu": 5}, ...]}
     """
     fps = perf.get("fps")
-    nodes = perf.get("nodes") or []
-    if not isinstance(nodes, list):
-        nodes = []
+    raw = perf.get("nodes") or perf.get("cooks") or []
+    nodes = [
+        {
+            "name": n.get("name") or n.get("path"),
+            "cook_time": n.get("cook_time"),
+            "cpu": n.get("cpu"),
+            "gpu": n.get("gpu"),
+        }
+        for n in raw
+    ]
 
     slow = sorted(nodes, key=lambda n: float(n.get("cook_time", 0) or 0),
                   reverse=True)

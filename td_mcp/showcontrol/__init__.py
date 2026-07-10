@@ -56,7 +56,7 @@ def timecode_setup(kind="ltc", fps=30):
     kind = kind.lower()
     if kind not in ("ltc", "mtc"):
         raise ValueError("kind must be 'ltc' or 'mtc'")
-    op = "LtcIn" if kind == "ltc" else "LtcIn"  # MTC also via LtcIn with mode
+    op = "LtcIn" if kind == "ltc" else "MtcIn"
     return {"protocol": "timecode", "kind": kind, "operator": op,
             "fps": fps, "channel": 0 if kind == "ltc" else 1}
 

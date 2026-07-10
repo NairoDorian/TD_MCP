@@ -227,7 +227,12 @@ class Retriever:
 
 
 def build_retriever(path=DEFAULT_CHUNKS):
-    chunks = load_chunks(path)
+    try:
+        chunks = load_chunks(path)
+    except FileNotFoundError:
+        # Fresh clone / KB not built yet: degrade to an empty index so the
+        # server still boots and tools return "no docs" instead of crashing.
+        chunks = []
     encode = None
     vectors = None
     if os.environ.get("TD_MCP_DENSE") == "1":

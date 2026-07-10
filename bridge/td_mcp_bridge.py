@@ -1160,7 +1160,7 @@ class _Handler(StreamableHTTPMixin, BaseHTTPRequestHandler):
             tool = req.get("tool")
             fn = _DISPATCH.get(tool)
             if fn is None:
-                self._send({"ok": False, "error": f"unknown tool: {tool}"})
+                self._send({"ok": False, "error": f"unknown tool: {tool}"}, 404)
                 return
             try:
                 with ui.undo:

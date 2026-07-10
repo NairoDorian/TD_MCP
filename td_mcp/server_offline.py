@@ -25,6 +25,7 @@ from td_mcp import perf as perf_mod
 from td_mcp import discover as discover_mod
 from td_mcp import memory as memory_mod
 from td_mcp import recipe_vault as recipe_vault_mod
+from td_mcp import heal as heal_mod
 from td_mcp.tools.risk import risk_class, tool_annotations
 
 DEFAULT_CHUNKS = os.path.join(os.path.dirname(__file__), "kb", "chunks.jsonl")
@@ -312,7 +313,15 @@ def td_build_feedback(spec):
 
 def td_build_audio_reactive(spec):
     """Create an audio-reactive network (Audio Device In -> Math/Filter -> Export to visual params)."""
-    return td_build_network(gen.create_audio_reactive(**_json_loads(spec)))
+    res = gen.create_audio_reactive(**_json_loads(spec))
+    text = td_build_network(res["specs"])
+    exports = res.get("exports")
+    if exports:
+        lines = ["# CHOP EXPORTS:"]
+        for e in exports:
+            lines.append(f"#   {e.get('from')} -> {e.get('to')}  ({e.get('note', '')})")
+        text = text + "\n" + "\n".join(lines)
+    return text
 
 
 def td_build_particle(spec):
@@ -380,9 +389,11 @@ def td_compat_check(client_ver, bridge_ver):
     return _json_dumps(compat_mod.check_compat(client_ver, bridge_ver))
 
 
-def td_score_build(spec):
-    """Score a network description 0..100 (tdmcp scoreBuild). Accepts a TDN
-    YAML string or a JSON operator list / {operators:[...]} dict."""
+def _parse_build_spec(spec):
+    """Parse a TDN/YAML/JSON network spec into a {operators:[...]} dict.
+
+    Returns the dict, or an error string on malformed input.
+    """
     import json as _json
     import yaml as _yaml
     if isinstance(spec, str):
@@ -399,7 +410,38 @@ def td_score_build(spec):
         data = {"operators": data}
     if not isinstance(data, dict) or "operators" not in data:
         return "error: spec must contain 'operators'"
+    return data
+
+
+def td_score_build(spec):
+    """Score a network description 0..100 (tdmcp scoreBuild). Accepts a TDN
+    YAML string or a JSON operator list / {operators:[...]} dict."""
+    import json as _json
+    data = _parse_build_spec(spec)
+    if isinstance(data, str):
+        return data
     return _json_dumps(scoring_mod.score_build(data))
+
+
+def td_self_heal(spec):
+    """Self-heal a network description: validate -> auto-repair -> re-assess,
+    attaching recovery hints for anything still unresolved. Pure (no running
+    TD). Accepts a TDN/YAML/JSON spec."""
+    import json as _json
+    data = _parse_build_spec(spec)
+    if isinstance(data, str):
+        return data
+    return _json_dumps(heal_mod.self_heal(data))
+
+
+def td_validate_build(spec):
+    """Validate + score a network description and attach recovery hints for
+    each finding. Pure (no running TD). Accepts a TDN/YAML/JSON spec."""
+    import json as _json
+    data = _parse_build_spec(spec)
+    if isinstance(data, str):
+        return data
+    return _json_dumps(heal_mod.assess_build(data))
 
 
 def td_mediaserver(name="resolume"):
@@ -569,6 +611,12 @@ def create_server():
             types.Tool("td_score_build", "Score a network description 0..100 (A–F) from validity, typed/wired completeness and corpus backing (tdmcp scoreBuild).",
                         {"spec": {"type": "string"}},
                         annotations=read_only),
+            types.Tool("td_validate_build", "Validate + score a network description and attach recovery hints for each finding (pure, no running TD).",
+                        {"spec": {"type": "string"}},
+                        annotations=read_only),
+            types.Tool("td_self_heal", "Self-heal a network description: validate -> auto-repair -> re-assess with recovery hints (pure, no running TD).",
+                        {"spec": {"type": "string"}},
+                        annotations=read_only),
             types.Tool("td_mediaserver", "Plan a connector to a media server (millumin / resolume / notch / disguise / qlab / madmapper).",
                         {"name": {"type": "string", "optional": True}},
                         annotations=read_only),
@@ -653,6 +701,10 @@ def create_server():
                 out = (td_compat_check(a.get("client_ver", "1.0.0"), a.get("bridge_ver", "1.0.0")), "")
             elif name == "td_score_build":
                 out = (td_score_build(a.get("spec", "[]")), "")
+            elif name == "td_validate_build":
+                out = (td_validate_build(a.get("spec", "[]")), "")
+            elif name == "td_self_heal":
+                out = (td_self_heal(a.get("spec", "[]")), "")
             elif name == "td_mediaserver":
                 out = (td_mediaserver(a.get("name", "resolume")), "")
             elif name == "td_analyze_performance":

@@ -25,7 +25,8 @@ class LogRing:
         self._buf: Deque[Dict[str, Any]] = deque(maxlen=maxlen)
 
     def add(self, level: str, msg: str, ts: Optional[float] = None) -> None:
-        lvl = level.upper() if level.upper() in _LEVELS else "INFO"
+        s = (level or "INFO").upper()
+        lvl = s if s in _LEVELS else "INFO"
         self._buf.append({"ts": ts or time.time(), "level": lvl, "msg": str(msg)})
 
     def clear(self) -> None:

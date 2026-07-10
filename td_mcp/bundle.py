@@ -59,6 +59,9 @@ def package(project_dir: str, out_path: str, files: Optional[List[str]] = None,
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("server.json", json.dumps(manifest, indent=2))
         for rel in files:
+            # Reject entries that escape project_dir (classic zip-slip).
+            if os.path.isabs(rel) or any(part == ".." for part in rel.split("/") + rel.split("\\")):
+                continue
             fp = project_dir / rel
             if fp.is_file():
                 z.write(fp, rel)

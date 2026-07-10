@@ -15,6 +15,7 @@ CLI:
 """
 
 import argparse
+import hmac
 import json
 import os
 import sys
@@ -461,8 +462,9 @@ class MCPStreamableHandler(BaseHTTPRequestHandler):
         if isinstance(payload, list):
             self._send_jsonrpc(None, result=responses)
         else:
-            self._send_jsonrpc(responses[0].get("id") if responses else None,
-                              result=responses[0] if responses else None)
+            first = responses[0] if responses else None
+            self._send_jsonrpc(first.get("id") if first else None,
+                              result=first.get("result") if first else None)
 
     def do_GET(self):
         if not self._check_dns_rebind():

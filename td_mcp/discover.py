@@ -15,7 +15,7 @@ from typing import Callable, Dict, List, Optional
 
 # Ports used across the TD MCP ecosystem (Embody 9870, johnsabath 9988,
 # pantani/touch-mcp 9980, superdwayne 8053, twozero 40404, td-mcp http 8765).
-KNOWN_PORTS = [9980, 9988, 9870, 8053, 40404, 8765, 8765]
+KNOWN_PORTS = [9980, 9988, 9870, 8053, 40404, 8765]
 DEFAULT_HOSTS = ["127.0.0.1", "localhost"]
 
 

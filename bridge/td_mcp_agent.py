@@ -811,7 +811,7 @@ def _caption_viewport(args, port=DEFAULT_BRIDGE_PORT, auth_token=None,
     query = args.get("query") or (
         "Describe this TouchDesigner render. Is it black, flat/single-color, "
         "or visually broken? Report any obvious shader/geometry errors.")
-    cap = _execute_tool("capture_viewport", {"path": path, "detail": "brief"},
+    cap = _execute_tool("capture_viewport", {"path": path, "detail": "normal"},
                         port=port, auth_token=auth_token)
     if not cap.get("ok"):
         return cap
@@ -1340,36 +1340,6 @@ def _ask_user(args):
         return {"ok": True, "answer": answer}
     except Exception as e:
         return {"ok": False, "error": f"Input failed: {e}"}
-
-
-def _save_session(args):
-    """Save current session to disk."""
-    session_id = args.get("session_id")
-    memory = get_session_memory(session_id)
-    memory.save()
-    return {"ok": True, "session_id": memory.session_id, "path": memory.path}
-
-
-def _load_session(args):
-    """Load a session from disk."""
-    session_id = args.get("session_id")
-    if not session_id:
-        return {"ok": False, "error": "session_id required"}
-    try:
-        memory = get_session_memory(session_id)
-        return {"ok": True, "session_id": memory.session_id, "history": memory.history, "context": memory.context}
-    except Exception as e:
-        return {"ok": False, "error": f"Failed to load session: {e}"}
-
-
-def _execute_parallel(args, port=DEFAULT_BRIDGE_PORT, auth_token=None):
-    """Execute multiple tool calls in parallel."""
-    calls = args.get("calls", [])
-    if not calls:
-        return {"ok": False, "error": "calls array required"}
-
-    results = _PARALLEL_EXECUTOR.execute_batch(calls)
-    return {"ok": True, "results": results}
 
 
 def _save_session(args):

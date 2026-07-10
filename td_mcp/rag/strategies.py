@@ -111,13 +111,18 @@ class RemoteMCPStrategy(Strategy):
         self.tool = tool
         self.arg = arg
         self.remote_docs = {}
+        self._cache = {}
 
     def name(self):
         return f"Remote[{self.command[0]}]"
 
     def candidates(self, qt, query, query_vec, k):
         try:
-            return self._query(query, k)
+            if query in self._cache:
+                return self._cache[query]
+            result = self._query(query, k)
+            self._cache[query] = result
+            return result
         except Exception:  # noqa: BLE001
             return []
 
@@ -139,11 +144,13 @@ class RemoteMCPStrategy(Strategy):
         return asyncio.run(run())
 
     def _parse(self, result):
+        import hashlib
+
         keys = []
         for content in getattr(result, "content", []) or []:
             if getattr(content, "type", None) == "text":
                 text = content.text
-                key = REMOTE_PREFIX + str(abs(hash(text)) % 10 ** 8)
+                key = REMOTE_PREFIX + hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
                 self.remote_docs[key] = {
                     "id": key,
                     "source": "remote:" + self.tool,
