@@ -108,6 +108,19 @@ contains **no source code**, only file names, architecture, the tree and per-fil
 explanations.
 """
 
+def _count_offline_tools() -> int:
+    """Count tools registered in the offline server (types.Tool( entries)."""
+    p = Path(__file__).resolve().parent.parent / "td_mcp" / "server_offline.py"
+    return p.read_text(encoding="utf-8", errors="ignore").count("types.Tool(")
+
+
+def _count_live_tools() -> int:
+    """Count tools in the live server's _TOOL_META registry."""
+    p = Path(__file__).resolve().parent.parent / "td_mcp" / "server_live.py"
+    txt = p.read_text(encoding="utf-8", errors="ignore")
+    return len(re.findall(r'^\s*\("[a-z_]+",\s*"', txt, re.MULTILINE))
+
+
 ARCHITECTURE = """\
 ## Architecture
 
@@ -118,7 +131,7 @@ td-mcp is built around **two cooperating servers that share one authoring brain*
 | Module | `td_mcp/server_offline.py` | `td_mcp/server_live.py` + `bridge/td_mcp_bridge.py` |
 | Needs TouchDesigner? | **No** | **Yes** (running instance) |
 | Role | Doc/RAG answers, network *generation* (YAML, not live nodes), validation, scoring, self-heal | Create / delete / wire / inspect a live TD document over HTTP / stdio |
-| Tools | 40 (`td_*`) | 39 (`create_node`, `set_parameters`, …) |
+| Tools | {OFF} (`td_*`) | {LIVE} (`create_node`, `set_parameters`, …) |
 
 The offline side owns the *intelligence*: `generators` -> `validation` ->
 `scoring` -> `heal` produce a diffable network description (**TDN** YAML) that the
@@ -141,7 +154,7 @@ Three request lifecycles:
 Retrieval is *local-first and version-aware*: the merged MIT corpus
 (`td_mcp/kb/corpus/`) plus the hand-authored `chunks.jsonl` back every answer, and
 dense / HyDE / rerank paths are lazy (enabled only with `[rag]` + env flags).
-"""
+""".format(OFF=_count_offline_tools(), LIVE=_count_live_tools())
 
 
 # --------------------------------------------------------------------------- #

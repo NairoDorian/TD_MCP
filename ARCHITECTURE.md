@@ -21,7 +21,7 @@ it. It complements the user-facing [`README.md`](./README.md),
 | Module | `td_mcp/server_offline.py` | `td_mcp/server_live.py` + `bridge/td_mcp_bridge.py` |
 | Needs TD? | **No** | **Yes** (running instance) |
 | Role | Doc/RAG answers, network *generation* (YAML, not live nodes), validation, scoring, self-heal | Create/delete/wire/inspect a live TD document over HTTP/stdio |
-| Tools | 40 (`td_*`) | 39 (`create_node`, `set_parameters`, …) |
+| Tools | 45 (`td_*`)| | 39 (`create_node`, `set_parameters`, …) |
 | Transport | stdio MCP (`td-mcp-offline --mcp`) | Streamable HTTP + SSE (`td-mcp-live --http`) or legacy stdio CLI |
 
 The two servers share the **same authoring brain**: `generators` → `validation`

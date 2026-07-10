@@ -45,7 +45,7 @@ best ideas of the public TD‑MCP ecosystem into one cohesive package:
 | Module | `td_mcp/server_offline.py` | `td_mcp/server_live.py` + `bridge/td_mcp_bridge.py` |
 | Needs TouchDesigner? | **No** | **Yes** (running instance) |
 | Role | Doc/RAG answers, network *generation* (YAML, not live nodes), validation, scoring, self‑heal | Create / delete / wire / inspect a live TD document over HTTP / stdio |
-| Tools | 40 (`td_*`) | 39 (`create_node`, `set_parameters`, …) |
+| Tools | 45 (`td_*`)| | 39 (`create_node`, `set_parameters`, …) |
 
 The offline side owns the *intelligence*: `generators` → `validation` → `scoring` → `heal`
 produce a diffable network description (**TDN** YAML) that the live bridge materialises inside

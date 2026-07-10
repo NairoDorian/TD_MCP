@@ -39,7 +39,7 @@ TouchDesigner.
     be folded in over stdio and merged by RRF.
   - Version-aware **1,091-chunk** corpus (operators, Python API, GLSL,
     recipes) + merged MIT corpus; benchmark **recall@5 ≈ 0.966**.
-  - Exposes **40** tools (`td_docs_*`, `td_build_*`, `td_score_build`,
+  - Exposes **45** tools (`td_docs_*`, `td_build_*`, `td_score_build`,
     `td_validate_build`, `td_self_heal`, `td_glsl_pattern`, `td_expert_prompt`,
     `td_discover`, `td_memory_*`, `td_scaffold_recipe`, …).
   - Planners for LED pixel layouts, DMX patch lists, and show-control protocols

@@ -30,7 +30,7 @@ td-mcp is built around **two cooperating servers that share one authoring brain*
 | Module | `td_mcp/server_offline.py` | `td_mcp/server_live.py` + `bridge/td_mcp_bridge.py` |
 | Needs TouchDesigner? | **No** | **Yes** (running instance) |
 | Role | Doc/RAG answers, network *generation* (YAML, not live nodes), validation, scoring, self-heal | Create / delete / wire / inspect a live TD document over HTTP / stdio |
-| Tools | 40 (`td_*`) | 39 (`create_node`, `set_parameters`, …) |
+| Tools | 45 (`td_*`) | 39 (`create_node`, `set_parameters`, …) |
 
 The offline side owns the *intelligence*: `generators` -> `validation` ->
 `scoring` -> `heal` produce a diffable network description (**TDN** YAML) that the
@@ -107,6 +107,9 @@ td-mcp/
 │   │   ├── logs.py
 │   │   ├── recovery.py
 │   │   └── risk.py
+│   ├── util
+│   │   ├── __init__.py
+│   │   └── output_budget.py
 │   ├── __init__.py
 │   ├── bundle.py
 │   ├── compat.py
@@ -118,6 +121,7 @@ td-mcp/
 │   ├── heal.py
 │   ├── macro.py
 │   ├── memory.py
+│   ├── param_resolver.py
 │   ├── perf.py
 │   ├── progress.py
 │   ├── prompts.py
@@ -149,6 +153,7 @@ td-mcp/
 │   ├── test_macro.py
 │   ├── test_mcp_server.py
 │   ├── test_memory.py
+│   ├── test_merge_features.py
 │   ├── test_offline_more_tools.py
 │   ├── test_offline_new_tools.py
 │   ├── test_perf.py
@@ -228,6 +233,7 @@ td-mcp/
 - **`td_mcp/led_mapping/__init__.py`** — LED / pixel mapping (wall / strip / voxel grid + DMX channel export).
 - **`td_mcp/macro.py`** — Macro recorder / replay (tdmcp macroRecorder / runMacroScript).
 - **`td_mcp/memory.py`** — Session memory (tdmcp Obsidian vault / AI session memory, Embody).
+- **`td_mcp/param_resolver.py`** — Parameter name + menu-value resolver (TD_Builder_alpha param_name_resolver idea).
 - **`td_mcp/perf.py`** — Performance analyzer (TD-Codex performance_analyzer).
 - **`td_mcp/progress.py`** — Progress reporting (touchdesigner_agent_mcp report_progress).
 - **`td_mcp/prompts.py`** — Expert prompts (TD_Builder get_expert_prompt).
@@ -250,6 +256,8 @@ td-mcp/
 - **`td_mcp/tools/logs.py`** — Token-efficient logging (Embody discipline).
 - **`td_mcp/tools/recovery.py`** — Recovery hints — Embody-style self-healing for every error.
 - **`td_mcp/tools/risk.py`** — Tool risk classification (TrueFiasco 4-class, MIT-safe reimpl).
+- **`td_mcp/util/__init__.py`** — Internal utilities for td-mcp (output budgeting, safe IO, etc.).
+- **`td_mcp/util/output_budget.py`** — Output / token budgeting (TD_Builder_alpha output_budget idea).
 - **`td_mcp/validation.py`** — Build validation & self-repair (TD_Builder 5-stage + tdmcp auto-repair).
 - **`td_mcp/vision.py`** — Viewport vision — deterministic pixel analysis + caption (tdmcp captionTop).
 
@@ -276,6 +284,7 @@ td-mcp/
 - **`tests/test_macro.py`** — Tests for td_mcp.macro (record / replay / dedupe).
 - **`tests/test_mcp_server.py`** — Server wiring test (framework-transport independent).
 - **`tests/test_memory.py`** — Tests for td_mcp.memory (session memory recall).
+- **`tests/test_merge_features.py`** — Tests for the ultimate-merge feature additions (review pass 2).
 - **`tests/test_offline_more_tools.py`** — Tests for new offline tools: discover / memory / scaffold_recipe.
 - **`tests/test_offline_new_tools.py`** — Tests for showcontrol media-server connectors + offline tool wiring.
 - **`tests/test_perf.py`** — Tests for td_mcp.perf (performance analyzer).
