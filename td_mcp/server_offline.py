@@ -10,6 +10,7 @@ import sys
 
 from td_mcp.rag.retriever import build_retriever
 from td_mcp.rag.strategies import ParallelRetriever
+from td_mcp import __version__
 from td_mcp.kb import corpus
 from td_mcp.kb.corpus import _str, python_class_for_operator
 from td_mcp.tdn import export_network, new_network, operator as tdn_operator
@@ -526,7 +527,7 @@ def create_server():
     from mcp.server import Server
     import mcp.types as types
 
-    app = Server("td-mcp-offline")
+    app = Server("td-mcp-offline", version=__version__)
     ret = get_pr()
 
     @app.list_tools()

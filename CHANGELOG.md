@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.7.4] - 2026-07-10
+
+Server improvement + master-plan cleanup.
+
+### Added
+- **`scripts/bump_version.py`** — bumps `pyproject.toml` + the top `CHANGELOG.md`
+  heading in one step; warns on any stale version mentions. Single source of truth
+  for the version (`td_mcp.__version__`).
+- Cleaned and brought **`TD_MCP_Master_Plan.md`** up to date: accurate file layout,
+  shipped/pending roadmap table (incl. hygiene/self-heal items), and removed
+  references to the deleted `TaskPlanner` / `InteractiveClarifier` classes.
+
+### Changed
+- Offline MCP server (`td-mcp-offline`) now reports its version via
+  `td_mcp.__version__` in `serverInfo` (consistent with the live server).
+- `COMMIT.md` documents the simplified, single-command version bump.
+
+---
+
 ## [1.7.3] - 2026-07-10
 
 Repository review pass: consistency, dead-code removal, and public-repo hygiene.

@@ -301,7 +301,7 @@ td-mcp/
 - **`CONTRIBUTING.md`** — Contributing — Thanks for wanting to improve **td-mcp**! This is a local-first TouchDesigner MCP
 - **`HOW_TO_USE.md`** — 1. Prerequisites — Make sure you have:
 - **`README.md`** — TouchDesigner MCP (`td-mcp`) — [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-- **`TD_MCP_Master_Plan.md`** — TouchDesigner MCP & RAG "Ultimate" Master Plan — This document outlines the current state and future vision of the TouchDesigner Model Context Protocol (MCP) and Retrieval-Augmented Generation (RAG) ecosystem. It serves as the master specification for creating a seamless, production-ready AI co-pilot running inside and alongside TouchDesigner.
+- **`TD_MCP_Master_Plan.md`** — TouchDesigner MCP — Master Plan — This document is the master specification for **td-mcp**: a local-first
 - **`TouchDesigner_Links.md`** — TouchDesigner — Documentation & Useful Links — ---
 - **`TouchDesigner_MCP_Servers.md`** — TouchDesigner MCP Servers — Catalog & Brainstorm — ---
 - **`pyproject.toml`** — Python project metadata: dependencies, optional extras (mcp/rag/scrape) and console entry points (td-mcp-offline, td-mcp-live).
