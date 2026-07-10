@@ -5,11 +5,11 @@ description = "Local-first TouchDesigner MCP: offline doc/RAG server + live brid
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-dependencies = []
+dependencies = ["pyyaml", "mcp>=1.0", "anyio"]
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.0", "anyio"]
-rag = ["sentence-transformers"]   # dense vectors + CrossEncoder reranker
+rag = ["sentence-transformers", "networkx"]   # dense vectors + CrossEncoder reranker + knowledge graph
 scrape = ["requests", "beautifulsoup4"]
 # faiss-cpu is an optional speed upgrade for the dense scorer (numpy fallback works)
 

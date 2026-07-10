@@ -1,14 +1,19 @@
 """Tests for showcontrol media-server connectors + offline tool wiring."""
 
+import json
+
 from td_mcp import showcontrol as sc
 from td_mcp.server_offline import (
     td_analyze_performance,
+    td_build_audio_reactive,
     td_compat_check,
     td_expert_prompt,
     td_glsl_pattern,
     td_mediaserver,
     td_network_template,
     td_score_build,
+    td_self_heal,
+    td_validate_build,
 )
 
 
@@ -55,3 +60,17 @@ def test_td_mediaserver_tool():
 def test_td_analyze_performance_tool():
     out = td_analyze_performance('{"fps": 10, "nodes": []}')
     assert "fps_ok" in out
+
+
+def test_td_build_audio_reactive_returns_yaml():
+    out = td_build_audio_reactive("{}")
+    assert "EXPORTS" in out  # CHOP export note preserved
+    assert "operator" in out.lower() or "CHOP" in out
+
+
+def test_td_self_heal_and_validate_build_tools():
+    spec = "operators:\n  - name: x\n    type: null\n"
+    v = json.loads(td_validate_build(spec))
+    assert "validation" in v and "score" in v
+    h = json.loads(td_self_heal(spec))
+    assert "fixed_desc" in h and "iterations" in h

@@ -88,3 +88,32 @@ def test_suggest_repairs_nonempty():
     report = validate_build(desc)
     repairs = suggest_repairs(report)
     assert any(rp["action"] == "drop_input" for rp in repairs)
+
+
+def test_auto_repair_drops_refs_to_dropped_typeless_nodes():
+    # A typeless node 'b' is dropped by auto_repair; any inline-input reference
+    # to it (from 'c') must also be removed, not left dangling.
+    desc = {
+        "operators": [
+            {"name": "a", "type": "null"},
+            {"name": "b"},  # no type -> dropped
+            {"name": "c", "type": "null", "inputs": ["b"]},
+        ],
+    }
+    fixed = auto_repair(desc)
+    assert all(o.get("type") for o in fixed["operators"])
+    assert "b" not in [o["name"] for o in fixed["operators"]]
+    c = next(o for o in fixed["operators"] if o["name"] == "c")
+    assert "b" not in c["inputs"]
+
+
+def test_auto_repair_keeps_valid_inline_inputs():
+    desc = {
+        "operators": [
+            {"name": "a", "type": "null", "inputs": [None]},
+            {"name": "b", "type": "null", "inputs": ["a"]},
+        ],
+    }
+    fixed = auto_repair(desc)
+    b = next(o for o in fixed["operators"] if o["name"] == "b")
+    assert "a" in b["inputs"]
