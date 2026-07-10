@@ -56,6 +56,19 @@ _sse_lock = threading.Lock()
 
 ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
+# Host/Origin pinning (Embody-style DNS-rebind / CSRF defense). When set, the
+# Origin header must match one of these exact values; an empty set disables the
+# check (loopback-only Host check still applies). Configure via TD_MCP_ALLOWED_ORIGINS.
+ALLOWED_ORIGINS = set(
+    o for o in (os.environ.get("TD_MCP_ALLOWED_ORIGINS") or "").split(",") if o
+)
+
+
+def _validate_origin_header(origin_header):
+    if not ALLOWED_ORIGINS:
+        return True
+    return (origin_header or "") in ALLOWED_ORIGINS
+
 
 def _generate_session_id():
     return str(uuid.uuid4())
@@ -158,12 +171,31 @@ class TDClient:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 result = json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
-            return {"ok": False, "error": f"HTTP {e.code}: {e.read().decode('utf-8', 'ignore')}"}
+            err = f"HTTP {e.code}: {e.read().decode('utf-8', 'ignore')}"
+            return self._fail(tool, err)
         except Exception as e:  # noqa: BLE001
-            return {"ok": False, "error": str(e)}
-        if self.anchor and isinstance(result, dict) and result.get("ok"):
+            return self._fail(tool, str(e))
+        if not isinstance(result, dict):
+            return result
+        # Attach Embody-style recovery hints to any failed bridge response so
+        # an agent can self-correct instead of retrying blindly.
+        if result.get("ok") is False and isinstance(result.get("error"), str):
+            try:
+                from td_mcp.tools.recovery import attach_recovery
+                result = attach_recovery(result, tool=tool)
+            except Exception:  # noqa: BLE001
+                pass
+        if self.anchor and result.get("ok"):
             result["shots"] = self._anchor(tool, args or {})
         return result
+
+    @staticmethod
+    def _fail(tool, err):
+        try:
+            from td_mcp.tools.recovery import attach_to_error
+            return attach_to_error(err, tool=tool)
+        except Exception:  # noqa: BLE001
+            return {"ok": False, "error": err}
 
     # All bridge tools as methods
     def create_node(self, path, op_type, name=None):
@@ -348,6 +380,9 @@ class MCPStreamableHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._check_dns_rebind():
             return
+        if not _validate_origin_header(self.headers.get("Origin")):
+            self._send_error(403, -32600, "Forbidden: Origin not pinned")
+            return
 
         session_id, session = self._get_or_create_session()
         self._current_session_id = session_id
@@ -431,6 +466,9 @@ class MCPStreamableHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if not self._check_dns_rebind():
+            return
+        if not _validate_origin_header(self.headers.get("Origin")):
+            self._send_error(403, -32600, "Forbidden: Origin not pinned")
             return
 
         # SSE stream

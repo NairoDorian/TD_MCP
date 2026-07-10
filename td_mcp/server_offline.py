@@ -17,6 +17,14 @@ from td_mcp.rag import knowledge_graph
 from td_mcp import showcontrol as sc
 from td_mcp import led_mapping as led
 from td_mcp import generators as gen
+from td_mcp import glsl_patterns as glsl
+from td_mcp import prompts as prompts_mod
+from td_mcp import compat as compat_mod
+from td_mcp import scoring as scoring_mod
+from td_mcp import perf as perf_mod
+from td_mcp import discover as discover_mod
+from td_mcp import memory as memory_mod
+from td_mcp import recipe_vault as recipe_vault_mod
 from td_mcp.tools.risk import risk_class, tool_annotations
 
 DEFAULT_CHUNKS = os.path.join(os.path.dirname(__file__), "kb", "chunks.jsonl")
@@ -343,6 +351,117 @@ def td_docs_glossary(limit=200):
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Inspiration tool functions (glsl patterns, templates, experts, compat,
+# build scoring, media servers, performance) — all READ_ONLY planners.
+# ---------------------------------------------------------------------------
+def td_glsl_pattern(name="simple_noise"):
+    """Return a named, paste-ready GLSL fragment shader (bottobot pattern lib)."""
+    return _json_dumps(glsl.get_glsl_pattern(name))
+
+
+def td_network_template(name="feedback"):
+    """Return a ready-to-build operator-chain template (bottobot)."""
+    return _json_dumps(glsl.get_network_template(name))
+
+
+def td_expert_prompt(phase=None, name=None):
+    """Return an expert system prompt for a build phase or a named expert
+    (TD_Builder get_expert_prompt)."""
+    if name:
+        p = prompts_mod.get_expert_prompt(name)
+        return p if p else f"unknown expert {name!r}; try: {prompts_mod.list_experts()}"
+    phase = phase or "build"
+    return prompts_mod.build_phase_prompt(phase)
+
+
+def td_compat_check(client_ver, bridge_ver):
+    """Compare client vs bridge versions (MAJOR=error, MINOR=warn, PATCH=ok)."""
+    return _json_dumps(compat_mod.check_compat(client_ver, bridge_ver))
+
+
+def td_score_build(spec):
+    """Score a network description 0..100 (tdmcp scoreBuild). Accepts a TDN
+    YAML string or a JSON operator list / {operators:[...]} dict."""
+    import json as _json
+    import yaml as _yaml
+    if isinstance(spec, str):
+        try:
+            data = _yaml.safe_load(spec)
+        except Exception:
+            try:
+                data = _json.loads(spec)
+            except Exception:
+                return "error: spec is not valid TDN/YAML/JSON"
+    else:
+        data = spec
+    if isinstance(data, list):
+        data = {"operators": data}
+    if not isinstance(data, dict) or "operators" not in data:
+        return "error: spec must contain 'operators'"
+    return _json_dumps(scoring_mod.score_build(data))
+
+
+def td_mediaserver(name="resolume"):
+    """Plan a connector to a media server (Millumin/Resolume/Notch/Disguise…)."""
+    return _json_dumps(sc.media_server(name))
+
+
+def td_analyze_performance(perf):
+    """Analyze a performance snapshot (fps + per-node cook times)."""
+    import json as _json
+    p = _json.loads(perf) if isinstance(perf, str) else perf
+    return _json_dumps(perf_mod.analyze_performance(p))
+
+
+def _json_dumps(obj):
+    import json as _json
+    return _json.dumps(obj, indent=2, default=str)
+
+
+def td_discover():
+    """Discover running TouchDesigner bridge instances on the local network of
+    known ports (twozero multi-instance). Returns reachable candidates."""
+    return _json_dumps(discover_mod.discover_instances())
+
+
+def td_memory_save(role, text, tags=None):
+    """Persist an interaction turn to local session memory (tdmcp memory)."""
+    tag_list = tags.split(",") if isinstance(tags, str) else (tags or [])
+    m = memory_mod.SessionMemory()
+    m.save(role, text, tag_list)
+    return _json_dumps({"ok": True, "entries": len(m)})
+
+
+def td_memory_recall(query, k=5):
+    """Recall the most relevant past interactions by keyword overlap."""
+    m = memory_mod.SessionMemory()
+    return _json_dumps(m.recall(query, int(k)))
+
+
+def td_scaffold_recipe(spec):
+    """Scaffold a reusable recipe blueprint from a network description (TDN
+    YAML, JSON operator list, or {operators:[...]})."""
+    import json as _json
+    import yaml as _yaml
+    if isinstance(spec, str):
+        try:
+            data = _yaml.safe_load(spec)
+        except Exception:
+            try:
+                data = _json.loads(spec)
+            except Exception:
+                return "error: spec is not valid TDN/YAML/JSON"
+    else:
+        data = spec
+    if isinstance(data, list):
+        data = {"operators": data}
+    if not isinstance(data, dict) or "operators" not in data:
+        return "error: spec must contain 'operators'"
+    draft = recipe_vault_mod.draft_recipe_from_chain(data)
+    return _json_dumps(draft)
+
+
 # ============================================================
 # MCP server
 # ============================================================
@@ -433,8 +552,40 @@ def create_server():
                        {"spec": {"type": "string"}},
                        annotations=additive),
             types.Tool("td_build_dmx_fixture", "Create a DMX input pipeline to receive sACN/Art-Net control channels (DMX In -> Select -> Math -> Out).",
-                       {"spec": {"type": "string"}},
-                       annotations=additive),
+                        {"spec": {"type": "string"}},
+                        annotations=additive),
+            types.Tool("td_glsl_pattern", "Return a named, paste-ready GLSL fragment shader (simple_noise / rgb_shift / hue_cycle / feedback_blend / kaleidoscope / scanline).",
+                        {"name": {"type": "string", "optional": True}},
+                        annotations=read_only),
+            types.Tool("td_network_template", "Return a ready-to-build operator-chain template (audio_reactive / feedback / render_scene / led_wall).",
+                        {"name": {"type": "string", "optional": True}},
+                        annotations=read_only),
+            types.Tool("td_expert_prompt", "Return an expert system prompt for a build phase (plan/build/self_improve) or a named expert (TD_Builder).",
+                        {"phase": {"type": "string", "optional": True}, "name": {"type": "string", "optional": True}},
+                        annotations=read_only),
+            types.Tool("td_compat_check", "Compare client vs bridge versions: MAJOR=error, MINOR=warning, PATCH=tolerated.",
+                        {"client_ver": {"type": "string"}, "bridge_ver": {"type": "string"}},
+                        annotations=read_only),
+            types.Tool("td_score_build", "Score a network description 0..100 (A–F) from validity, typed/wired completeness and corpus backing (tdmcp scoreBuild).",
+                        {"spec": {"type": "string"}},
+                        annotations=read_only),
+            types.Tool("td_mediaserver", "Plan a connector to a media server (millumin / resolume / notch / disguise / qlab / madmapper).",
+                        {"name": {"type": "string", "optional": True}},
+                        annotations=read_only),
+            types.Tool("td_analyze_performance", "Analyze a performance snapshot (fps + per-node cook times) into a verdict + suggestions.",
+                        {"perf": {"type": "string"}},
+                        annotations=read_only),
+            types.Tool("td_discover", "Discover running TouchDesigner bridge instances on known local ports (multi-instance, twozero).",
+                        {}, annotations=read_only),
+            types.Tool("td_memory_save", "Persist an interaction turn to local session memory for cross-session continuity.",
+                        {"role": {"type": "string"}, "text": {"type": "string"}, "tags": {"type": "string", "optional": True}},
+                        annotations=read_only),
+            types.Tool("td_memory_recall", "Recall the most relevant past interactions by keyword overlap.",
+                        {"query": {"type": "string"}, "k": {"type": "integer", "optional": True}},
+                        annotations=read_only),
+            types.Tool("td_scaffold_recipe", "Scaffold a reusable recipe blueprint from a network description (TDN/JSON/operators).",
+                        {"spec": {"type": "string"}},
+                        annotations=read_only),
         ]
 
     @app.call_tool()
@@ -492,6 +643,28 @@ def create_server():
                 out = (td_build_led_wall(a.get("spec", "{}")), "")
             elif name == "td_build_dmx_fixture":
                 out = (td_build_dmx_fixture(a.get("spec", "{}")), "")
+            elif name == "td_glsl_pattern":
+                out = (td_glsl_pattern(a.get("name", "simple_noise")), "")
+            elif name == "td_network_template":
+                out = (td_network_template(a.get("name", "feedback")), "")
+            elif name == "td_expert_prompt":
+                out = (td_expert_prompt(a.get("phase"), a.get("name")), "")
+            elif name == "td_compat_check":
+                out = (td_compat_check(a.get("client_ver", "1.0.0"), a.get("bridge_ver", "1.0.0")), "")
+            elif name == "td_score_build":
+                out = (td_score_build(a.get("spec", "[]")), "")
+            elif name == "td_mediaserver":
+                out = (td_mediaserver(a.get("name", "resolume")), "")
+            elif name == "td_analyze_performance":
+                out = (td_analyze_performance(a.get("perf", "{}")), "")
+            elif name == "td_discover":
+                out = (td_discover(), "")
+            elif name == "td_memory_save":
+                out = (td_memory_save(a.get("role", "user"), a.get("text", ""), a.get("tags")), "")
+            elif name == "td_memory_recall":
+                out = (td_memory_recall(a.get("query", ""), a.get("k", 5)), "")
+            elif name == "td_scaffold_recipe":
+                out = (td_scaffold_recipe(a.get("spec", "[]")), "")
             else:
                 out = ("unknown tool", "")
         except Exception as e:  # noqa: BLE001

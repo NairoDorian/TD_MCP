@@ -4,6 +4,133 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.7.0] - 2026-07-10
+
+Third inspiration sweep — orchestration / continuity / packaging ideas from the
+survey, plus exposing them as offline MCP tools.
+
+### Added
+- **Multi-instance discovery (twozero)**: `td_mcp.discover` — `discover_instances()`
+  probes known TD-MCP ports (9980/9988/9870/8053/40404/8765) with an injectable
+  probe, so an agent can pick which open TD to target. Exposed as `td_discover`.
+- **Session memory (tdmcp Obsidian / AI session memory, Embody)**: `td_mcp.memory`
+  — local JSONL memory of interaction turns with keyword-overlap `recall()` and
+  `summarize()`. Gives an agent continuity across sessions with no vector DB.
+  Exposed as `td_memory_save` / `td_memory_recall`.
+- **Spatial pointer resolver (twozero `*here`/`*this`)**: `td_mcp.spatial` —
+  `resolve_pointer()` / `resolve_args()` turn `*here` (current network) and
+  `*this op` (selected operator) into concrete paths for the live client.
+- **Progress reporting (touchdesigner_agent_mcp `report_progress`)**:
+  `td_mcp.progress` — structured `{step, total, percent, label}` updates for long
+  builds.
+- **Project bundling `.mcpb` (tdmcp multi-client packaging)**: `td_mcp.bundle` —
+  `package()` zips the project with a `server.json` manifest (excluding
+  `.venv`/`__pycache__`/etc.), `read_manifest()` reads it back.
+- **Recipe scaffolding from a network** (tdmcp `scaffoldRecipeFromNetwork`):
+  `td_scaffold_recipe` turns a TDN/operator description into a reusable recipe
+  blueprint via `recipe_vault.draft_recipe_from_chain`.
+- **4 new offline MCP tools** (READ_ONLY): `td_discover`, `td_memory_save`,
+  `td_memory_recall`, `td_scaffold_recipe`. Offline server now exposes 35 tools.
+- **Tests**: `tests/test_discover.py`, `tests/test_memory.py`, `tests/test_spatial.py`,
+  `tests/test_progress.py`, `tests/test_bundle.py`, `tests/test_offline_more_tools.py`
+  (19 new cases; suite now 137 passing).
+
+## [1.6.0] - 2026-07-10
+
+Second full inspiration sweep — more high-value, implementable ideas, plus
+exposing them as **callable offline MCP tools** so an agent can actually use
+them.
+
+### Added
+- **Macro recorder / replay (tdmcp)**: `td_mcp.macro` — `MacroRecorder`
+  records tool calls (tool/args/result), dedupes, serializes, and replays via
+  any dispatcher (e.g. the live `batch`).
+- **Version compatibility + error cache (8beeeaaat)**: `td_mcp.compat` —
+  `check_compat()` (MAJOR=error / MINOR=warning / PATCH=tolerated) and an
+  `ErrorCache` (TTL) so a flapping bridge doesn't spam identical transport
+  errors.
+- **Expert prompts (TD_Builder `get_expert_prompt`)**: `td_mcp.prompts` — phase
+  personas (td_designer, network_builder, td_glsl_expert, td_python_expert,
+  ui_expert, critic) routed per build phase (plan/build/self_improve).
+- **Performance analyzer (TD-Codex)**: `td_mcp.perf` — classifies fps, ranks
+  slowest cooks, and emits concrete optimization suggestions from a snapshot.
+- **Media-server connectors (TD-Codex)**: `td_mcp.showcontrol.media_server()`
+  plans Millumin / Resolume / Notch / Disguise / QLab / MadMapper connectors
+  (transport + endpoint + target operator).
+- **7 new offline MCP tools** (all READ_ONLY, risk-tiered): `td_glsl_pattern`,
+  `td_network_template`, `td_expert_prompt`, `td_compat_check`, `td_score_build`,
+  `td_mediaserver`, `td_analyze_performance`. The offline server now exposes 31
+  tools.
+- **Tests**: `tests/test_macro.py`, `tests/test_compat.py`, `tests/test_prompts.py`,
+  `tests/test_perf.py`, `tests/test_offline_new_tools.py` (25 new cases, now 118
+  total passing).
+
+## [1.5.0] - 2026-07-10
+
+Full inspiration sweep across the entire `github-mcp` ecosystem — implementing
+the remaining high-value, implementable ideas (not the placeholder/mock stubs).
+
+### Added
+- **Vision / histogram caption (tdmcp `captionTop`)**: `td_mcp.vision` —
+  `analyze_pixels()` computes deterministic pixel stats (`mean_luma`,
+  `near_black_fraction`, `saturation_mean`, `classification`) and a viewport
+  verdict (`is_black`/`is_flat`/`fully_transparent`/`pass`) with NO vision LLM
+  required; `caption_from_stats()` emits a text caption + `viewport_verdict()`
+  bridges to the agent loop. A blind agent can now "see" the render.
+- **Build scoring + self-repair loop (tdmcp `scoreBuild`/`repairNetwork`)**:
+  `td_mcp.scoring` — `score_build()` grades a network 0..100 (A–F) from
+  validity, typed/wired completeness and corpus backing; `repair_network()`
+  iteratively applies `auto_repair` until clean (the `autoRepairLoop`).
+- **Token-efficient logs (Embody discipline)**: `td_mcp.tools.logs` — a bounded
+  `LogRing` plus `attach_piggyback()` that only attaches WARNING/ERROR `_logs`
+  to a result, keeping successful runs quiet within context budgets.
+- **GLSL pattern library + network templates (bottobot `get_glsl_pattern` /
+  `get_network_template`)**: `td_mcp.glsl_patterns` — 6 named, paste-ready
+  fragment shaders and 4 ready-to-build network templates (audio-reactive,
+  feedback, render-scene, LED wall) emitting TDN operator lists.
+- **Per-client config + skill generation (Embody / twozero)**: `td_mcp.config_gen`
+  — generates the exact `.mcp.json` / `claude_desktop_config.json` and a tailored
+  `CLAUDE.md` skill doc for td-mcp's two servers, for a one-step client install.
+- **TDN idle auto-checkpoint (Embody)**: `tdn.checkpoint()` / `restore_checkpoint()`
+  persist a git-diffable `.tdn` snapshot to disk (volatile headers ignored by
+  `diff_tdn`) for crash recovery / auto-restore on project open.
+- **Security hardening — Origin pinning (Embody)**: `server_live` now enforces a
+  configured `TD_MCP_ALLOWED_ORIGINS` allowlist (Host-pinning / CSRF defense) on
+  top of the existing DNS-rebind Host check, in the Streamable-HTTP server.
+- **Tests**: `tests/test_vision.py`, `tests/test_scoring.py`, `tests/test_logs.py`,
+  `tests/test_glsl.py`, `tests/test_config_gen.py` (23 new cases, all passing).
+
+## [1.4.0] - 2026-07-10
+
+Agent self-healing & build-quality improvements, inspired by surveying the
+full `github-mcp` ecosystem (Embody, tdmcp, TD_Builder_alpha, touch_mcp,
+twozero_td_mcp, bottobot, …).
+
+### Added
+- **Recovery hints (Embody)**: `td_mcp.tools.recovery` — a pure error-signature
+  catalog that returns `{cause, action, next_tools}` for every common TD/bridge
+  failure (unreachable bridge, node-not-found, unknown param, family mismatch,
+  cook error, read-only/auth blocks, …). Wired into `TDClient._call` so **every
+  failed live tool response now carries a `recovery` block**, letting an agent
+  self-correct instead of retrying blindly.
+- **Staged build validator + auto-repair (TD_Builder 5-stage + tdmcp
+  `autoRepairLoop`)**: `td_mcp.validation` — `validate_build()` runs five staged
+  passes (schema → semantic → reference → logical → td_rules/family-compat),
+  `suggest_repairs()` turns findings into actions, and `auto_repair()` returns a
+  corrected description (drops dangling inputs/connections, auto-names unnamed
+  nodes, removes typeless nodes). Corpus-aware: uses real operator families and
+  parameter schemas when available.
+- **Layout lint (Embody)**: `td_mcp.tools.layout` — `lint_layout()` flags nodes
+  at (0,0), overlaps, zero-size, stray/orphan docks, and unnamed operators;
+  `placement_hint()` gives a deterministic next-free position to stop the
+  classic node pile-up.
+- **Recipe vault upgrade (tdmcp)**: `recipe_vault` now stores tdmcp-style
+  design-file metadata (`difficulty`, `td_version_min`, `technique`) and ships
+  `draft_recipe_from_chain()` to auto-skeleton a reusable blueprint from an
+  operator chain. Listings surface the new fields.
+- **Tests**: `tests/test_recovery.py`, `tests/test_validation.py`,
+  `tests/test_layout.py`, `tests/test_recipe.py` (23 new cases, all passing).
+
 ## [1.3.0] - 2026-07-10
 
 Improvements informed by reviewing sibling TouchDesigner MCP projects

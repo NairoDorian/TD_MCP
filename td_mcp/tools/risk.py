@@ -31,6 +31,21 @@ RISK_CLASS = {
     "td_showcontrol_plan":   "READ_ONLY",
     "td_led_map":            "READ_ONLY",
 
+    # Inspiration planners (glsl templates, experts, compat, scoring, media, perf)
+    "td_glsl_pattern":       "READ_ONLY",
+    "td_network_template":   "READ_ONLY",
+    "td_expert_prompt":      "READ_ONLY",
+    "td_compat_check":       "READ_ONLY",
+    "td_score_build":        "READ_ONLY",
+    "td_mediaserver":        "READ_ONLY",
+    "td_analyze_performance":"READ_ONLY",
+
+    # Session memory + discovery + recipe scaffolding — READ_ONLY (local only)
+    "td_discover":           "READ_ONLY",
+    "td_memory_save":        "READ_ONLY",
+    "td_memory_recall":      "READ_ONLY",
+    "td_scaffold_recipe":    "READ_ONLY",
+
     # Live bridge tools — read-only inspectors
     "get_parameters":        "READ_ONLY",
     "get_errors":            "READ_ONLY",

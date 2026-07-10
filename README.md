@@ -22,7 +22,7 @@ td-mcp/
 ├── README.md
 ├── setup_env.ps1
 ├── td_mcp/
-│   ├── server_offline.py     # doc/RAG MCP server + CLI (24 tools, ParallelRetriever)
+│   ├── server_offline.py     # doc/RAG MCP server + CLI (35 tools, ParallelRetriever)
 │   ├── server_live.py        # Streamable HTTP + SSE + stdio client for the TD bridge (39 tools)
 │   ├── streamable_http.py    # Streamable-HTTP transport mixin (SSE, sessions, DNS-rebind guard)
 │   ├── generators.py         # artist network generators (feedback / audio-reactive / particle / 3D / GLSL / LED / DMX)
@@ -88,7 +88,7 @@ Register in your AI client (Claude Desktop: `%APPDATA%\Claude\claude_desktop_con
 }
 ```
 
-Exposed Offline Tools (24): `td_docs_search`, `td_docs_operator`, `td_docs_python`, `td_docs_glsl`, `td_docs_template`, `td_docs_version`, `td_docs_family`, `td_docs_parameter`, `td_docs_compare`, `td_docs_connections`, `td_docs_workflow`, `td_docs_version_info`, `td_docs_related`, `td_docs_glossary`, `td_build_network`, `td_showcontrol_plan`, `td_led_map`, `td_build_feedback`, `td_build_audio_reactive`, `td_build_particle`, `td_build_3d_scene`, `td_build_glsl_shader`, `td_build_led_wall`, `td_build_dmx_fixture`.
+Exposed Offline Tools (35): `td_docs_search`, `td_docs_operator`, `td_docs_python`, `td_docs_glsl`, `td_docs_template`, `td_docs_version`, `td_docs_family`, `td_docs_parameter`, `td_docs_compare`, `td_docs_connections`, `td_docs_workflow`, `td_docs_version_info`, `td_docs_related`, `td_docs_glossary`, `td_build_network`, `td_showcontrol_plan`, `td_led_map`, `td_build_feedback`, `td_build_audio_reactive`, `td_build_particle`, `td_build_3d_scene`, `td_build_glsl_shader`, `td_build_led_wall`, `td_build_dmx_fixture`, `td_glsl_pattern`, `td_network_template`, `td_expert_prompt`, `td_compat_check`, `td_score_build`, `td_mediaserver`, `td_analyze_performance`, `td_discover`, `td_memory_save`, `td_memory_recall`, `td_scaffold_recipe`.
 
 Exposed Live Tools (39): `create_node`, `delete_node`, `set_parameters`, `get_parameters`, `get_errors`, `execute_python`, `list_nodes`, `project_info`, `capture_viewport`, `get_resource`, `describe_td_tools`, `batch`, `read_chop`, `read_top`, `read_dat`, `scan_network`, `build_and_verify`, `connect_nodes`, `rename_node`, `copy_node`, `auto_layout`, `get_node`, `set_node_color`, `set_node_comment`, `map_network`, `disconnect_nodes`, `get_connections`, `exec_node_method`, `snapshot_network`, `restore_network`, `get_performance`, `validate_network`, `set_flags`, `find_nodes`, `set_node_position`, `timeline`, `export_recipe`, `import_recipe`, `save_tox`.
 

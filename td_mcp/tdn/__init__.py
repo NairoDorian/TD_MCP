@@ -122,3 +122,30 @@ def diff_tdn(a_text, b_text):
         "changed": changed,
         "is_equal": not (added or removed or changed),
     }
+
+
+def checkpoint(network_path, operators, base_dir=None, tag="autosave"):
+    """Embody-style idle auto-checkpoint: write a cheap .tdn of the current
+    network to disk so a crash can be recovered. Returns the file path. The
+    ``tag`` lets multiple containers keep independent checkpoints."""
+    import os
+    import time
+
+    base_dir = base_dir or os.path.join(os.path.expanduser("~"), ".td_mcp", "tdn")
+    os.makedirs(base_dir, exist_ok=True)
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in network_path)
+    path = os.path.join(base_dir, f"{safe}.{tag}.tdn")
+    net = new_network(network_path=network_path, operators=operators)
+    # Volatile header so diff_tdn ignores re-export churn.
+    net["exported_at"] = time.time()
+    text = export_network(net)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return path
+
+
+def restore_checkpoint(path):
+    """Read a checkpoint .tdn back into a network dict (for auto-restore on
+    project open). Raises on malformed files."""
+    with open(path, "r", encoding="utf-8") as f:
+        return import_network(f.read())

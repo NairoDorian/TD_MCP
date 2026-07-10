@@ -71,3 +71,37 @@ def build_show_plan(outputs):
         "universe_count": (max(universes) + 1) if universes else 0,
         "universes": universes,
     }
+
+
+# --- Media-server connectors (TD-Codex media-server integration) -----------
+# Recommended transport + default port for each popular media server. The TD
+# side turns these into OSC/NDI/Spout/Syphon CHOP/TOP outputs; we only plan.
+MEDIA_SERVERS = {
+    "millumin":   {"transport": "osc", "host": "127.0.0.1", "port": 8000},
+    "resolume":   {"transport": "osc", "host": "127.0.0.1", "port": 7000},
+    "notch":      {"transport": "spout", "host": "127.0.0.1", "port": 0},
+    "disguise":   {"transport": "ndi", "host": "127.0.0.1", "port": 0},
+    "qlab":       {"transport": "osc", "host": "127.0.0.1", "port": 53000},
+    "madmapper":  {"transport": "osc", "host": "127.0.0.1", "port": 8000},
+}
+
+
+def media_server(name, host=None, port=None):
+    """Plan a connector to a media server (Millumin / Resolume / Notch /
+    Disguise / QLab / MadMapper). Returns the transport + endpoint to wire in
+    TD, or an error listing valid names if unknown."""
+    key = (name or "").lower()
+    if key not in MEDIA_SERVERS:
+        return {"error": f"unknown media server {name!r}",
+                "available": sorted(MEDIA_SERVERS)}
+    base = dict(MEDIA_SERVERS[key])
+    if host:
+        base["host"] = host
+    if port:
+        base["port"] = port
+    base["name"] = key
+    base["operator"] = {
+        "osc": "OSC Out DAT", "ndi": "NDI Out TOP",
+        "spout": "Spout Out TOP", "syphon": "Syphon Out TOP",
+    }.get(base["transport"], "OSC Out DAT")
+    return base

@@ -5,4 +5,5 @@ __pycache__/
 build/
 dist/
 embeddings.jsonl
+.pytest_cache/
 .DS_Store

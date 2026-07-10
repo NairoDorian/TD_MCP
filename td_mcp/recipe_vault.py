@@ -44,8 +44,16 @@ def save_recipe(
     description: str = "",
     author: str = "",
     metadata: Optional[Dict[str, Any]] = None,
+    difficulty: str = "beginner",
+    td_version_min: Optional[str] = None,
+    technique: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Persist a recipe (list of node specs from export_recipe) to the vault."""
+    """Persist a recipe (list of node specs from export_recipe) to the vault.
+
+    tdmcp-style design-file metadata is supported: ``difficulty``
+    (beginner/intermediate/advanced), ``td_version_min`` (e.g. "2023.10000"),
+    and ``technique`` (a short style tag used for similarity recall).
+    """
     vault = _load_vault()
     now = time.time()
     rid = str(uuid.uuid4())[:12]
@@ -55,6 +63,9 @@ def save_recipe(
         "description": description,
         "tags": tags or [],
         "author": author,
+        "difficulty": difficulty,
+        "td_version_min": td_version_min,
+        "technique": technique,
         "metadata": metadata or {},
         "created": now,
         "updated": now,
@@ -64,6 +75,53 @@ def save_recipe(
     vault["recipes"][rid] = entry
     _save_vault(vault)
     return {"ok": True, "id": rid, "name": name, "path": str(VAULT_FILE)}
+
+
+def draft_recipe_from_chain(chain: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Build a recipe *skeleton* from an operator chain.
+
+    Given a list of ``{"type": "Noise TOP", "params": {...}, "inputs": [...]}``
+    specs (e.g. from a build_and_verify run or a TDN operator list), infer a
+    name, tags, technique, and difficulty so the agent can persist a reusable
+    blueprint without hand-authoring metadata. The chain is normalized into the
+    same node-spec shape export_recipe / import_recipe expect.
+    """
+    if isinstance(chain, dict) and "operators" in chain:
+        ops = chain["operators"]
+    else:
+        ops = chain
+
+    node_specs = []
+    families = set()
+    for i, spec in enumerate(ops):
+        op_type = spec.get("type") or spec.get("operator")
+        node_specs.append({
+            "name": spec.get("name") or f"op{i}",
+            "type": op_type,
+            "parameters": spec.get("params") or spec.get("parameters") or {},
+            "inputs": spec.get("inputs") or [],
+        })
+        if isinstance(op_type, str) and op_type.split()[-1] in (
+            "TOP", "CHOP", "SOP", "DAT", "POP", "COMP"):
+            families.add(op_type.split()[-1])
+
+    # Infer technique from the dominant family / chain shape.
+    technique = "mixed"
+    if families:
+        technique = sorted(families)[0]  # e.g. "TOP" for a visual chain
+    name = f"{technique or 'network'} chain ({len(node_specs)} ops)"
+    tags = sorted(families) + [f"{len(node_specs)}-ops"]
+    difficulty = "beginner" if len(node_specs) <= 4 else (
+        "intermediate" if len(node_specs) <= 9 else "advanced")
+
+    return {
+        "name": name,
+        "tags": tags,
+        "technique": technique,
+        "difficulty": difficulty,
+        "description": f"Auto-drafted from a {len(node_specs)}-node {technique} chain.",
+        "recipe": node_specs,
+    }
 
 
 def list_recipes(
@@ -88,6 +146,9 @@ def list_recipes(
             "description": entry.get("description", ""),
             "tags": entry.get("tags", []),
             "author": entry.get("author", ""),
+            "difficulty": entry.get("difficulty", "beginner"),
+            "td_version_min": entry.get("td_version_min"),
+            "technique": entry.get("technique"),
             "created": entry["created"],
             "updated": entry["updated"],
             "version": entry["version"],
@@ -171,8 +232,12 @@ def import_vault(path: str, merge: bool = True) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Bridge tool helpers (to be registered in td_mcp_bridge.py)
 # ---------------------------------------------------------------------------
-def _do_vault_save(recipe, name, tags=None, description="", author="", metadata=None):
-    return save_recipe(recipe, name, tags, description, author, metadata)
+def _do_vault_save(recipe, name, tags=None, description="", author="",
+                   metadata=None, difficulty="beginner", td_version_min=None,
+                   technique=None):
+    return save_recipe(recipe, name, tags, description, author, metadata,
+                       difficulty=difficulty, td_version_min=td_version_min,
+                       technique=technique)
 
 
 def _do_vault_list(query="", tags=None, limit=50, offset=0):
