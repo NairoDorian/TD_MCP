@@ -46,21 +46,37 @@ thorough:
 
 ---
 
-## 3. Keep `pyproject.toml` in sync
+## 3. Bump the version (single source of truth)
 
-- Bump `version` if the change is user-visible, and keep it aligned with the
-  latest `CHANGELOG.md` heading.
+The version lives in exactly **two** places and `scripts/bump_version.py` keeps
+them aligned in one command:
+
+```bash
+uv run python scripts/bump_version.py 1.7.4
+```
+
+This updates `pyproject.toml` (`version = "..."`) **and** the top
+`CHANGELOG.md` heading (`## [x.y.z] - YYYY-MM-DD`). Runtime code reads the
+version from the installed package via `td_mcp.__version__` (which itself comes
+from `pyproject.toml`), so **no `.py` file needs editing** when you bump.
+
+- Only bump if the change is user-visible.
+- The script prints a warning if any other file still hardcodes the old version
+  — review those (build artifacts like `uv.lock` / `PKG-INFO` update themselves).
 - Ensure any new importable package (e.g. `td_mcp.tools`) is listed under
-  `[tool.setuptools] packages`.
-- Keep `dependencies` / optional-extras (`mcp`, `rag`, `scrape`) accurate.
+  `[tool.setuptools] packages`, and keep `dependencies` / optional-extras
+  (`mcp`, `rag`, `scrape`) accurate.
 
 ---
 
 ## 4. Add a `CHANGELOG.md` entry
 
-Add a new `## [x.y.z] - YYYY-MM-DD` section at the top under the appropriate
-category (`Added` / `Changed` / `Fixed` / `Cleaned`). Mention the summary
-regeneration and any doc edits so the history is self-explanatory.
+`scripts/bump_version.py` already wrote the top heading
+(`## [x.y.z] - YYYY-MM-DD`) when you bumped. Fill in its body directly under
+that heading, grouped by category (`Added` / `Changed` / `Fixed` / `Cleaned`).
+Mention the summary regeneration and any doc edits so the history is
+self-explanatory. If you skipped the bump, add the new heading by hand and keep
+it identical to the `pyproject.toml` version.
 
 ---
 
@@ -100,5 +116,5 @@ Good-commit hygiene:
 
 ### One-line reminder
 
-> Regenerate `SUMMARY.md` → proofread **all** `.md` files → sync `pyproject.toml`
-> → update `CHANGELOG.md` → `pytest` → explicit stage → commit → push.
+> Bump version (`scripts/bump_version.py`) → proofread **all** `.md` files →
+> `pytest` → explicit stage → commit → push.

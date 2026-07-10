@@ -77,7 +77,7 @@ td-mcp/
 ├── TouchDesigner_MCP_Servers.md# Catalog of existing TouchDesigner MCP repos
 ├── setup_env.ps1               # Automated local virtualenv configuration
 ├── td_mcp/                     # Core python source package
-│   ├── server_offline.py       # Offline docs RAG server (24 tools)
+│   ├── server_offline.py       # Offline docs RAG server (40 tools)
 │   ├── server_live.py          # Live bridge client (39 tools) + Streamable HTTP/SSE
 │   ├── streamable_http.py      # Streamable-HTTP transport mixin
 │   ├── generators.py           # Artist network generators

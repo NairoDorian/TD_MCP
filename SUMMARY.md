@@ -65,6 +65,7 @@ td-mcp/
 │   ├── td_mcp_agent.py
 │   └── td_mcp_bridge.py
 ├── scripts
+│   ├── bump_version.py
 │   └── generate_summary.py
 ├── skills
 │   └── td-building
@@ -192,6 +193,7 @@ td-mcp/
 
 ### `scripts/`
 
+- **`scripts/bump_version.py`** — Find files still hardcoding the old version (excluding build/changelog).
 - **`scripts/generate_summary.py`** — Optionally emit a full repomix pack if the CLI is available.
 
 ### `skills/`

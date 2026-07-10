@@ -18,6 +18,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 import hmac
 
+try:
+    from td_mcp import __version__
+except Exception:  # bridge may run where the package metadata is unavailable
+    __version__ = "0.0.0"
+
 # Session management
 _sessions = {}  # session_id -> {"created": float, "last_seen": float, "auth_token": str}
 _sessions_lock = threading.Lock()
@@ -168,7 +173,7 @@ class StreamableHTTPMixin:
                             "resources": {},
                             "logging": {}
                         },
-                        "serverInfo": {"name": "td-mcp-bridge", "version": "1.1.0"}
+                        "serverInfo": {"name": "td-mcp-bridge", "version": __version__}
                     }
                 })
             elif method == "notifications/initialized":

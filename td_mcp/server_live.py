@@ -27,6 +27,8 @@ import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 
+from td_mcp import __version__
+
 try:
     from mcp.server import Server
     import mcp.types as types
@@ -413,7 +415,7 @@ class MCPStreamableHandler(BaseHTTPRequestHandler):
                     "result": {
                         "protocolVersion": "2024-11-05",
                         "capabilities": {"tools": {}, "prompts": {}, "resources": {}, "logging": {}},
-                        "serverInfo": {"name": "td-mcp-live", "version": "1.1.0"}
+                        "serverInfo": {"name": "td-mcp-live", "version": __version__}
                     }
                 })
             elif method == "notifications/initialized":
