@@ -4,6 +4,177 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Empty-index crash**: when `chunks.jsonl` is missing (fresh clone, no KB build),
+  the RAG `Index` no longer raises `IndexError` — scorers return `[]` and
+  `Retriever.search` degrades to "no docs" instead of crashing. Added
+  `tests/test_retriever.py` regression suite (§IMPROVEMENT_PLAN 4.1).
+- **CI green on fresh clone**: the GitHub Actions workflow now installs `.[test]`
+  (includes `networkx` + `pytest`), builds `chunks.jsonl` via
+  `python -m td_mcp.kb.build_kb` before running pytest, and `pyproject.toml`
+  declares `test` extra + `[dependency-groups] dev` so `uv run pytest` works
+  standalone (§IMPROVEMENT_PLAN 4.2).
+- **Packaging**: switched to `find` package discovery so `td_mcp.util` (previously
+  missing from the explicit packages list) is included in built distributions.
+
+### Added
+- **Citable retrieval**: every KB chunk now carries a `url` permalink
+  (`https://docs.derivative.ca/<op>`) from the merged MIT corpus and curated
+  records; `td_docs_*` responses print a `link:` citation (§IMPROVEMENT_PLAN 2.1).
+- **Family disambiguation**: looking up a bare operator name that is ambiguous
+  across families (e.g. "Noise" → Noise TOP/CHOP/SOP/POP) now emits a warning
+  listing all matches and the families involved, in `td_docs_operator`,
+  `td_docs_parameter`, and `td_docs_search` (§IMPROVEMENT_PLAN 2.1).
+- **SQLite-backed session memory** (§2.3): `td_mcp.memory.SessionMemory` now
+  stores turns in a stdlib `sqlite3` FTS5 table instead of JSONL. Recall ranks
+  by `trust_tier` (`official > bundled > personal > community > experimental`)
+  first, then keyword overlap, then recency. `td_memory_save` accepts an
+  optional `trust_tier` argument; the `td_memory_save`/`td_memory_recall` tool
+  surface is unchanged. Path overridable via `TD_MCP_MEMORY_DB`.
+- **Opt-in observability sink** (§2.3): `td_mcp.observability.TraceLog` records
+  LLM-style span rows (tool calls, LLM calls, timed contexts) to a SQLite
+  trace log. Gated behind `TD_MCP_OBSERVE` (unset = zero-overhead no-op).
+  Every `call_tool` in the offline server is now traced when enabled.
+- **Wiki-index fusion** (§2.2): `SqliteWikiStrategy` consumes a
+  `touchdesigner-wiki-rag` SQLite FTS5 index (`manual.db`) and fuses its hits
+  into the RRF pool with a `wiki:` document URI. Opt-in via `TD_MCP_WIKI_DB`
+  (path to the wiki-rag DB) or the `wiki_db` arg on `ParallelRetriever`.
+  No chromadb/sentence-transformers needed for this path.
+- **Live↔offline verification loop** (§3.1): `TDClient.build_and_verify` now
+  feeds the created network + `capture_viewport` verdict into the offline
+  `td_validate_live` orchestrator, so a black/flat/transparent render lowers
+  the score and produces recovery hints. `score_build` accepts a
+  `viewport_verdict` field with `black`/`flat`/`transparent` penalties.
+- **MCP 2026-07-28 migration plan** (§5.1): added `MCP_2026_MIGRATION.md`
+  auditing the SDK 2.0.0 upgrade, stateless Streamable HTTP removal, and
+  auth middleware changes needed for protocol revision 2026-07-28.
+- **Bounded operations** (§6.1): env-tunable caps in the bridge — batch size
+  (`TD_MCP_MAX_BATCH`), parameter count (`TD_MCP_MAX_PARAMS`), traversal depth
+  (`TD_MCP_MAX_DEPTH`), CHOP samples (`TD_MCP_MAX_SAMPLES`), DAT rows
+  (`TD_MCP_MAX_ROWS`), DAT text bytes (`TD_MCP_MAX_DAT_BYTES`) — all enforced
+  server-side.
+- **`set_dat_text` with optimistic concurrency** (§6.1): new live tool writes a
+  DAT's text and accepts an `expected_sha256` guard; concurrent clobbers are
+  refused with the actual hash.
+- **Traceback/path redaction** (§6.2 TDPilot H-1): bridge error responses
+  redact user home paths (`~/...`) and `.td_mcp` (`<TD_MCP_HOME>`) so 500s
+  don't leak the operator's layout.
+- **Schema↔handler parity tests** (§6.2 TDPilot): `tests/test_parity.py` asserts
+  the live tool registry, `tools/list` metadata, HTTP schema surface, and TD
+  bridge dispatch stay in lockstep. Caught a real drift: `build_and_verify`
+  was advertised but missing from the bridge dispatch.
+- **Adaptive HyDE** (wiki-rag): HyDE now fires only when the base fused pass
+  scores below a threshold (`hyde_trigger`), and the hypothetical-doc result is
+  kept only if strictly better. Always-on HyDE remains available via explicit
+  opt-in.
+- **Operator-aware intent boost** (TrueFiasco, MIT-safe reimpl): when a query
+  names a known operator, its chunks get a hard RRF boost, so
+  "noise top amplitude" surfaces the Noise TOP parameter chunks over generic
+  matches.
+- **Freshness banner** (wiki-rag): opt-in `TD_MCP_FRESHNESS=1` checks the wiki
+  `recentchanges` feed against a `fetch-manifest.json` (cached hourly,
+  offline-silent) and prepends a "⚠ STALE INDEX" banner to doc results.
+- **L0/L1/L2 doc tiering** (wiki-rag): new `td_docs_browse` (L0 section map),
+  `td_docs_read_page` (L2 full page), and `manual://index` +
+  `manual://operators/{family}` MCP resources.
+- **Token-efficient reads** (vedant1317): `get_non_default_params` live tool
+  returns only non-default params (the bridge's `get_node` already emits them;
+  this exposes them directly).
+- **Exec-mode tiers** (TDPilot): `TD_MCP_EXEC_MODE` supports
+  `off|restricted|standard|full`; restricted refuses `exec`/`eval`/`open`/
+  `__import__` and other dangerous builtins before execution.
+- **Image-block viewport** (mintiasaikoh): `capture_viewport` attaches base64
+  PNG image content so MCP clients can render the render output directly.
+- **KB integrity receipt** (TrueFiasco): optional `kb_receipt.json` pins the
+  SHA-256 of `chunks.jsonl`/`embeddings.jsonl`; on mismatch the retriever
+  refuses to load and degrades loudly instead of silently serving a bad index.
+- **`td_scaffold_show`** (ai-brain): three opinionated show scaffolds (`vj`,
+  `audio_reactive`, `installation`) with ai-brain's canonical section layout
+  (audio_in/analysis/bus/scene_bank/fx_rack/mixer/mapper/monitor/safety).
+- **Name-integrity eval gate** (TrueFiasco): `rag/eval.py --name-integrity`
+  verifies every expected chunk id in the eval set resolves to a real KB chunk
+  (0 unresolved / 0 retokenized) and reports per-family corpus coverage.
+- **KB receipt generator**: `build_kb` now writes `kb_receipt.json` alongside
+  `chunks.jsonl` so the integrity check is populated automatically.
+- **Bridge staleness guard** (quentinR2): `scripts/check_bridge_stale.py` fails
+  CI if the bridge's `_DISPATCH` surface drifts from the live tool registry;
+  wired into `.github/workflows/ci.yml`.
+- **Param-family expansion** (TrueFiasco AGPL reimpl, MIT-safe): list-valued
+  params expand to TD's flat suffix params (t → tx/ty/tz, color → colorr/g/b,
+  fromrange → fromrange1/2); `param_resolver.expand_params()`.
+- **Conversation compaction** (TDPilot): `memory.compact_messages()` summarizes
+  older turns into one text-only synthetic message, keeps recent N verbatim,
+  pure local heuristics, no LLM call.
+- **Technique memory cycle** (TDPilot): `memory.TechniqueStore` with validation
+  ladder (candidate → validated_local → validated_portable), replay auto-
+  promote/demote, scope promotion (project → global), SQLite-backed.
+- **Structured exec results** (TDPilot): bridge `execute_python` returns
+  `result`/`result_type`/`result_is_structured` with JSON-safe conversion of
+  TD objects.
+- **`get_parameter_info`** (touch_mcp): full per-parameter schema — label,
+  value, mode, default, page, style, bounds, menu names/labels.
+- **`bind_parameter_expression`** (mrinalghosh): sets par.expr, snaps mode to
+  EXPRESSION, evals, and returns *new* cook errors so bad expressions never
+  silently no-op.
+- **Gotcha-annotated templates** (mrinalghosh/quentinR2): 5 templates with
+  encoded gotchas (`chop_source_with_null`, `glsl_top_vec4_uniform`,
+  `audio_in_with_analyze`, `feedback_loop_top`, `render_pipeline`) exposed via
+  `td_gotcha_template`.
+- **Source registry + show-readiness checklist** (ai-brain):
+  `td_source_registry` (license/TD-version-vetted sources) and
+  `td_show_readiness` (before_automation/before_show/asset_intake).
+- **Activity log + history recall** (TDPilot): `activity.ActivityLog` ring
+  buffer (200 entries) with `td_activity_log`; `td_history_recall` searches
+  across session memory + technique store; `memory.pre_turn_injection()` for
+  ambient pre-turn context.
+- **Per-operator version compat** (bottobot): `td_docs_version_compat` reports
+  addedIn/removedIn/changedIn compatibility against a target build, using the
+  corpus compatibility manifests.
+- **Catalog refresh** (§7.1): `TouchDesigner_MCP_Servers.md` TD_MCP row rewritten
+  from placeholder to v1.9+ ultimate status; README documents the `chunks.jsonl`
+  build step + fresh-clone note.
+- **One-command install** (§7.3): `scripts/install_all.py` installs the package,
+  builds the KB, writes client configs + skill, and prints registration JSON.
+- **Activity log wired** (TDPilot): every offline `call_tool` now records a
+  duration + ok status in the activity ring buffer (was previously exposed but
+  not integrated).
+- **Score-floor abstention** (TrueFiasco): `ParallelRetriever(score_floor=N)`
+  returns `[]` when the best fused score falls below N, so out-of-domain
+  queries abstain instead of surfacing weak garbage.
+- **Local OfflineHelp ingestion**: `kb/offline_import.py` walks TouchDesigner's
+  bundled `Samples/Learn/OfflineHelp/https.docs.derivative.ca` mirror and
+  appends pages to `chunks.jsonl` — full wiki coverage with zero network.
+- **`td_tool_batch`** (TDPilot): run multiple offline tools in one bounded
+  round-trip; dispatcher late-bound after all tool functions are defined.
+- **Name-integrity as pytest** (TrueFiasco): `tests/test_wave7.py` asserts the
+  gate passes, not just via CLI flag.
+- **Experimental techniques KB** (bottobot): 7 category files copied into
+  `kb/corpus/experimental/` (glsl, gpu-compute, machine-learning,
+  generative-systems, audio-visual, networking, python-advanced) and exposed
+  via `td_docs_experimental` with category/technique aliases and code toggling.
+- **Skills pack expanded** (cacheflowe): `skills/td-building/SKILL.md` now
+  carries the pull-based philosophy, family map, critical conventions (par
+  names, geometryCOMP, Feedback wiring, GLSL Vectors page), Python essentials,
+  and the common-mistakes list.
+- **RAG wave 9**: perfect eval recall (1.000 at k=5, up from 0.966) via
+  plural stemming ("pops"→"pop"), precise full-name operator boost (only
+  whole operator names or 2+ word aliases, both curated + corpus chunks),
+  family-overview boost for workflow queries, audio-reactive tutorial boost,
+  sibling-operator disambiguation in search output (wiki-rag guardrail:
+  "Noise TOP" flags Noise CHOP/SOP/POP), and a new `td_kb_stats` tool.
+  MRR 0.795 / nDCG 0.802 (up from 0.776 / 0.775).
+- **Simplification wave**: exec mode reduced from 4 tiers to 2 (`on`/`off`
+  with legacy aliases mapping to `on`); dead code removed from
+  `td_docs_experimental`; `PICKED_FROM.md` created to trace every technique
+  merged from the reference repos.
+- **Tool parity bug fixed**: 13 tools were advertised in `list_tools` but
+  missing from the `_OFFLINE_DISPATCH` used by `td_tool_batch`. Fixed — all
+  56 tools now dispatch correctly.
+
+---
+
 ## [1.9.0] - 2026-07-10
 
 Ultimate-merge pass: features mined from the 13 reference TD-MCP repos

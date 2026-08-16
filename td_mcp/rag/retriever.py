@@ -21,6 +21,51 @@ TOKEN_RE = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]*")
 
 DEFAULT_CHUNKS = os.path.join(os.path.dirname(os.path.dirname(__file__)), "kb", "chunks.jsonl")
 DEFAULT_EMBED = os.path.join(os.path.dirname(os.path.dirname(__file__)), "kb", "embeddings.jsonl")
+DEFAULT_RECEIPT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "kb", "kb_receipt.json")
+
+
+def _sha256_file(path):
+    """Return the hex SHA-256 of a file, or None when missing/unreadable."""
+    import hashlib
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(65536), b""):
+                h.update(block)
+        return h.hexdigest()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def load_receipt(path=DEFAULT_RECEIPT):
+    """Load the KB integrity receipt, or None when missing."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def verify_receipt(receipt, chunks_path=DEFAULT_CHUNKS, embed_path=DEFAULT_EMBED):
+    """Verify ``chunks.jsonl`` and ``embeddings.jsonl`` against a receipt.
+
+    Returns ``(ok, issues)`` where ``issues`` lists loud degradation messages.
+    An empty receipt (no expected hashes) is treated as "no integrity data" and
+    does not fail the check.
+    """
+    if not receipt:
+        return True, []
+    issues = []
+    for key, path in (("chunks", chunks_path), ("embeddings", embed_path)):
+        expected = receipt.get(key)
+        if not expected:
+            continue
+        actual = _sha256_file(path)
+        if actual != expected:
+            issues.append(
+                f"integrity mismatch for {key}: expected {expected[:12]}…, "
+                f"got {actual[:12] if actual else 'missing'} — refusing to load")
+    return not issues, issues
 
 
 def tokenize(text):
@@ -69,8 +114,8 @@ class Index:
         for toks in self.doc_tokens:
             for t in set(toks):
                 self.df[t] += 1
-        self.N = max(len(self.doc_tokens), 1)
-        self.avgdl = sum(len(t) for t in self.doc_tokens) / max(self.N, 1)
+        self.N = len(self.doc_tokens)
+        self.avgdl = sum(len(t) for t in self.doc_tokens) / self.N if self.N else 0.0
         self.k1 = 1.5
         self.b = 0.75
         self.idf = {
@@ -89,6 +134,8 @@ class Index:
             self.title_tokens.append(toks)
 
     def bm25(self, qt):
+        if self.N == 0:
+            return []
         scores = [0.0] * self.N
         for q in set(qt):
             idf = self.idf.get(q, 0.0)
@@ -102,6 +149,8 @@ class Index:
         return scores
 
     def tfidf_dense(self, qt):
+        if self.N == 0:
+            return []
         qtf = Counter(qt)
         qvec = {t: self.idf.get(t, 0.0) * c for t, c in qtf.items()}
         scores = [0.0] * self.N
@@ -132,6 +181,8 @@ class Index:
         return scores
 
     def title_scores(self, qt):
+        if self.N == 0:
+            return []
         s = set(qt)
         return [self.title_w * (len(s & self.title_tokens[i]) / max(len(s), 1))
                 for i in range(self.N)]
@@ -227,6 +278,20 @@ class Retriever:
 
 
 def build_retriever(path=DEFAULT_CHUNKS):
+    # KB integrity trust boundary (TrueFiasco, MIT-safe reimpl): when a
+    # kb_receipt.json is present, verify chunks/embeddings before loading and
+    # degrade to an empty index with a loud error on mismatch.
+    integrity_issues = []
+    receipt = load_receipt()
+    if receipt:
+        ok, issues = verify_receipt(receipt, chunks_path=path, embed_path=DEFAULT_EMBED)
+        if not ok:
+            integrity_issues = issues
+            chunks = []
+            encode = None
+            vectors = None
+            return Retriever(chunks, encode=encode, vectors=vectors)
+
     try:
         chunks = load_chunks(path)
     except FileNotFoundError:

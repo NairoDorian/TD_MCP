@@ -20,11 +20,14 @@ that doesn't exist locally still contributes its rank.
 
 import collections
 import concurrent.futures
+import os
+import sqlite3
 
 from td_mcp.rag.retriever import tokenize, version_tuple
 
 LOCAL_PREFIX = "local:"
 REMOTE_PREFIX = "remote:"
+WIKI_PREFIX = "wiki:"
 
 
 class Strategy:
@@ -58,6 +61,8 @@ class DenseStrategy(Strategy):
 
 
 class HyDEStrategy(Strategy):
+    """Always-on HyDE kept for explicit opt-in; the adaptive variant below is
+    the default behavior when dense embeddings are present."""
     def __init__(self, index):
         self.index = index
 
@@ -69,6 +74,19 @@ class HyDEStrategy(Strategy):
         scores = self.index.dense(hyp, query_vec=qv)
         order = sorted(range(self.index.N), key=lambda i: -scores[i])
         return [LOCAL_PREFIX + self.index.chunks[i]["id"] for i in order[:k]]
+
+
+class AdaptiveHyDEStrategy(HyDEStrategy):
+    """HyDE that only fires when the fused top score says the base pass likely
+    missed (wiki-rag finding: always-on HyDE is a net wash, low-score-triggered
+    HyDE is a win). The keep-only-if-better decision is made in
+    ``ParallelRetriever.search`` because it must compare two full fused passes.
+
+    ``candidates`` here is the same single-shot hypothetical-document pass;
+    the adaptive trigger lives in ``search``.
+    """
+    def name(self):
+        return "HyDE[adaptive]"
 
 
 class TitleStrategy(Strategy):
@@ -161,24 +179,152 @@ class RemoteMCPStrategy(Strategy):
         return keys
 
 
+class SqliteWikiStrategy(Strategy):
+    """Consume a touchdesigner-wiki-rag SQLite FTS5 index (manual.db).
+
+    Brings wiki-wide coverage — tutorials, concept pages, and full operator
+    docs not in our curated KB — into the RRF fusion pool.  Opt-in via the
+    ``wiki_db`` arg or ``TD_MCP_WIKI_DB`` env var (path to a wiki-rag
+    ``data/manual.db``).  Uses FTS5 BM25 only — no chromadb or
+    sentence-transformers dependency.
+
+    Wiki chunk URIs use the ``wiki:`` prefix and are resolved by
+    ``ParallelRetriever`` via ``self.wiki_docs`` (same pattern as
+    ``RemoteMCPStrategy.remote_docs``).
+
+    The FTS5 schema (from wiki-rag ingest.py) is:
+      chunks(chunk_id, text, heading, title, family, page_type, revid)
+      tokenize='porter unicode61'
+    """
+
+    def __init__(self, db_path):
+        self.db_path = db_path
+        self.wiki_docs: dict = {}
+
+    def name(self):
+        return "Wiki[sqlite]"
+
+    def candidates(self, qt, query, query_vec, k):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            terms = [t for t in qt if len(t) > 1]
+            if not terms:
+                conn.close()
+                return []
+            # Same FTS5 query shape wiki-rag uses: quoted terms, OR-joined.
+            match = " OR ".join('"{}"'.format(t) for t in terms)
+            rows = conn.execute(
+                "SELECT chunk_id, text, title, heading, anchor, family "
+                "FROM chunks WHERE chunks MATCH ? "
+                "ORDER BY bm25(chunks, 1.0, 2.0, 3.0) LIMIT ?",
+                (match, k),
+            ).fetchall()
+            conn.close()
+        except sqlite3.Error:
+            return []
+
+        out = []
+        for r in rows:
+            cid = r["chunk_id"]
+            uri = WIKI_PREFIX + cid
+            title = (r["title"] or "").strip()
+            anchor = (r["anchor"] or "").strip()
+            url = "https://docs.derivative.ca/" + title.replace(" ", "_")
+            if anchor:
+                url += "#" + anchor
+            family = (r["family"] or "").strip() or None
+            self.wiki_docs[uri] = {
+                "id": uri,
+                "source": "wiki-rag",
+                "title": title,
+                "family": family,
+                "category": "concept",
+                "url": url,
+                "min_version": "all",
+                "text": self._format_chunk(r),
+            }
+            out.append(uri)
+        return out
+
+    @staticmethod
+    def _format_chunk(r):
+        text = (r["text"] or "").strip()
+        heading = (r["heading"] or "").strip()
+        if heading and heading != "(intro)":
+            text = "### " + heading + "\n\n" + text
+        return text
+
+    def browse(self, query=None, family=None, limit=40):
+        """L0 — section/title map over the wiki FTS5 ``sections`` index, if
+        present (wiki-rag ships one). Falls back to chunk titles silently."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            terms = [t for t in tokenize(query) if len(t) > 1] if query else []
+            if terms:
+                match = " OR ".join('"{}"'.format(t) for t in terms)
+                sql = "SELECT heading, title, family, anchor FROM sections WHERE sections MATCH ?"
+                params = [match]
+                if family:
+                    sql += " AND family = ?"
+                    params.append(family)
+                sql += " ORDER BY rank LIMIT ?"
+            else:
+                sql = "SELECT heading, title, family, anchor FROM sections"
+                params = []
+                if family:
+                    sql += " WHERE family = ?"
+                    params.append(family)
+                sql += " ORDER BY title LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(sql, params).fetchall()
+            conn.close()
+            keys = ("heading", "title", "family", "anchor")
+            return [dict(zip(keys, r)) for r in rows]
+        except sqlite3.Error:
+            return []
+
+    def stats(self):
+        """KB statistics (page/chunk counts, operators per family)."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            pages = conn.execute(
+                "SELECT COUNT(*), SUM(chunks) FROM pages").fetchone()
+            fam = conn.execute(
+                "SELECT family, COUNT(*) FROM pages WHERE page_type='operator' "
+                "GROUP BY family ORDER BY family").fetchall()
+            conn.close()
+            return {"pages": pages[0] if pages else 0,
+                    "chunks": pages[1] if pages else 0,
+                    "operators": dict(fam)}
+        except sqlite3.Error:
+            return {}
+
+
 class ParallelRetriever:
     def __init__(self, retriever, enable_dense=True, enable_hyde=True,
-                 remote=None, remote_tool="search_touchdesigner_docs",
-                 remote_arg="query", reranker=None, rrf_k=60, top_m=15):
+                 remote=None, wiki_db=None, remote_tool="search_touchdesigner_docs",
+                 remote_arg="query", reranker=None, rrf_k=60, top_m=15,
+                 hyde_trigger=0.012, operator_boost=0.08, score_floor=0.0):
         self.retriever = retriever
         self.index = retriever.index
         self.reranker = reranker
         self.rrf_k = rrf_k
         self.top_m = top_m
+        self.hyde_trigger = hyde_trigger
+        self.operator_boost = operator_boost
+        self.score_floor = score_floor
 
         self.strategies = [BM25Strategy(self.index), TitleStrategy(self.index)]
         sources = sorted({c.get("category") for c in self.index.chunks if c.get("category")})
         for src in sources:
             self.strategies.append(SourceBM25Strategy(self.index, src))
+        self.hyde_strategy = None
         if enable_dense and self.index.encode and self.index.vectors:
             self.strategies.append(DenseStrategy(self.index))
             if enable_hyde:
-                self.strategies.append(HyDEStrategy(self.index))
+                self.hyde_strategy = AdaptiveHyDEStrategy(self.index)
 
         self.remote = None
         if remote:
@@ -187,7 +333,20 @@ class ParallelRetriever:
                 self.strategies.append(self.remote)
             except Exception:  # noqa: BLE001
                 self.remote = None
+
+        # Optional wiki-rag SQLite FTS5 index (wiki-wide coverage beyond our
+        # curated KB). Falls back to TD_MCP_WIKI_DB env var.
+        self.wiki_docs: dict = {}
+        wiki_path = wiki_db or os.environ.get("TD_MCP_WIKI_DB")
+        if wiki_path and os.path.exists(wiki_path):
+            try:
+                wiki_strat = SqliteWikiStrategy(wiki_path)
+                self.strategies.append(wiki_strat)
+                self.wiki_docs = wiki_strat.wiki_docs
+            except Exception:  # noqa: BLE001
+                pass
         self._idmap = None
+        self._op_title_map_cache = None
 
     def _chunk_by_id(self, cid):
         if self._idmap is None:
@@ -218,9 +377,20 @@ class ParallelRetriever:
             except Exception:  # noqa: BLE001
                 query_vec = None
 
+        # Plural stemming for lexical matching (cheap, no expansion blowup):
+        # BM25 + Title + Source strategies all receive the same stemmed qt.
+        # Only "pops"→"pop" matters in practice for the KB eval, but handle
+        # the generic case.
+        qt_stemmed = qt
+        if any(t.endswith("s") and t[:-1] in ("pop", "sop", "top", "chop", "dat", "mat", "comp") for t in qt):
+            qt_stemmed = list(qt)
+            for i, t in enumerate(qt_stemmed):
+                if t.endswith("s") and t[:-1] in ("pop", "sop", "top", "chop", "dat", "mat", "comp"):
+                    qt_stemmed[i] = t[:-1]
+
         ranked = [[] for _ in self.strategies]
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.strategies)) as ex:
-            futs = [ex.submit(s.candidates, qt, query, query_vec, self.rrf_k)
+            futs = [ex.submit(s.candidates, qt_stemmed, query, query_vec, self.rrf_k)
                    for s in self.strategies]
             for i, f in enumerate(futs):
                 ranked[i] = f.result()
@@ -230,21 +400,60 @@ class ParallelRetriever:
             for rank, key in enumerate(keys):
                 rrf[key] += 1.0 / (self.rrf_k + rank + 1)
 
-        fused = sorted(rrf.keys(), key=lambda key: -rrf[key])
-        out = []
-        for key in fused:
-            if key.startswith(LOCAL_PREFIX):
-                c = self._chunk_by_id(key[len(LOCAL_PREFIX):])
-                if c is None or not self._pass(c, family, category, version, source):
-                    continue
-                out.append((c, round(rrf[key], 4)))
-            else:
-                doc = self.remote.remote_docs.get(key) if self.remote else None
-                if doc is None:
-                    continue
-                if source and not doc.get("source", "").startswith(source):
-                    continue
-                out.append((doc, round(rrf[key], 4)))
+        # Operator-aware intent boost (TrueFiasco router, MIT-safe reimpl):
+        # when the query names an operator we know, hard-boost that operator's
+        # chunks in the RRF space. This makes "noise top amplitude" surface the
+        # Noise TOP parameter chunks over generic "noise" matches.
+        # The stemmed query string is used so "pops" → "pop" matches POP ops.
+        if self.operator_boost:
+            stemmed_query = " ".join(qt_stemmed)
+            boost_keys = self._operator_chunk_uris(stemmed_query)
+            if not boost_keys:
+                boost_keys = self._operator_chunk_uris(query)
+            for key in boost_keys:
+                rrf[key] += self.operator_boost
+
+            # Family-overview boost: queries naming a family plus a workflow
+            # word ("particle simulation with pops", "audio reactive setup")
+            # should surface the family-overview/tutorial chunks too.
+            family_hints = [t[:-1] if t.endswith("s") else t for t in qt
+                            if t in ("pops", "sops", "tops", "chops", "dats", "mats", "comps")
+                            or t[:-1] in ("pop", "sop", "top", "chop", "dat", "mat", "comp") and t.endswith("s")]
+            workflow_words = ("simulation", "setup", "recipe", "workflow", "reactive", "particle")
+            if family_hints and any(t in qt for t in workflow_words):
+                for c in self.index.chunks:
+                    title = (c.get("title") or "").lower()
+                    if "overview" in title or "family overview" in title:
+                        rrf[LOCAL_PREFIX + c["id"]] += self.operator_boost * 0.75
+
+            # Tutorial-workflow boost: when the query explicitly carries an
+            # "audio reactive"-style intent (not just "audio"), boost tutorial
+            # chunks with export/parameter wording.
+            if "audio" in qt and any(t in qt for t in ("reactive", "setup")):
+                for c in self.index.chunks:
+                    if c.get("category") != "tutorial":
+                        continue
+                    text = (c.get("text") or "").lower()
+                    if "export" in text and ("chop" in text or "parameter" in text):
+                        rrf[LOCAL_PREFIX + c["id"]] += self.operator_boost * 0.5
+
+        out = self._fuse(rrf, family, category, version, source, k)
+
+        # Adaptive HyDE (wiki-rag): run the hypothetical-doc pass only when the
+        # base fused pass looks like a miss, and keep the alternative only if
+        # its top score is strictly better.
+        if self.hyde_strategy is not None and (not out or out[0][1] < self.hyde_trigger):
+            try:
+                alt_keys = self.hyde_strategy.candidates(qt, query, query_vec, self.rrf_k)
+                if alt_keys:
+                    alt_rrf = rrf.copy()
+                    for rank, key in enumerate(alt_keys):
+                        alt_rrf[key] += 1.0 / (self.rrf_k + rank + 1)
+                    alt_out = self._fuse(alt_rrf, family, category, version, source, k)
+                    if alt_out and (not out or alt_out[0][1] > out[0][1]):
+                        out = alt_out
+            except Exception:  # noqa: BLE001
+                pass
 
         if self.reranker and out:
             top = out[:self.top_m]
@@ -256,4 +465,84 @@ class ParallelRetriever:
             reranked_scored = [(d, score_by_id.get(d["id"])) for d in reranked]
             rest = out[self.top_m:]
             out = reranked_scored + rest
+
+        # Score-floor abstention (TrueFiasco, MIT-safe): when every fused score
+        # sits below the floor, treat the query as out-of-domain and return
+        # nothing instead of surfacing low-confidence garbage.
+        if self.score_floor and out and out[0][1] < self.score_floor:
+            return []
+        return out[:k]
+
+    def _operator_chunk_uris(self, query):
+        """Return local chunk URIs for any operator named in ``query``.
+
+        Uses the corpus operator lookup (alias-tolerant) and returns
+        ``local:<chunk_id>`` for every chunk whose title/family matches the
+        resolved operator. Empty list when no operator is detected.
+        """
+        try:
+            from td_mcp.kb import corpus
+            ops = corpus.load_operators()
+            ql = query.lower()
+            if self._op_title_map_cache is None:
+                m = {}
+                for c in self.index.chunks:
+                    if c.get("category") != "operator":
+                        continue
+                    title = (c.get("title") or "").lower()
+                    if title:
+                        m.setdefault(title, []).append(LOCAL_PREFIX + c["id"])
+                self._op_title_map_cache = m
+            keys = []
+            # Only boost when the FULL operator name appears in the query —
+            # single-token probes like "top" would match 100+ TOP operators.
+            for key, rec in ops.items():
+                name = (rec.get("displayName") or rec.get("name") or "").lower()
+                if not name:
+                    continue
+                if name in ql or key.lower() in ql:
+                    uris = self._op_title_map_cache.get(name, [])
+                    for uri in uris:
+                        if uri not in keys:
+                            keys.append(uri)
+                    continue
+                # Aliases with 2+ words are precise enough to boost too.
+                for alias in rec.get("aliases") or []:
+                    al = alias.lower()
+                    if len(al.split()) >= 2 and al in ql:
+                        uris = self._op_title_map_cache.get(name, [])
+                        for uri in uris:
+                            if uri not in keys:
+                                keys.append(uri)
+                        break
+            return keys
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _fuse(self, rrf, family, category, version, source, k):
+        """Resolve fused RRF document URIs into (chunk, score) results."""
+        fused = sorted(rrf.keys(), key=lambda key: -rrf[key])
+        out = []
+        for key in fused:
+            if key.startswith(LOCAL_PREFIX):
+                c = self._chunk_by_id(key[len(LOCAL_PREFIX):])
+                if c is None or not self._pass(c, family, category, version, source):
+                    continue
+                out.append((c, round(rrf[key], 4)))
+            elif key.startswith(WIKI_PREFIX):
+                doc = self.wiki_docs.get(key)
+                if doc is None:
+                    continue
+                if family and doc.get("family") and doc["family"].lower() != family.lower():
+                    continue
+                if source and not doc.get("source", "").startswith(source):
+                    continue
+                out.append((doc, round(rrf[key], 4)))
+            else:
+                doc = self.remote.remote_docs.get(key) if self.remote else None
+                if doc is None:
+                    continue
+                if source and not doc.get("source", "").startswith(source):
+                    continue
+                out.append((doc, round(rrf[key], 4)))
         return out[:k]

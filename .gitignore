@@ -6,6 +6,7 @@ build/
 dist/
 embeddings.jsonl
 td_mcp/kb/chunks.jsonl
+td_mcp/kb/kb_receipt.json
 .pytest_cache/
 .DS_Store
 repomix-output.md

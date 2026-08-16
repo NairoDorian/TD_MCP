@@ -140,3 +140,57 @@ def combo_related(name: str, k: int = 8) -> List[str]:
         if r:
             out.append(r.get("displayName") or r.get("name"))
     return out
+
+
+def family_disambiguation(name):
+    """Return a disambiguation warning when ``name`` is ambiguous across families.
+
+    TouchDesigner operator families share names: "Noise" resolves to Noise TOP,
+    Noise CHOP, Noise SOP, Noise POP — four distinct operators. When a query
+    matches more than one family, the agent should be told to disambiguate
+    rather than silently receiving one random pick.
+
+    Returns a warning string, or ``None`` when the name is unambiguous / not
+    found.
+    """
+    recs = corpus.operators_matching(name)
+    if not recs:
+        return None
+    families = sorted({r.get("category") for r in recs if r.get("category")})
+    if len(families) > 1:
+        detail = ", ".join(
+            f"{r.get('displayName') or r.get('name')} ({r.get('category')})"
+            for r in recs
+        )
+        return (
+            f"Ambiguous name {name!r}: matches {len(families)} families "
+            f"[{', '.join(families)}]. Specify the full name, e.g. "
+            f"{recs[0].get('displayName') or recs[0].get('name')}. "
+            f"All matches: {detail}."
+        )
+    return None
+
+
+FAMILIES = ["TOP", "CHOP", "SOP", "DAT", "MAT", "COMP", "POP"]
+
+
+def sibling_operators(title):
+    """Same-named operators in other families (wiki-rag disambiguation guardrail).
+
+    "Noise TOP" → ["Noise CHOP", "Noise SOP", "Noise POP"]. A search that
+    matched one family must know the same concept exists elsewhere before
+    treating the answer as THE answer.
+    """
+    parts = (title or "").rsplit(" ", 1)
+    if len(parts) != 2 or parts[1].upper() not in FAMILIES:
+        return []
+    base = parts[0]
+    recs = corpus.operators_matching(base)
+    out = []
+    for r in recs:
+        fam = (r.get("category") or "").upper()
+        if fam and fam != parts[1].upper():
+            dn = r.get("displayName") or r.get("name") or ""
+            if dn:
+                out.append(dn)
+    return sorted(set(out))

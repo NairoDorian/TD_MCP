@@ -135,10 +135,45 @@ NETWORK_TEMPLATES: Dict[str, Dict[str, object]] = {
     },
 }
 
-# Suggested connections derived from each operator's `inputs` (positional).
-CONNECTION_FAMILY = {
-    "CHOP": "CHOP", "TOP": "TOP", "SOP": "SOP", "DAT": "DAT", "POP": "POP", "COMP": "COMP",
+# --- Gotcha-annotated templates (mrinalghosh + quentinR2) --------------------
+GOTCHA_TEMPLATES: Dict[str, Dict[str, object]] = {
+    "chop_source_with_null": {
+        "description": "Source CHOP -> Null. Source CHOPs rename/prefix channels unpredictably, so reference the Null, not the source.",
+        "gotchas": ["Reference the Null, never the source CHOP", "Null stabilizes the channel names"],
+        "options": {"source_type": {"type": "string", "default": "mouseinCHOP"}},
+    },
+    "glsl_top_vec4_uniform": {
+        "description": "GLSL TOP with a vec4 custom uniform. Put the uniform on the Vectors page, not the Constants page.",
+        "gotchas": ["Vectors page = runtime; Constants page = compile-time (fails silently)"],
+        "options": {"uniform_name": {"type": "string", "default": "uColor"}},
+    },
+    "audio_in_with_analyze": {
+        "description": "Audio Device In -> Null (time-domain) -> Audio Spectrum -> Null (frequency-domain).",
+        "gotchas": ["Keep two stable Null endpoints: one time-domain, one frequency-domain"],
+    },
+    "feedback_loop_top": {
+        "description": "Source TOP -> Composite[0]; Feedback TOP -> Composite[1]; Feedback.top = Composite.",
+        "gotchas": ["Wire Feedback's 'top' parameter to the Composite, not to the source",
+                    "Use Composite (not the final Null) as the feedback output"],
+        "options": {"source_type": {"type": "string", "default": "noiseTOP"}},
+    },
+    "render_pipeline": {
+        "description": "Camera + Light + Geo (empty) + Render TOP wired via path-parameter references.",
+        "gotchas": ["Geometry COMP starts empty — add SOPs to make it visible",
+                    "Geometry's create type is geometryCOMP, not geoCOMP"],
+    },
 }
+
+
+def list_gotcha_templates() -> List[str]:
+    return sorted(GOTCHA_TEMPLATES)
+
+
+def get_gotcha_template(name: str) -> Dict[str, object]:
+    if name not in GOTCHA_TEMPLATES:
+        return {"error": f"unknown template {name!r}",
+                "available": list_gotcha_templates()}
+    return {"name": name, **GOTCHA_TEMPLATES[name]}
 
 
 def list_glsl_patterns() -> List[str]:

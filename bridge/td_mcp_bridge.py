@@ -98,8 +98,38 @@ def _ws_push(event):
 TD_MCP_PORT = int(os.environ.get("TD_MCP_PORT", "9980"))
 
 ALLOW_EXEC = os.environ.get("TD_MCP_ALLOW_EXEC", "1") != "0"
+# Two-tier exec mode (simplified): "off" disables execute_python entirely;
+# "on" (default) allows it but always refuses obvious dangerous builtins.
+# Legacy aliases restricted/standard/full map to "on"; old "off" still works.
+EXEC_MODE = os.environ.get("TD_MCP_EXEC_MODE", "on")
+if EXEC_MODE in ("restricted", "standard", "full"):
+    EXEC_MODE = "on"
+if EXEC_MODE not in ("off", "on"):
+    EXEC_MODE = "on"
+if EXEC_MODE == "off":
+    ALLOW_EXEC = False
+# Always-refused builtins when exec is on (defensive, not a separate mode).
+_EXEC_FORBIDDEN = ("__import__", "open", "exec", "eval", "compile", "globals", "locals")
 PROTECTED = [p.strip() for p in os.environ.get("TD_MCP_PROTECTED_PATHS", "").split(",") if p.strip()]
 AUTH_TOKEN = os.environ.get("TD_MCP_AUTH_TOKEN") or secrets.token_urlsafe(24)
+
+# Bounded operations (dcc-mcp pattern, §6.1): cap the size/scope of reads and
+# writes so an agent cannot balloon the context or freeze the bridge. All caps
+# are env-tunable and enforced server-side in the relevant handlers.
+MAX_BATCH_SIZE = int(os.environ.get("TD_MCP_MAX_BATCH", "64"))
+MAX_PARAMS = int(os.environ.get("TD_MCP_MAX_PARAMS", "256"))
+MAX_DEPTH = int(os.environ.get("TD_MCP_MAX_DEPTH", "4"))
+MAX_SAMPLES = int(os.environ.get("TD_MCP_MAX_SAMPLES", "4096"))
+MAX_ROWS = int(os.environ.get("TD_MCP_MAX_ROWS", "10000"))
+MAX_DAT_BYTES = int(os.environ.get("TD_MCP_MAX_DAT_BYTES", "1048576"))  # 1 MiB
+
+
+def _cap(value, limit):
+    """Clamp a numeric value to [0, limit]; returns int."""
+    try:
+        return max(0, min(int(value), limit))
+    except (TypeError, ValueError):
+        return limit
 
 # Recovery-hint rules (Embody-style): (compiled regex, cause, action, next_tools)
 RECOVERY_HINT_RULES = [
@@ -234,6 +264,34 @@ def _do_delete(path):
     return {"ok": True}
 
 
+def _json_safe(value):
+    """Recursively convert a TD Python value to JSON-safe form (TDPilot exec shape)."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in list(value)]
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    # TD objects: prefer .path/.name, then x/y/z vector-ish attributes.
+    if hasattr(value, "path") and hasattr(value, "name"):
+        return {"path": str(value.path), "name": str(value.name),
+                "type": str(getattr(value, "type", type(value).__name__))}
+    if all(hasattr(value, a) for a in ("x", "y")):
+        return [_json_safe(value.x), _json_safe(value.y),
+                _json_safe(getattr(value, "z", None)),
+                _json_safe(getattr(value, "w", None))]
+    return str(value)
+
+
+def _serialize_exec_result(value):
+    structured_types = (type(None), bool, int, float, str, dict, list, tuple, set)
+    return {
+        "result": _json_safe(value),
+        "result_type": type(value).__name__,
+        "result_is_structured": isinstance(value, structured_types),
+    }
+
+
 def _do_get_parameters(path, detail="normal"):
     node = _op(path)
     if node is None:
@@ -246,6 +304,84 @@ def _do_get_parameters(path, detail="normal"):
     return {"ok": True, "params": dict(list(params.items())[:40])}
 
 
+def _do_get_parameter_info(path, names=None):
+    """Full per-parameter schema (touch_mcp `td_get_parameter_info` idea).
+
+    ``names`` is a comma-separated string or list of parameter names; empty
+    means "all". Returns per-parameter label/value/mode/default/page/style and
+    bounds/menu info where available.
+    """
+    node = _op(path)
+    if node is None:
+        return {"ok": False, "error": "not found"}
+    if isinstance(names, str):
+        names = [n.strip() for n in names.split(",") if n.strip()]
+    if not names:
+        names = [p.name for p in node.par]
+    out = {}
+    for nm in names:
+        par = getattr(node.par, nm, None)
+        if par is None:
+            continue
+        entry = {
+            "name": par.name,
+            "label": getattr(par, "label", nm),
+            "value": _json_safe(par.eval() if hasattr(par, "eval") else par.val),
+            "mode": str(getattr(par, "mode", "")),
+            "default": _json_safe(getattr(par, "default", None)),
+            "page": str(getattr(getattr(par, "page", None), "name", None) or ""),
+            "style": str(getattr(par, "style", "")),
+        }
+        for attr in ("min", "max", "clampMin", "clampMax"):
+            try:
+                entry[attr] = _json_safe(getattr(par, attr))
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            if str(getattr(par, "style", "")) in ("Menu", "MenuIndex", "Str"):
+                entry["menuNames"] = [str(x) for x in getattr(par, "menuNames", [])]
+                entry["menuLabels"] = [str(x) for x in getattr(par, "menuLabels", [])]
+        except Exception:  # noqa: BLE001
+            pass
+        out[nm] = entry
+    return {"ok": True, "parameters": out}
+
+
+def _do_bind_parameter_expression(path, param, expression):
+    """Bind a parameter expression with eval-error reporting (mrinalghosh idea).
+
+    Sets ``par.expr``, snaps ``par.mode`` to EXPRESSION, evals, and returns any
+    *new* cook errors so a bad expression never silently no-ops.
+    """
+    node = _op(path)
+    if node is None:
+        return {"ok": False, "error": "not found"}
+    par = getattr(node.par, param, None)
+    if par is None:
+        return {"ok": False, "error": f"unknown parameter {param!r}"}
+    try:
+        before = [str(e) for e in getattr(node, "errors", []) or []]
+    except Exception:  # noqa: BLE001
+        before = []
+    try:
+        par.expr = expression
+        mode_cls = type(par.mode)
+        par.mode = getattr(mode_cls, "EXPRESSION", par.mode)
+        value = _json_safe(par.eval() if hasattr(par, "eval") else par.val)
+        err = None
+    except Exception as e:  # noqa: BLE001
+        value = None
+        err = f"{type(e).__name__}: {e}"
+    try:
+        after = [str(e) for e in getattr(node, "errors", []) or []]
+    except Exception:  # noqa: BLE001
+        after = []
+    new_errors = [e for e in after if e not in before]
+    return {"ok": True, "path": node.path, "param": param,
+            "expression": expression, "mode": str(par.mode),
+            "value": value, "error": err, "op_errors": new_errors}
+
+
 def _do_get_errors(path):
     node = _op(path)
     if node is None:
@@ -255,10 +391,16 @@ def _do_get_errors(path):
 
 def _do_execute_python(code):
     if not ALLOW_EXEC:
-        return {"ok": False, "error": "execute_python is disabled (TD_MCP_ALLOW_EXEC=0)"}
+        return {"ok": False, "error": "execute_python is disabled (TD_MCP_ALLOW_EXEC=0 / TD_MCP_EXEC_MODE=off)"}
+    for name in _EXEC_FORBIDDEN:
+        if name in code:
+            return {"ok": False, "error": f"execute_python forbids {name!r}"}
     ns = {"op": op, "project": project, "me": me, "parent": parent}
     exec(code, ns)  # noqa: S102 - intentional in-TD RCE, gated by host/exec flag
-    return {"ok": True, "result": repr(ns.get("result", None))}
+    value = ns.get("__result__", ns.get("result", None))
+    out = {"ok": True, "exec_mode": EXEC_MODE}
+    out.update(_serialize_exec_result(value))
+    return out
 
 
 def _do_list_nodes(path, detail="normal"):
@@ -493,6 +635,10 @@ def _do_set_parameters(path, params, detail="normal"):
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
+    if len(params) > MAX_PARAMS:
+        return {"ok": False,
+                "error": f"too many parameters: {len(params)} > {MAX_PARAMS} "
+                          "(TD_MCP_MAX_PARAMS)"}
     applied = {}
     for k, v in params.items():
         if k not in node.par:
@@ -942,6 +1088,10 @@ def _do_get_resource(uri):
 
 def _do_batch(ops):
     """Collapse N tool calls into one round-trip (benoitliard)."""
+    if len(ops) > MAX_BATCH_SIZE:
+        return {"ok": False,
+                "error": f"batch too large: {len(ops)} > {MAX_BATCH_SIZE} "
+                          "(TD_MCP_MAX_BATCH)"}
     results = []
     for call in ops:
         tool = call.get("tool")
@@ -961,6 +1111,7 @@ def _do_batch(ops):
 def _do_describe():
     """Self-documenting tool manifest (8beeeaaat)."""
     return {"ok": True, "auth_required": True, "allow_exec": ALLOW_EXEC,
+            "exec_mode": EXEC_MODE,
             "protected_paths": PROTECTED, "tools": sorted(_DISPATCH.keys())}
 
 
@@ -969,6 +1120,7 @@ def _do_read_chop(path, channel=None, samples=10):
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
+    samples = _cap(samples, MAX_SAMPLES)
     chans = node.chans
     out = {}
     for c in (chans if channel is None else [node[channel]]):
@@ -994,10 +1146,44 @@ def _do_read_dat(path, rows=10):
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
+    rows = _cap(rows, MAX_ROWS)
     data = []
     for r in range(min(rows, node.numRows)):
         data.append([node[r, c].val for c in range(node.numCols)])
     return {"ok": True, "rows": data}
+
+
+def _do_set_dat_text(path, text, expected_sha256=None):
+    """Set a DAT's text, optionally guarded by an expected SHA-256.
+
+    Optimistic concurrency (dcc-mcp pattern): pass the SHA-256 of the DAT's
+    current text in ``expected_sha256``. If it doesn't match, the write is
+    refused so concurrent edits can't clobber each other.
+    """
+    node = _op(path)
+    if node is None:
+        return {"ok": False, "error": "not found"}
+    encoded = text.encode("utf-8") if isinstance(text, str) else text
+    if len(encoded) > MAX_DAT_BYTES:
+        return {"ok": False,
+                "error": f"DAT text too large: {len(encoded)} > {MAX_DAT_BYTES} bytes "
+                          "(TD_MCP_MAX_DAT_BYTES)"}
+    if expected_sha256:
+        current = getattr(node, "text", "") or ""
+        current_bytes = current.encode("utf-8") if isinstance(current, str) else current
+        actual = hashlib.sha256(current_bytes).hexdigest()
+        if not hmac.compare_digest(actual, str(expected_sha256).lower()):
+            return {"ok": False,
+                    "error": "DAT text changed since the expected_sha256 was "
+                             "computed; re-read and retry",
+                    "expected_sha256": str(expected_sha256).lower(),
+                    "actual_sha256": actual}
+    try:
+        node.text = text
+        new_sha = hashlib.sha256(encoded).hexdigest()
+        return {"ok": True, "path": node.path, "sha256": new_sha}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
 
 
 _DISPATCH = {
@@ -1006,6 +1192,8 @@ _DISPATCH = {
     "delete_node": lambda a: _do_delete(a.get("path")),
     "set_parameters": lambda a: _do_set_parameters(a.get("path"), a.get("params", {}), a.get("detailLevel", "normal")),
     "get_parameters": lambda a: _do_get_parameters(a.get("path"), a.get("detailLevel", "normal")),
+    "get_parameter_info": lambda a: _do_get_parameter_info(a.get("path"), a.get("names")),
+    "bind_parameter_expression": lambda a: _do_bind_parameter_expression(a.get("path"), a.get("param"), a.get("expression")),
     "get_errors": lambda a: _do_get_errors(a.get("path")),
     "execute_python": lambda a: _do_execute_python(a.get("code")),
     "list_nodes": lambda a: _do_list_nodes(a.get("path"), a.get("detailLevel", "normal")),
@@ -1017,7 +1205,9 @@ _DISPATCH = {
     "read_chop": lambda a: _do_read_chop(a.get("path"), a.get("channel"), a.get("samples", 10)),
     "read_top": lambda a: _do_read_top(a.get("path"), a.get("detailLevel", "brief")),
     "read_dat": lambda a: _do_read_dat(a.get("path"), a.get("rows", 10)),
-    "scan_network": lambda a: _do_scan_network(a.get("path"), a.get("depth", 3)),
+    "set_dat_text": lambda a: _do_set_dat_text(a.get("path"), a.get("text", ""), a.get("expected_sha256")),
+    "scan_network": lambda a: _do_scan_network(a.get("path"), _cap(a.get("depth", 3), MAX_DEPTH)),
+    "build_and_verify": lambda a: _do_build_and_verify(a.get("path"), a.get("type"), a.get("name"), a.get("params")),
     "connect_nodes": lambda a: _do_connect_nodes(a.get("from_path"), a.get("to_path"), a.get("from_output", 0), a.get("to_input", 0)),
     "rename_node": lambda a: _do_rename_node(a.get("path"), a.get("new_name")),
     "copy_node": lambda a: _do_copy_node(a.get("path"), a.get("new_parent"), a.get("new_name")),
@@ -1034,21 +1224,44 @@ _DISPATCH = {
     "get_performance": lambda a: _do_get_performance(a.get("path")),
     "validate_network": lambda a: _do_validate_network(a.get("path"), a.get("depth", 2)),
     "set_flags": lambda a: _do_set_flags(a.get("path"), a.get("flags")),
-    "find_nodes": lambda a: _do_find_nodes(a.get("path"), a.get("query"), a.get("type"), a.get("depth", 4)),
+    "find_nodes": lambda a: _do_find_nodes(a.get("path"), a.get("query"), a.get("type"), _cap(a.get("depth", 4), MAX_DEPTH)),
     "set_node_position": lambda a: _do_set_node_position(a.get("path"), a.get("x", 0), a.get("y", 0)),
     "timeline": lambda a: _do_timeline(a.get("action"), a.get("value")),
-    "export_recipe": lambda a: _do_export_recipe(a.get("path"), a.get("depth", 3)),
+    "export_recipe": lambda a: _do_export_recipe(a.get("path"), _cap(a.get("depth", 3), MAX_DEPTH)),
     "import_recipe": lambda a: _do_import_recipe(a.get("recipe"), a.get("target_parent", "*here")),
     "save_tox": lambda a: _do_save_tox(a.get("path"), a.get("file_path")),
 }
 
 
+def _redact_paths(text):
+    """Redact user paths and the bridge's own home dir from error messages.
+
+    TDPilot H-1: ``/Users/<user>/...`` → ``~/...`` and ``~/.td_mcp/...`` →
+    ``<TD_MCP_HOME>/...`` so 500s don't leak the operator's username or repo
+    layout to an agent log.
+    """
+    if not text:
+        return text
+    out = str(text)
+    home = os.path.expanduser("~")
+    if home and home not in ("", "/"):
+        out = out.replace(home, "~")
+    mcp_home = os.path.join("~", ".td_mcp").replace("\\", "/")
+    out = out.replace(os.path.join(os.path.expanduser("~"), ".td_mcp").replace("\\", "/"),
+                      "<TD_MCP_HOME>")
+    out = out.replace(mcp_home, "<TD_MCP_HOME>")
+    return out
+
+
 def _wrap(result):
-    """Attach recovery hints to any failed result."""
-    if isinstance(result, dict) and result.get("ok") is False and "recovery_hints" not in result:
-        hints = recovery_hints(result.get("error", ""))
-        if hints:
-            result["recovery_hints"] = hints
+    """Attach recovery hints to any failed result, redacting user paths."""
+    if isinstance(result, dict) and result.get("ok") is False:
+        if "recovery_hints" not in result:
+            hints = recovery_hints(result.get("error", ""))
+            if hints:
+                result["recovery_hints"] = hints
+        if result.get("error"):
+            result["error"] = _redact_paths(result["error"])
     return result
 
 
@@ -1523,4 +1736,5 @@ def stop():
 
 def status():
     return {"running": _server is not None, "port": TD_MCP_PORT,
-            "auth_token": AUTH_TOKEN, "allow_exec": ALLOW_EXEC}
+            "auth_token": AUTH_TOKEN, "allow_exec": ALLOW_EXEC,
+            "exec_mode": EXEC_MODE}

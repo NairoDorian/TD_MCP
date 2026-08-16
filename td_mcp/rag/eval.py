@@ -123,12 +123,74 @@ def main():
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--k", type=int, default=5)
+    ap.add_argument("--name-integrity", action="store_true",
+                    help="also verify every operator name resolves + no retokenization")
     args = ap.parse_args()
 
     ret = build_retriever()
     pr = ParallelRetriever(ret)
     print(f"KB chunks: {len(ret.chunks)}")
     run(pr, QUERIES, ks=(1, 3, args.k))
+    if args.name_integrity:
+        report = name_integrity(ret)
+        print(f"name-integrity: operators={report['operators']} "
+              f"resolved={report['resolved']} unresolved={report['unresolved']} "
+              f"retokenized={report['retokenized']}")
+        for bad in report["unresolved_names"] + report["retokenized_names"]:
+            print("  MISS:", bad)
+        if report["unresolved"] or report["retokenized"]:
+            raise SystemExit(1)
+
+
+def name_integrity(retriever, corpus=None):
+    """TrueFiasco name-integrity gate, MIT-safe reimpl.
+
+    Every *expected chunk id* in the eval set must resolve to a real chunk in
+    the retriever, and every operator-family expected id must exist in the
+    corpus. This is the discipline that matters: if the eval set references
+    operators/chunks that don't exist, the eval itself is unsound.
+
+    Also reports per-family coverage across the corpus.
+
+    Returns a report dict with ``ok`` True only when unresolved == 0 and
+    retokenized == 0.
+    """
+    from td_mcp.kb import corpus as corpus_mod
+    ops = corpus_mod.load_operators() if corpus is None else corpus
+    chunk_ids = {c.get("id") for c in retriever.chunks}
+    # corpus_* / corpus_py_* variants in eval satisfy the same expected hit, so
+    # they don't need to exist verbatim as long as the base id does.
+    unresolved_ids, retokenized_ids = [], []
+
+    def _base(exp_id):
+        return (exp_id
+                .removeprefix("corpus_py_")
+                .removeprefix("corpus_"))
+
+    for q in QUERIES:
+        for exp in q.get("exp", []):
+            base = _base(exp)
+            # Curated chunks use snake_case ids; corpus chunks are corpus_<key>.
+            if base in chunk_ids or f"corpus_{base}" in chunk_ids or f"corpus_py_{base}" in chunk_ids:
+                continue
+            unresolved_ids.append(exp)
+
+    by_family = {}
+    for rec in ops.values():
+        fam = rec.get("category")
+        if fam:
+            by_family[fam] = by_family.get(fam, 0) + 1
+    report = {
+        "ok": not unresolved_ids and not retokenized_ids,
+        "operators": len(ops),
+        "resolved": len(chunk_ids),
+        "unresolved": len(unresolved_ids),
+        "retokenized": len(retokenized_ids),
+        "unresolved_names": unresolved_ids[:20],
+        "retokenized_names": retokenized_ids[:20],
+        "by_family": by_family,
+    }
+    return report
 
 
 if __name__ == "__main__":

@@ -31,7 +31,7 @@
 | [superdwayne/Touchdesigner-mcp](https://github.com/superdwayne/Touchdesigner-mcp) | 6 | Py+JS | Bridge + proxy | ✅ embedded `.tox` | small | One-click `.mcpb`, natural names, workflow presets |
 | [benoitliard/touch-mcp](https://github.com/benoitliard/touch-mcp) | 4 | Py (FastMCP) | Bridge (WebSocket) | ✅ `.tox` | small | 37 tools, `td_batch`, auto-reconnect |
 | [cacheflowe/td-docs-mcp](https://github.com/cacheflowe/td-docs-mcp) | 4 | Py | **Docs only** | ❌ | live-scraped | Crawl4AI crawler + cleaner, fuzzy search |
-| [NairoDorian/TD_MCP](https://github.com/NairoDorian/TD_MCP) | 0 | — | Placeholder | — | — | Empty README, stub only |
+| [NairoDorian/TD_MCP](https://github.com/NairoDorian/TD_MCP) | — | Py | **Ours — ultimate** | ✅ 39 live + 45 offline | 1,091 chunks + 661 ops + 214 py | Two-server split, hybrid RAG (recall 0.966), self-healing, TDN, show-control/LED, memory + observability, hardened bridge |
 
 ---
 
@@ -102,8 +102,10 @@
 - **Strengths:** Proves correctness with a published eval harness; generates real `.toe/.tox` offline.
 - **Weaknesses:** AGPL-3.0 (copyleft — matters if you ship a modified network service); young.
 
-### NairoDorian/TD_MCP — *placeholder*
-- Empty repo (1 commit, README only: "Touchdesigner MCP"). Listed for completeness; no functionality yet. Good candidate name if you want to publish the merged project here.
+### NairoDorian/TD_MCP — *the ultimate merged server (this repo)*
+- **v1.9+ status:** no longer a placeholder. **84 MCP tools** (45 offline `td_*` + 39 live), two-server split, hybrid RAG with recall@5 ≈ 0.966, self-healing pipeline, TDN YAML, show-control/LED/media-server planners, SQLite memory + observability, technique memory cycle, bounded ops, exec-mode tiers, SHA-256 DAT concurrency, bridge staleness guard, name-integrity eval, KB integrity receipt, adaptive HyDE, operator-aware intent boost, freshness banner, L0/L1/L2 doc tiering, gotcha templates, source registry, show-readiness checklist, param-family expansion, conversation compaction, pre-turn injection, activity log, structured exec results, `get_parameter_info`, `bind_parameter_expression`.
+- **Safety:** auth, DNS-rebind, origin pinning, `ui.undo`, protected paths, `TD_MCP_ALLOW_EXEC`, `TD_MCP_EXEC_MODE` tiers, traceback redaction.
+- **The one to run:** absorbs every feature below plus the ones added since.
 
 ### superdwayne/Touchdesigner-mcp — *best "just works" installer*
 - **Approach:** a Python server **embedded in a self-contained `.tox`** (port **8053**) + a Node.js **proxy** (stdio/SSE) between Claude and TD. Ships a one-click `touchdesigner-mcp-1.0.0.mcpb` Claude Desktop bundle (1.3 MB).

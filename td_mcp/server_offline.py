@@ -32,6 +32,11 @@ from td_mcp.tools import layout as layout_mod
 from td_mcp import param_resolver as param_resolver_mod
 from td_mcp.tools.risk import risk_class, tool_annotations
 from td_mcp.util.output_budget import truncate_text, DEFAULT_MAX_CHARS
+from td_mcp.observability import get_trace_log
+from td_mcp import freshness as freshness_mod
+from td_mcp import scaffolds as scaffolds_mod
+from td_mcp import safety_registry as safety_registry_mod
+from td_mcp import activity as activity_mod
 
 DEFAULT_CHUNKS = os.path.join(os.path.dirname(__file__), "kb", "chunks.jsonl")
 
@@ -40,16 +45,27 @@ def _fmt(results, query, max_chars=None):
     if not results:
         return f"No documentation matched: {query!r}. Try a different operator/Python class name."
     lines = [f"Found {len(results)} doc chunk(s) for {query!r}:\n"]
+    banner = freshness_mod.freshness_banner()
+    if banner:
+        lines.append("> " + banner + "\n")
     for c, sc in results:
         head = f"### {c.get('title')}  [{c.get('family') or c.get('category')}]  (score {sc})"
         meta = f"source: {c.get('source', '')}"
+        url = c.get('url')
+        if url:
+            meta += f"\nlink: {url}"
         text = c.get('text', '')
+        # Sibling-operator guardrail (wiki-rag): when a hit is an operator,
+        # flag the same-named operators in other families.
+        siblings = knowledge_graph.sibling_operators(c.get('title'))
         # Explicit per-call cap wins; otherwise honor the env-tunable cap.
         cap = max_chars or DEFAULT_MAX_CHARS
         if cap:
             text, truncated, _info = truncate_text(text, cap)
             if truncated:
                 text += f"\n[{_info['omitted_chars']} chars omitted by output budget]"
+        if siblings:
+            text += f"\n[siblings: {', '.join(siblings)}]"
         lines.append(f"{head}\n{meta}\n{text}\n")
     return "\n".join(lines)
 
@@ -78,21 +94,43 @@ def get_pr():
         remote = None
         if os.environ.get("TD_MCP_REMOTE_MCP"):
             remote = os.environ["TD_MCP_REMOTE_MCP"].split()
-        _PR = ParallelRetriever(build_retriever(), reranker=reranker, remote=remote)
+        wiki_db = os.environ.get("TD_MCP_WIKI_DB")
+        _PR = ParallelRetriever(build_retriever(), reranker=reranker, remote=remote,
+                                wiki_db=wiki_db)
     return _PR
 
 
 # ============================================================
 # Corpus-backed offline tools
 # ============================================================
-def td_docs_search(query, family=None, category=None, version=None, k=5):
-    return _fmt(get_pr().search(query, family=family, category=category, version=version, k=k), query)
+def _disambig_note(name, family=None, category=None):
+    """Family-disambiguation warning for a bare operator name (if any).
+
+    Returns ``None`` when the name is unambiguous or the caller already
+    scoped the lookup via ``family``/``category``.
+    """
+    if family or category:
+        return None
+    return knowledge_graph.family_disambiguation(name)
+
+
+def td_docs_search(query, family=None, category=None, version=None, k=5, max_chars=None):
+    out = _fmt(get_pr().search(query, family=family, category=category, version=version, k=k),
+               query, max_chars=max_chars)
+    note = _disambig_note(query, family, category)
+    if note:
+        out += "\n\n> " + note
+    return out
 
 
 def td_docs_operator(name, k=3):
     """Full parameter + connector spec for one operator, with auto-appended Python class docs."""
+    out = ""
+    note = knowledge_graph.family_disambiguation(name)
+    if note:
+        out += note + "\n\n"
     # First get the operator doc
-    out = td_docs_search(name, category="operator", k=k)
+    out += td_docs_search(name, category="operator", k=k)
     # Then try to append the Python class (cacheflowe technique)
     # Map operator name to Python class: "Movie File In TOP" -> "MoviefileinTOP"
     op_rec = corpus.operator_record(name)
@@ -147,13 +185,18 @@ def td_docs_family(family, version=None):
 
 def td_docs_parameter(op_name, k=1):
     """Return the parameter schema for one operator, merged from the 900+ operator corpus."""
+    note = knowledge_graph.family_disambiguation(op_name)
     rec = corpus.operator_record(op_name)
     if rec is None:
-        return (f"No operator matched {op_name!r}. "
-                f"Try td_docs_family for a list.")
+        msg = f"No operator matched {op_name!r}. Try td_docs_family for a list."
+        if note:
+            msg = note + "\n\n" + msg
+        return msg
     schema = corpus.param_schema(rec)
     lines = [f"### {rec.get('displayName') or rec.get('name')} "
              f"[{rec.get('category')}]  (since {rec.get('version','?')})", ""]
+    if note:
+        lines.append("> " + note)
     if rec.get("description"):
         lines.append(rec["description"].strip() + "\n")
     if schema:
@@ -384,6 +427,252 @@ def td_docs_glossary(limit=200):
     return "\n".join(lines)
 
 
+def td_docs_browse(query=None, family=None, limit=40):
+    """L0 — orient before retrieving: section/title map of the KB.
+
+    ``query`` is optional; without it the whole family/index is listed.
+    ``family`` scopes to one operator family (TOP/CHOP/SOP/DAT/COMP/POP).
+    """
+    ret = get_pr()
+    if family and family.upper() not in ret.families():
+        return (f"Unknown family {family!r}. Known families: "
+                f"{', '.join(ret.families())}.")
+    rows = []
+    for c in ret.chunks:
+        if family and c.get("family") != family.upper():
+            continue
+        title = c.get("title")
+        kind = c.get("family") or c.get("category")
+        if (title, kind) in rows:
+            continue
+        if query and query.lower() not in title.lower():
+            continue
+        rows.append((title, kind))
+        if len(rows) >= limit:
+            break
+    header = f"### KB section map ({len(rows)} entries"
+    if family:
+        header += f", family={family.upper()}"
+    if query:
+        header += f", query={query!r}"
+    header += "):\n"
+    lines = [header]
+    for title, kind in rows:
+        lines.append(f"- {title}  [{kind}]")
+    return "\n".join(lines)
+
+
+def td_docs_read_page(title, section=None):
+    """L2 — read one KB page (title match) in full, optionally scoped to a section.
+
+    Complements ``td_docs_browse`` (L0) and ``td_docs_search`` (L1).
+    """
+    ret = get_pr()
+    matches = [c for c in ret.chunks if (c.get("title") or "").lower() == (title or "").lower()]
+    if not matches:
+        # fall back to substring
+        matches = [c for c in ret.chunks if (title or "").lower() in (c.get("title") or "").lower()]
+    if not matches:
+        return f"No KB page matched {title!r}. Try td_docs_browse for the index."
+    lines = [f"### {matches[0].get('title')}  [{matches[0].get('family') or matches[0].get('category')}]", ""]
+    for c in matches:
+        text = c.get("text", "")
+        if section and section.lower() not in text.lower():
+            continue
+        lines.append(text)
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def td_scaffold_show(project_type="vj"):
+    """Scaffold a TouchDesigner show/VJ project blueprint (ai-brain idea).
+
+    Returns a TDN-ready operator list for common project types: ``vj``,
+    ``audio_reactive``, or ``installation``. Feed the ``operators`` field into
+    ``td_build_network`` to get diffable YAML.
+    """
+    sc = scaffolds_mod.scaffold_show(project_type)
+    if "error" in sc:
+        return _json_dumps(sc)
+    lines = [f"### Scaffold: {sc['name']}", sc["description"], "",
+             "Sections: " + ", ".join(sc["sections"]), ""]
+    lines.append("Operators (pass to td_build_network):")
+    for op in sc["operators"]:
+        ins = [i for i in (op.get("inputs") or []) if i]
+        lines.append(f"  - {op['name']}  {op['type']}"
+                     + (f"  <- {', '.join(ins)}" if ins else ""))
+    return "\n".join(lines)
+
+
+def td_gotcha_template(name="feedback_loop_top"):
+    """Return a gotcha-annotated network template (mrinalghosh/quentinR2)."""
+    from td_mcp import glsl_patterns as glsl_mod
+    t = glsl_mod.get_gotcha_template(name)
+    if "error" in t:
+        return _json_dumps(t)
+    lines = [f"### Template: {t['name']}", t["description"], "", "Gotchas:"]
+    for g in t.get("gotchas", []):
+        lines.append(f"  - {g}")
+    if t.get("options"):
+        lines.append("Options:")
+        for k, spec in t["options"].items():
+            lines.append(f"  - {k} ({spec['type']}, default={spec.get('default')!r})")
+    return "\n".join(lines)
+
+
+def td_source_registry(source_id=None):
+    """List the vetted TouchDesigner asset/reference sources with license notes."""
+    if source_id:
+        return _json_dumps(safety_registry_mod.source_by_id(source_id))
+    return _json_dumps(safety_registry_mod.list_sources())
+
+
+def td_show_readiness(section="all"):
+    """Return the live-build/show-readiness checklist (ai-brain)."""
+    return _json_dumps(safety_registry_mod.show_readiness(section))
+
+
+def td_activity_log(limit=50):
+    """Return the recent tool-call activity log (TDPilot activity_log)."""
+    return _json_dumps(activity_mod.get_activity_log().list(limit))
+
+
+def td_history_recall(query, k=5):
+    """Recall matching entries across session memory and technique store."""
+    return _json_dumps(activity_mod.history_recall(query, k))
+
+
+def td_docs_version_compat(name, build=None):
+    """Per-operator addedIn/removedIn/changedIn compatibility (bottobot)."""
+    return _json_dumps(corpus.operator_version_compat(name, build))
+
+
+def td_kb_stats():
+    """KB coverage statistics: chunk counts, operators per family, and wiki-rag
+    SQLite stats when ``TD_MCP_WIKI_DB`` points at a manual.db index."""
+    ret = get_pr()
+    index = ret.index
+    fams = sorted({c.get("family") for c in index.chunks if c.get("family")})
+    stats = {
+        "chunks": len(index.chunks),
+        "operators": len(corpus.load_operators()),
+        "families": {f: sum(1 for c in index.chunks if c.get("family") == f) for f in fams},
+        "categories": {},
+    }
+    for c in index.chunks:
+        cat = c.get("category") or "unknown"
+        stats["categories"][cat] = stats["categories"].get(cat, 0) + 1
+    wiki_db = os.environ.get("TD_MCP_WIKI_DB")
+    if wiki_db and os.path.exists(wiki_db):
+        try:
+            from td_mcp.rag.strategies import SqliteWikiStrategy
+            wstats = SqliteWikiStrategy(wiki_db).stats()
+            stats["wiki_rag"] = wstats
+        except Exception:  # noqa: BLE001
+            pass
+    return _json_dumps(stats)
+
+
+def td_docs_experimental(category=None, technique_id=None, show_code=True):
+    """Return bottobot's experimental technique library.
+
+    ``category`` may be an exact category (glsl, gpu-compute, machine-learning,
+    generative-systems, audio-visual, networking, python-advanced) or a synonym
+    (shader, ml, audio, etc.). ``technique_id`` filters to one technique.
+    """
+    data = corpus.load_experimental_techniques(category)
+    if data is None:
+        cats = corpus.list_experimental_categories()
+        return _json_dumps({"error": "unknown experimental category",
+                            "available": [c for c, _, _ in cats]})
+    if isinstance(data, dict) and "techniques" in data:
+        # single category requested
+        cat_data = data
+        if technique_id:
+            for t in cat_data.get("techniques", []):
+                if t.get("id") == technique_id:
+                    out = {"category": cat_data["category"], "technique": t}
+                    if not show_code:
+                        out["technique"].pop("code", None)
+                    return _json_dumps(out)
+            return _json_dumps({"error": f"unknown technique {technique_id!r}"})
+        # whole category, optionally strip code snippets
+        if not show_code:
+            cat_data = dict(cat_data)
+            cat_data["techniques"] = [
+                {k: v for k, v in t.items() if k != "code"}
+                for t in cat_data.get("techniques", [])
+            ]
+        return _json_dumps(cat_data)
+    # all categories
+    return _json_dumps(data)
+
+
+_OFFLINE_DISPATCH = {}
+
+
+def _register_offline():
+    """Populate the offline tool dispatch used by ``td_tool_batch``."""
+    for fn in (td_docs_search, td_docs_operator, td_docs_python, td_docs_glsl,
+               td_docs_template, td_docs_version, td_docs_family, td_docs_parameter,
+               td_docs_compare, td_docs_connections, td_docs_workflow,
+               td_docs_version_info, td_docs_related, td_build_network,
+               td_docs_glossary, td_glsl_pattern, td_network_template,
+               td_expert_prompt, td_compat_check, td_score_build,
+               td_validate_build, td_analyze_build, td_diff_networks,
+               td_optimize_layout, td_resolve_params, td_docs_combos,
+               td_self_heal, td_mediaserver, td_analyze_performance,
+               td_discover, td_memory_save, td_memory_recall,
+               td_scaffold_recipe, td_docs_browse, td_docs_read_page,
+               td_scaffold_show, td_gotcha_template, td_source_registry,
+               td_show_readiness, td_activity_log, td_history_recall,
+               td_docs_version_compat, td_kb_stats,
+               td_docs_experimental, td_tool_batch,
+               td_showcontrol_plan, td_led_map,
+               td_build_feedback, td_build_audio_reactive,
+               td_build_particle, td_build_glsl_shader,
+               td_build_led_wall, td_build_dmx_fixture,
+               td_build_video_pipeline, td_build_midi_rig,
+               td_build_kinect_skeleton):
+        name = "td_" + fn.__name__[3:] if not fn.__name__.startswith("td_") else fn.__name__
+        _OFFLINE_DISPATCH[name] = fn
+
+
+def td_tool_batch(ops, max_ops=8):
+    """Run multiple offline tools in one round-trip (TDPilot ``tool_batch``).
+
+    ``ops`` is a JSON list of ``{"tool": "...", "args": {...}}``. Bounded to
+    ``max_ops`` (env-tunable via ``TD_MCP_MAX_BATCH``).
+    """
+    import json as _json
+    if isinstance(ops, str):
+        try:
+            ops = _json.loads(ops)
+        except Exception:  # noqa: BLE001
+            return _json_dumps({"error": "bad ops JSON"})
+    if not isinstance(ops, list):
+        return _json_dumps({"error": "ops must be a list"})
+    max_ops = int(os.environ.get("TD_MCP_MAX_BATCH", str(max_ops)))
+    results = []
+    for call in ops[:max_ops]:
+        tool = call.get("tool")
+        fn = _OFFLINE_DISPATCH.get(tool)
+        if fn is None:
+            results.append({"tool": tool, "error": "unknown tool"})
+            continue
+        args = call.get("args", {})
+        try:
+            # Signature probing is brittle; invoke with named args only when the
+            # function accepts them. Most offline tools take simple kwargs.
+            import inspect as _inspect
+            sig = _inspect.signature(fn)
+            callable_args = {k: v for k, v in args.items() if k in sig.parameters}
+            results.append({"tool": tool, "result": fn(**callable_args)})
+        except Exception as e:  # noqa: BLE001
+            results.append({"tool": tool, "error": str(e)})
+    return _json_dumps(results)
+
+
 # ---------------------------------------------------------------------------
 # Inspiration tool functions (glsl patterns, templates, experts, compat,
 # build scoring, media servers, performance) — all READ_ONLY planners.
@@ -465,6 +754,31 @@ def td_validate_build(spec):
     data = _parse_build_spec(spec)
     if isinstance(data, str):
         return data
+    return _json_dumps(heal_mod.assess_build(data))
+
+
+def td_validate_live(spec, viewport_verdict=None):
+    """Validate + score a *live* network snapshot, optionally fed by a
+    ``capture_viewport`` verdict (is_black / is_flat / fully_transparent).
+
+    This is the bridge-facing companion to ``td_validate_build``: it attaches
+    the viewport verdict to the network description before scoring so a flat
+    or black render drags the score down and ``td_self_heal`` has the signal
+    it needs to auto-repair.
+    """
+    import json as _json
+    data = _parse_build_spec(spec)
+    if isinstance(data, str):
+        return data
+    vv = viewport_verdict
+    if isinstance(vv, str):
+        try:
+            vv = _json.loads(vv)
+        except Exception:
+            vv = None
+    if isinstance(vv, dict):
+        data = dict(data)
+        data["viewport_verdict"] = vv
     return _json_dumps(heal_mod.assess_build(data))
 
 
@@ -564,16 +878,21 @@ def td_discover():
     return _json_dumps(discover_mod.discover_instances())
 
 
-def td_memory_save(role, text, tags=None):
-    """Persist an interaction turn to local session memory (tdmcp memory)."""
+def td_memory_save(role, text, tags=None, trust_tier="personal"):
+    """Persist an interaction turn to local session memory (tdmcp memory, ai-brain).
+
+    ``trust_tier`` (official|bundled|personal|community|experimental) weights
+    recall ordering so authoritative hits surface first.
+    """
     tag_list = tags.split(",") if isinstance(tags, str) else (tags or [])
     m = memory_mod.SessionMemory()
-    m.save(role, text, tag_list)
-    return _json_dumps({"ok": True, "entries": len(m)})
+    entry = m.save(role, text, tag_list, trust_tier=trust_tier)
+    return _json_dumps({"ok": True, "entries": len(m), "trust_tier": entry["trust_tier"]})
 
 
 def td_memory_recall(query, k=5):
-    """Recall the most relevant past interactions by keyword overlap."""
+    """Recall the most relevant past interactions by keyword overlap,
+    ranked by trust tier then relevance."""
     m = memory_mod.SessionMemory()
     return _json_dumps(m.recall(query, int(k)))
 
@@ -670,8 +989,46 @@ def create_server():
                        {"spec": {"type": "string"}},
                        annotations=read_only),
             types.Tool("td_docs_glossary", "Compact index of every KB entry — exploration / autocomplete over the whole documentation source.",
-                       {"limit": {"type": "integer", "optional": True}},
-                       annotations=read_only),
+                        {"limit": {"type": "integer", "optional": True}},
+                        annotations=read_only),
+            types.Tool("td_docs_browse", "L0 orientation: section/title map of the KB, optionally scoped to a family or query.",
+                        {"query": {"type": "string", "optional": True}, "family": {"type": "string", "optional": True},
+                         "limit": {"type": "integer", "optional": True}},
+                        annotations=read_only),
+            types.Tool("td_docs_read_page", "L2 read: return the full KB page(s) for a title, optionally filtered by a section substring.",
+                        {"title": {"type": "string"}, "section": {"type": "string", "optional": True}},
+                        annotations=read_only),
+            types.Tool("td_scaffold_show", "Scaffold a TouchDesigner show/VJ project blueprint (vj / audio_reactive / installation).",
+                        {"project_type": {"type": "string", "optional": True}},
+                        annotations=read_only),
+            types.Tool("td_gotcha_template", "Return a gotcha-annotated network template (chop_source_with_null / glsl_top_vec4_uniform / audio_in_with_analyze / feedback_loop_top / render_pipeline).",
+                        {"name": {"type": "string", "optional": True}},
+                        annotations=read_only),
+            types.Tool("td_source_registry", "List vetted TouchDesigner asset/reference sources with license + TD-version notes.",
+                        {"source_id": {"type": "string", "optional": True}},
+                        annotations=read_only),
+            types.Tool("td_show_readiness", "Return the live-build/show-readiness checklist (before_automation / before_show / asset_intake / all).",
+                        {"section": {"type": "string", "optional": True}},
+                        annotations=read_only),
+            types.Tool("td_activity_log", "Return the recent tool-call activity log.",
+                        {"limit": {"type": "integer", "optional": True}},
+                        annotations=read_only),
+            types.Tool("td_history_recall", "Recall matching entries across session memory and technique store.",
+                        {"query": {"type": "string"}, "k": {"type": "integer", "optional": True}},
+                        annotations=read_only),
+            types.Tool("td_docs_version_compat", "Per-operator addedIn/removedIn/changedIn compatibility for a TD build.",
+                        {"name": {"type": "string"}, "build": {"type": "string", "optional": True}},
+                        annotations=read_only),
+            types.Tool("td_kb_stats", "Return KB coverage statistics (chunk counts, operators per family, wiki-rag integration).",
+                        {}, annotations=read_only),
+            types.Tool("td_docs_experimental", "Return bottobot's experimental technique library (glsl/gpu-compute/ml/audio/networking/python/generative).",
+                        {"category": {"type": "string", "optional": True},
+                         "technique_id": {"type": "string", "optional": True},
+                         "show_code": {"type": "boolean", "optional": True}},
+                        annotations=read_only),
+            types.Tool("td_tool_batch", "Run multiple offline tools in one round-trip (bounded to 8).",
+                        {"ops": {"type": "string"}},
+                        annotations=read_only),
             types.Tool("td_build_feedback", "Create a feedback network (Noise -> Level decay -> Feedback -> Threshold/Level -> Out).",
                        {"spec": {"type": "string"}},
                        annotations=additive),
@@ -746,9 +1103,10 @@ def create_server():
                         annotations=read_only),
             types.Tool("td_discover", "Discover running TouchDesigner bridge instances on known local ports (multi-instance, twozero).",
                         {}, annotations=read_only),
-            types.Tool("td_memory_save", "Persist an interaction turn to local session memory for cross-session continuity.",
-                        {"role": {"type": "string"}, "text": {"type": "string"}, "tags": {"type": "string", "optional": True}},
-                        annotations=read_only),
+            types.Tool("td_memory_save", "Persist an interaction turn to local session memory for cross-session continuity. Optional trust_tier weights recall ordering.",
+                       {"role": {"type": "string"}, "text": {"type": "string"}, "tags": {"type": "string", "optional": True},
+                        "trust_tier": {"type": "string", "optional": True}},
+                       annotations=read_only),
             types.Tool("td_memory_recall", "Recall the most relevant past interactions by keyword overlap.",
                         {"query": {"type": "string"}, "k": {"type": "integer", "optional": True}},
                         annotations=read_only),
@@ -760,105 +1118,178 @@ def create_server():
     @app.call_tool()
     async def call_tool(name, arguments):
         a = arguments or {}
-        try:
-            if name == "td_docs_search":
-                _max = 500 if a.get("detail") == "brief" else None
-                out = (_fmt(ret.search(a.get("query", ""), family=a.get("family"),
-                                       category=a.get("category"), version=a.get("version"), k=a.get("k", 5)),
-                         a.get("query", ""), max_chars=_max), "")
-            elif name == "td_docs_operator":
-                out = (td_docs_operator(a.get("name", ""), a.get("k", 3)), "")
-            elif name == "td_docs_python":
-                out = (td_docs_python(a.get("name", ""), a.get("k", 3)), "")
-            elif name == "td_docs_glsl":
-                out = (td_docs_glsl(a.get("query", "fragment"), a.get("k", 2)), "")
-            elif name == "td_docs_template":
-                out = (td_docs_template(a.get("query", ""), a.get("k", 2)), "")
-            elif name == "td_docs_version":
-                out = (td_docs_version(a.get("build", "all"), a.get("k", 5)), "")
-            elif name == "td_docs_family":
-                out = (td_docs_family(a.get("family", ""), a.get("version")), "")
-            elif name == "td_docs_parameter":
-                out = (td_docs_parameter(a.get("op_name", ""), a.get("k", 1)), "")
-            elif name == "td_docs_compare":
-                out = (td_docs_compare(a.get("a", ""), a.get("b", "")), "")
-            elif name == "td_docs_connections":
-                out = (td_docs_connections(a.get("name", "")), "")
-            elif name == "td_docs_workflow":
-                out = (td_docs_workflow(a.get("query", ""), a.get("k", 8)), "")
-            elif name == "td_docs_version_info":
-                out = (td_docs_version_info(a.get("build", "2023.10000")), "")
-            elif name == "td_docs_related":
-                out = (td_docs_related(a.get("name", ""), a.get("depth", 1)), "")
-            elif name == "td_build_network":
-                out = (td_build_network(a.get("spec", "[]")), "")
-            elif name == "td_showcontrol_plan":
-                out = (td_showcontrol_plan(a.get("spec", "{}")), "")
-            elif name == "td_led_map":
-                out = (td_led_map(a.get("spec", "{}")), "")
-            elif name == "td_docs_glossary":
-                out = (td_docs_glossary(a.get("limit", 200)), "")
-            elif name == "td_build_feedback":
-                out = (td_build_feedback(a.get("spec", "{}")), "")
-            elif name == "td_build_audio_reactive":
-                out = (td_build_audio_reactive(a.get("spec", "{}")), "")
-            elif name == "td_build_particle":
-                out = (td_build_particle(a.get("spec", "{}")), "")
-            elif name == "td_build_3d_scene":
-                out = (td_build_3d_scene(a.get("spec", "{}")), "")
-            elif name == "td_build_glsl_shader":
-                out = (td_build_glsl_shader(a.get("spec", "{}")), "")
-            elif name == "td_build_led_wall":
-                out = (td_build_led_wall(a.get("spec", "{}")), "")
-            elif name == "td_build_dmx_fixture":
-                out = (td_build_dmx_fixture(a.get("spec", "{}")), "")
-            elif name == "td_build_video_pipeline":
-                out = (td_build_video_pipeline(a.get("spec", "{}")), "")
-            elif name == "td_build_midi_rig":
-                out = (td_build_midi_rig(a.get("spec", "{}")), "")
-            elif name == "td_build_kinect_skeleton":
-                out = (td_build_kinect_skeleton(a.get("spec", "{}")), "")
-            elif name == "td_glsl_pattern":
-                out = (td_glsl_pattern(a.get("name", "simple_noise")), "")
-            elif name == "td_network_template":
-                out = (td_network_template(a.get("name", "feedback")), "")
-            elif name == "td_expert_prompt":
-                out = (td_expert_prompt(a.get("phase"), a.get("name")), "")
-            elif name == "td_compat_check":
-                out = (td_compat_check(a.get("client_ver", "1.0.0"), a.get("bridge_ver", "1.0.0")), "")
-            elif name == "td_score_build":
-                out = (td_score_build(a.get("spec", "[]")), "")
-            elif name == "td_validate_build":
-                out = (td_validate_build(a.get("spec", "[]")), "")
-            elif name == "td_analyze_build":
-                out = (td_analyze_build(a.get("spec", "[]")), "")
-            elif name == "td_diff_networks":
-                out = (td_diff_networks(a.get("a", "[]"), a.get("b", "[]")), "")
-            elif name == "td_optimize_layout":
-                out = (td_optimize_layout(a.get("spec", "[]")), "")
-            elif name == "td_resolve_params":
-                out = (td_resolve_params(a.get("spec", "[]")), "")
-            elif name == "td_docs_combos":
-                out = (td_docs_combos(a.get("name", ""), a.get("k", 8)), "")
-            elif name == "td_self_heal":
-                out = (td_self_heal(a.get("spec", "[]")), "")
-            elif name == "td_mediaserver":
-                out = (td_mediaserver(a.get("name", "resolume")), "")
-            elif name == "td_analyze_performance":
-                out = (td_analyze_performance(a.get("perf", "{}")), "")
-            elif name == "td_discover":
-                out = (td_discover(), "")
-            elif name == "td_memory_save":
-                out = (td_memory_save(a.get("role", "user"), a.get("text", ""), a.get("tags")), "")
-            elif name == "td_memory_recall":
-                out = (td_memory_recall(a.get("query", ""), a.get("k", 5)), "")
-            elif name == "td_scaffold_recipe":
-                out = (td_scaffold_recipe(a.get("spec", "[]")), "")
-            else:
-                out = ("unknown tool", "")
-        except Exception as e:  # noqa: BLE001
-            out = (f"error: {e}", "")
+        import time as _time
+        _t0 = _time.perf_counter()
+        ok_flag = True
+        # Opt-in observability: record a timed span per tool call when
+        # TD_MCP_OBSERVE is set (no-op otherwise — zero overhead when off).
+        with get_trace_log().span("tool_call", tool=name):
+            try:
+                if name == "td_docs_search":
+                    _max = 500 if a.get("detail") == "brief" else None
+                    out = (_fmt(ret.search(a.get("query", ""), family=a.get("family"),
+                                           category=a.get("category"), version=a.get("version"), k=a.get("k", 5)),
+                             a.get("query", ""), max_chars=_max), "")
+                elif name == "td_docs_operator":
+                    out = (td_docs_operator(a.get("name", ""), a.get("k", 3)), "")
+                elif name == "td_docs_python":
+                    out = (td_docs_python(a.get("name", ""), a.get("k", 3)), "")
+                elif name == "td_docs_glsl":
+                    out = (td_docs_glsl(a.get("query", "fragment"), a.get("k", 2)), "")
+                elif name == "td_docs_template":
+                    out = (td_docs_template(a.get("query", ""), a.get("k", 2)), "")
+                elif name == "td_docs_version":
+                    out = (td_docs_version(a.get("build", "all"), a.get("k", 5)), "")
+                elif name == "td_docs_family":
+                    out = (td_docs_family(a.get("family", ""), a.get("version")), "")
+                elif name == "td_docs_parameter":
+                    out = (td_docs_parameter(a.get("op_name", ""), a.get("k", 1)), "")
+                elif name == "td_docs_compare":
+                    out = (td_docs_compare(a.get("a", ""), a.get("b", "")), "")
+                elif name == "td_docs_connections":
+                    out = (td_docs_connections(a.get("name", "")), "")
+                elif name == "td_docs_workflow":
+                    out = (td_docs_workflow(a.get("query", ""), a.get("k", 8)), "")
+                elif name == "td_docs_version_info":
+                    out = (td_docs_version_info(a.get("build", "2023.10000")), "")
+                elif name == "td_docs_related":
+                    out = (td_docs_related(a.get("name", ""), a.get("depth", 1)), "")
+                elif name == "td_build_network":
+                    out = (td_build_network(a.get("spec", "[]")), "")
+                elif name == "td_showcontrol_plan":
+                    out = (td_showcontrol_plan(a.get("spec", "{}")), "")
+                elif name == "td_led_map":
+                    out = (td_led_map(a.get("spec", "{}")), "")
+                elif name == "td_docs_glossary":
+                    out = (td_docs_glossary(a.get("limit", 200)), "")
+                elif name == "td_build_feedback":
+                    out = (td_build_feedback(a.get("spec", "{}")), "")
+                elif name == "td_build_audio_reactive":
+                    out = (td_build_audio_reactive(a.get("spec", "{}")), "")
+                elif name == "td_build_particle":
+                    out = (td_build_particle(a.get("spec", "{}")), "")
+                elif name == "td_build_3d_scene":
+                    out = (td_build_3d_scene(a.get("spec", "{}")), "")
+                elif name == "td_build_glsl_shader":
+                    out = (td_build_glsl_shader(a.get("spec", "{}")), "")
+                elif name == "td_build_led_wall":
+                    out = (td_build_led_wall(a.get("spec", "{}")), "")
+                elif name == "td_build_dmx_fixture":
+                    out = (td_build_dmx_fixture(a.get("spec", "{}")), "")
+                elif name == "td_build_video_pipeline":
+                    out = (td_build_video_pipeline(a.get("spec", "{}")), "")
+                elif name == "td_build_midi_rig":
+                    out = (td_build_midi_rig(a.get("spec", "{}")), "")
+                elif name == "td_build_kinect_skeleton":
+                    out = (td_build_kinect_skeleton(a.get("spec", "{}")), "")
+                elif name == "td_glsl_pattern":
+                    out = (td_glsl_pattern(a.get("name", "simple_noise")), "")
+                elif name == "td_network_template":
+                    out = (td_network_template(a.get("name", "feedback")), "")
+                elif name == "td_expert_prompt":
+                    out = (td_expert_prompt(a.get("phase"), a.get("name")), "")
+                elif name == "td_compat_check":
+                    out = (td_compat_check(a.get("client_ver", "1.0.0"), a.get("bridge_ver", "1.0.0")), "")
+                elif name == "td_score_build":
+                    out = (td_score_build(a.get("spec", "[]")), "")
+                elif name == "td_validate_build":
+                    out = (td_validate_build(a.get("spec", "[]")), "")
+                elif name == "td_analyze_build":
+                    out = (td_analyze_build(a.get("spec", "[]")), "")
+                elif name == "td_diff_networks":
+                    out = (td_diff_networks(a.get("a", "[]"), a.get("b", "[]")), "")
+                elif name == "td_optimize_layout":
+                    out = (td_optimize_layout(a.get("spec", "[]")), "")
+                elif name == "td_resolve_params":
+                    out = (td_resolve_params(a.get("spec", "[]")), "")
+                elif name == "td_docs_combos":
+                    out = (td_docs_combos(a.get("name", ""), a.get("k", 8)), "")
+                elif name == "td_self_heal":
+                    out = (td_self_heal(a.get("spec", "[]")), "")
+                elif name == "td_mediaserver":
+                    out = (td_mediaserver(a.get("name", "resolume")), "")
+                elif name == "td_analyze_performance":
+                    out = (td_analyze_performance(a.get("perf", "{}")), "")
+                elif name == "td_discover":
+                    out = (td_discover(), "")
+                elif name == "td_memory_save":
+                    out = (td_memory_save(a.get("role", "user"), a.get("text", ""), a.get("tags"),
+                                          a.get("trust_tier", "personal")), "")
+                elif name == "td_memory_recall":
+                    out = (td_memory_recall(a.get("query", ""), a.get("k", 5)), "")
+                elif name == "td_scaffold_recipe":
+                    out = (td_scaffold_recipe(a.get("spec", "[]")), "")
+                elif name == "td_docs_browse":
+                    out = (td_docs_browse(a.get("query"), a.get("family"),
+                                          a.get("limit", 40)), "")
+                elif name == "td_docs_read_page":
+                    out = (td_docs_read_page(a.get("title", ""),
+                                             a.get("section")), "")
+                elif name == "td_scaffold_show":
+                    out = (td_scaffold_show(a.get("project_type", "vj")), "")
+                elif name == "td_gotcha_template":
+                    out = (td_gotcha_template(a.get("name", "feedback_loop_top")), "")
+                elif name == "td_source_registry":
+                    out = (td_source_registry(a.get("source_id")), "")
+                elif name == "td_show_readiness":
+                    out = (td_show_readiness(a.get("section", "all")), "")
+                elif name == "td_activity_log":
+                    out = (td_activity_log(a.get("limit", 50)), "")
+                elif name == "td_history_recall":
+                    out = (td_history_recall(a.get("query", ""), a.get("k", 5)), "")
+                elif name == "td_docs_version_compat":
+                    out = (td_docs_version_compat(a.get("name", ""), a.get("build")), "")
+                elif name == "td_kb_stats":
+                    out = (td_kb_stats(), "")
+                elif name == "td_docs_experimental":
+                    out = (td_docs_experimental(a.get("category"), a.get("technique_id"),
+                                                a.get("show_code", True)), "")
+                elif name == "td_tool_batch":
+                    out = (td_tool_batch(a.get("ops", "[]")), "")
+                else:
+                    out = ("unknown tool", "")
+            except Exception as e:  # noqa: BLE001
+                ok_flag = False
+                out = (f"error: {e}", "")
+            finally:
+                _dt_ms = (_time.perf_counter() - _t0) * 1000.0
+                try:
+                    activity_mod.get_activity_log().add(
+                        name, args_summary=str(a)[:200],
+                        result_summary=(str(out[0])[:200] if out else ""),
+                        duration_ms=_dt_ms, ok=ok_flag)
+                except Exception:  # noqa: BLE001
+                    pass
         return [types.TextContent(type="text", text=out[0])]
+
+    @app.list_resources()
+    async def list_resources():
+        ret = get_pr()
+        families = ret.families()
+        resources = [types.Resource(
+            "manual://index",
+            name="TouchDesigner manual index",
+            description="Compact index of every operator + Python class in the KB.",
+            mimeType="text/plain")]
+        for fam in families:
+            resources.append(types.Resource(
+                f"manual://operators/{fam.lower()}",
+                name=f"{fam} operators",
+                description=f"All {fam} operators in the local KB.",
+                mimeType="text/plain"))
+        return resources
+
+    @app.read_resource()
+    async def read_resource(uri):
+        ret = get_pr()
+        if uri == "manual://index":
+            text = td_docs_glossary(limit=200)
+        elif uri.startswith("manual://operators/"):
+            fam = uri.rsplit("/", 1)[-1].upper()
+            text = td_docs_family(fam)
+        else:
+            text = f"Unknown resource: {uri}"
+        return [types.TextContent(type="text", text=text)]
 
     @app.list_prompts()
     async def list_prompts():
@@ -933,6 +1364,11 @@ def main():
         _main_mcp()
     else:
         _main_cli()
+
+
+# Late-binding: populate the offline tool dispatch after every tool function is
+# defined (module import order matters for the tool_batch dispatcher).
+_register_offline()
 
 
 if __name__ == "__main__":

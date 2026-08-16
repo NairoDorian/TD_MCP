@@ -3,6 +3,7 @@
 import os
 
 from td_mcp import tdn
+from td_mcp.kb import corpus
 from td_mcp.rag import knowledge_graph
 
 
@@ -56,3 +57,26 @@ def test_knowledge_graph():
     assert isinstance(related, list)
     chain = knowledge_graph.suggest_chain("audio reactive", k=4)
     assert isinstance(chain, list)
+
+
+def test_family_disambiguation():
+    """'Noise' is ambiguous across families; a fully-qualified name is not."""
+    if not os.path.exists(os.path.join(os.path.dirname(__file__), "..",
+                                       "td_mcp", "kb", "corpus", "operators.json")):
+        return
+    note = knowledge_graph.family_disambiguation("Noise")
+    assert note is not None
+    assert "Ambiguous" in note
+    assert "CHOP" in note and "SOP" in note and "TOP" in note
+    # A fully-qualified name is unambiguous.
+    assert knowledge_graph.family_disambiguation("Blur TOP") is None
+
+
+def test_family_disambiguation_operators_matching():
+    """operators_matching returns all family hits for an ambiguous name."""
+    if not os.path.exists(os.path.join(os.path.dirname(__file__), "..",
+                                       "td_mcp", "kb", "corpus", "operators.json")):
+        return
+    matches = corpus.operators_matching("Noise")
+    fam = {r.get("category") for r in matches}
+    assert {"TOP", "CHOP", "SOP"} <= fam

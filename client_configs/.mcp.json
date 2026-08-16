@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "td-mcp-offline": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "C:\\Users\\Z\\Downloads\\PROJECTS\\TOUCHDESIGNER\\github-mcp\\TD_MCP",
+        "td-mcp-offline",
+        "--mcp"
+      ]
+    },
+    "td-mcp-live": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "C:\\Users\\Z\\Downloads\\PROJECTS\\TOUCHDESIGNER\\github-mcp\\TD_MCP",
+        "td-mcp-live",
+        "--mcp"
+      ]
+    }
+  }
+}

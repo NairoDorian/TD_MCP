@@ -12,6 +12,7 @@ import re
 HERE = os.path.dirname(__file__)
 CORPUS_DIR = os.path.join(HERE, "corpus")
 VERSIONS_DIR = os.path.join(CORPUS_DIR, "versions")
+EXPERIMENTAL_DIR = os.path.join(CORPUS_DIR, "experimental")
 
 _BUILD_RE = re.compile(r"(\d{4}(?:\.\d+)?)")
 
@@ -56,6 +57,47 @@ def load_python_compat():
     return _load(os.path.join(VERSIONS_DIR, "python-api-compatibility.json")) or {}
 
 
+_CATEGORY_ALIASES = {
+    "shader": "glsl", "raymarching": "glsl", "sdf": "glsl",
+    "gpu": "gpu-compute", "cuda": "gpu-compute", "compute": "gpu-compute",
+    "ml": "machine-learning", "ai": "machine-learning", "onnx": "machine-learning",
+    "audio": "audio-visual", "fft": "audio-visual", "reactive": "audio-visual",
+    "network": "networking", "osc": "networking", "ndi": "networking",
+    "python": "python-advanced", "numpy": "python-advanced", "opencv": "python-advanced",
+    "generative": "generative-systems", "particle": "generative-systems",
+}
+
+
+def load_experimental_techniques(category=None):
+    """Load bottobot's experimental technique library (7 category files).
+
+    ``category`` accepts an exact category name or a synonym alias
+    (``"shader"`` → ``glsl``). Returns the full category dict with techniques,
+    or None when not found.
+    """
+    if category:
+        cat = _CATEGORY_ALIASES.get(category.lower(), category.lower())
+        path = os.path.join(EXPERIMENTAL_DIR, cat + ".json")
+        return _load(path)
+    out = {}
+    if os.path.isdir(EXPERIMENTAL_DIR):
+        for fn in sorted(os.listdir(EXPERIMENTAL_DIR)):
+            if fn.endswith(".json"):
+                rec = _load(os.path.join(EXPERIMENTAL_DIR, fn))
+                if rec:
+                    out[rec.get("category") or fn[:-5]] = rec
+    return out or None
+
+
+def list_experimental_categories():
+    """Return [(category, displayName, technique_count)] for all categories."""
+    data = load_experimental_techniques()
+    if not data:
+        return []
+    return [(cat, rec.get("displayName", cat), len(rec.get("techniques") or []))
+            for cat, rec in sorted(data.items())]
+
+
 def operator_record(name):
     """Best operator record for a name/nickname (case-insensitive, slug-tolerant)."""
     ops = load_operators()
@@ -77,6 +119,39 @@ def operator_record(name):
         if qn in hay.replace("_", " "):
             return rec
     return None
+
+
+def operators_matching(name):
+    """All operator records matching a name/nickname (for disambiguation).
+
+    Unlike ``operator_record`` (which returns the *first* hit), this returns
+    *every* match so callers can detect when a name like "Noise" is ambiguous
+    across families (Noise TOP / Noise CHOP / Noise SOP / Noise POP).
+    """
+    ops = load_operators()
+    if not ops:
+        return []
+    q = name.strip().lower().replace(" ", "_")
+    qn = name.strip().lower()
+    matches, seen = [], set()
+
+    def _add(key, rec):
+        if key not in seen:
+            matches.append(rec)
+            seen.add(key)
+
+    # exact key / alias matches
+    for key, rec in ops.items():
+        aliases = {key.lower(), rec.get("name", "").lower(), rec.get("displayName", "").lower()}
+        if qn in aliases or q == key.lower():
+            _add(key, rec)
+    # substring fallback (only if exact missed)
+    if not matches:
+        for key, rec in ops.items():
+            hay = (key + " " + rec.get("name", "") + " " + rec.get("displayName", "")).lower()
+            if qn and qn in hay.replace("_", " "):
+                _add(key, rec)
+    return matches
 
 
 def python_class_for_operator(op_name):
@@ -205,6 +280,44 @@ def version_info(build):
     return best
 
 
+def operator_version_compat(name, build=None):
+    """Per-operator addedIn/removedIn/changedIn compatibility (bottobot).
+
+    Returns ``{name, category, added_in, removed_in, changes, compatible,
+    reason}``. Missing compat data is conservatively allowed (compatible=True)
+    so we never silently refuse a real operator.
+    """
+    rec = operator_record(name)
+    if rec is None:
+        return {"ok": False, "error": f"unknown operator {name!r}"}
+    compat = load_operator_compat()
+    key = rec.get("id") or (rec.get("name", "").lower().replace(" ", "_"))
+    entry = compat.get(key) or {}
+    added = entry.get("addedIn") or rec.get("addedIn") or parse_build(rec.get("version"))
+    removed = entry.get("removedIn")
+    changes = entry.get("changedIn") or []
+    compatible = True
+    reason = None
+    if build:
+        bt = _to_tuple(build)
+        if removed and _to_tuple(removed) <= bt:
+            compatible = False
+            reason = f"removed in TD {removed}"
+        elif added and _to_tuple(added) > bt:
+            compatible = False
+            reason = f"requires TD {added} (target {build})"
+    return {
+        "ok": True,
+        "name": rec.get("displayName") or rec.get("name"),
+        "category": rec.get("category"),
+        "added_in": added,
+        "removed_in": removed,
+        "changes": changes,
+        "compatible": compatible,
+        "reason": reason,
+    }
+
+
 def operator_connections(name):
     rec = operator_record(name)
     if not rec:
@@ -237,6 +350,7 @@ def corpus_chunks():
             "title": rec.get("displayName") or rec.get("name"),
             "category": "operator",
             "source": rec.get("url") or "github-mcp/tdmcp",
+            "url": rec.get("url"),
             "min_version": version,
             "tags": rec.get("tags") or [fam.lower()] if fam else [],
             "aliases": [a for a in aliases if a],
@@ -250,6 +364,7 @@ def corpus_chunks():
             "title": rec.get("displayName") or rec.get("className"),
             "category": "python",
             "source": "github-mcp/tdmcp",
+            "url": rec.get("url"),
             "min_version": version,
             "tags": [rec.get("category", "python").lower()] if rec.get("category") else ["python"],
             "aliases": sorted({key.lower(), rec.get("className", "").lower(),

@@ -11,7 +11,11 @@ dependencies = ["pyyaml", "mcp>=1.0", "anyio"]
 mcp = ["mcp>=1.0", "anyio"]
 rag = ["sentence-transformers", "networkx"]   # dense vectors + CrossEncoder reranker + knowledge graph
 scrape = ["requests", "beautifulsoup4"]
+test = ["pytest", "pytest-cov", "networkx"]  # enough to run the suite (rag minus sentence-transformers/torch)
 # faiss-cpu is an optional speed upgrade for the dense scorer (numpy fallback works)
+
+[dependency-groups]
+dev = ["pytest", "pytest-cov", "networkx"]
 
 [project.scripts]
 td-mcp-offline = "td_mcp.server_offline:main"
@@ -21,6 +25,5 @@ td-mcp-live = "td_mcp.server_live:main"
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["td_mcp", "td_mcp.rag", "td_mcp.kb", "td_mcp.tdn",
-            "td_mcp.showcontrol", "td_mcp.led_mapping", "td_mcp.tools"]
+[tool.setuptools.packages.find]
+include = ["td_mcp*"]

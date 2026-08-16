@@ -31,12 +31,46 @@ def _clean(text):
     return re.sub(r"\s+", " ", text.strip())
 
 
-def op(family, title, text, tags, min_version="all", aliases=None, source=D_OC):
+def _doc_url(title):
+    """Construct a docs.derivative.ca permalink from a record title.
+
+    TouchDesigner docs URL operators by name with spaces -> underscores
+    (e.g. 'Blur TOP' -> 'https://docs.derivative.ca/Blur_TOP').
+    """
+    return "https://docs.derivative.ca/" + title.replace(" ", "_")
+
+
+def _write_receipt(chunks_path):
+    """Write a KB integrity receipt (TrueFiasco kb_receipt idea, MIT-safe).
+
+    The receipt pins the SHA-256 of ``chunks.jsonl`` so ``build_retriever`` can
+    refuse to load a silently-corrupted KB. Embeddings are not always present
+    so they're pinned opportunistically.
+    """
+    import hashlib
+    receipt = {}
+    for name, path in (("chunks", chunks_path),
+                       ("embeddings", os.path.join(HERE, "embeddings.jsonl"))):
+        if os.path.exists(path):
+            h = hashlib.sha256()
+            with open(path, "rb") as f:
+                for block in iter(lambda: f.read(65536), b""):
+                    h.update(block)
+            receipt[name] = h.hexdigest()
+    receipt["generated"] = True
+    out_path = os.path.join(HERE, "kb_receipt.json")
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump(receipt, fh, ensure_ascii=False, indent=2)
+    return receipt
+
+
+def op(family, title, text, tags, min_version="all", aliases=None, source=D_OC, url=None):
     return {
         "family": family,
         "title": title,
         "category": "operator",
         "source": source,
+        "url": url or _doc_url(title),
         "min_version": min_version,
         "tags": tags,
         "aliases": aliases or [],
@@ -44,12 +78,13 @@ def op(family, title, text, tags, min_version="all", aliases=None, source=D_OC):
     }
 
 
-def py(title, text, tags, min_version="all", aliases=None):
+def py(title, text, tags, min_version="all", aliases=None, url=None):
     return {
         "family": None,
         "title": title,
         "category": "python",
         "source": D_PY,
+        "url": url or _doc_url(title),
         "min_version": min_version,
         "tags": tags,
         "aliases": aliases or [],
@@ -57,12 +92,13 @@ def py(title, text, tags, min_version="all", aliases=None):
     }
 
 
-def glsl(title, text, tags, min_version="all", aliases=None):
+def glsl(title, text, tags, min_version="all", aliases=None, url=None):
     return {
         "family": None,
         "title": title,
         "category": "glsl",
         "source": D_GL,
+        "url": url or _doc_url(title),
         "min_version": min_version,
         "tags": tags,
         "aliases": aliases or [],
@@ -70,12 +106,13 @@ def glsl(title, text, tags, min_version="all", aliases=None):
     }
 
 
-def tut(title, text, tags, min_version="all", aliases=None, source=D_TU):
+def tut(title, text, tags, min_version="all", aliases=None, source=D_TU, url=None):
     return {
         "family": None,
         "title": title,
         "category": "tutorial",
         "source": source,
+        "url": url or _doc_url(title),
         "min_version": min_version,
         "tags": tags,
         "aliases": aliases or [],
@@ -818,6 +855,8 @@ def main():
     with open(OUT, "w", encoding="utf-8") as fh:
         for rec in out:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    _write_receipt(OUT)
 
     from collections import Counter
     fam = Counter((r["family"] or r["category"]) for r in out)

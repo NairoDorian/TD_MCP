@@ -22,6 +22,10 @@ def score_build(desc: Dict[str, Any]) -> Dict[str, Any]:
     Rewards: valid (no errors), all nodes typed, complete connections (no
     dangling), use of known operator types, and a reasonable node count.
     Penalizes: each error/warning, typeless nodes, dangling edges.
+
+    If ``desc`` carries a ``viewport_verdict`` (from ``vision.viewport_verdict``),
+    a black/flat/transparent render is penalized — a network that renders nothing
+    is almost certainly mis-wired regardless of structural validity.
     """
     report = validate_build(desc)
     ops = desc.get("operators") or []
@@ -42,6 +46,25 @@ def score_build(desc: Dict[str, Any]) -> Dict[str, Any]:
     if total > 1:
         score -= 15 * (1 - wired / max(1, total - 1))
 
+    # Viewport verdict penalties (tdmcp captionTop idea).
+    vv = desc.get("viewport_verdict") or {}
+    viewport_penalty = 0
+    viewport_flags = []
+    if vv.get("is_black"):
+        viewport_penalty += 20
+        viewport_flags.append("black")
+    if vv.get("is_flat"):
+        viewport_penalty += 10
+        viewport_flags.append("flat")
+    if vv.get("fully_transparent"):
+        viewport_penalty += 15
+        viewport_flags.append("transparent")
+    score -= viewport_penalty
+    if viewport_flags:
+        vv_caption = vv.get("caption", "")
+        if vv_caption:
+            viewport_flags.append(f"caption: {vv_caption}")
+
     score = max(0, min(100, round(score)))
     grade = ("A" if score >= 90 else "B" if score >= 75 else
              "C" if score >= 60 else "D" if score >= 40 else "F")
@@ -54,7 +77,9 @@ def score_build(desc: Dict[str, Any]) -> Dict[str, Any]:
         "node_count": total,
         "typed_count": typed,
         "wired_count": wired,
-        "summary": f"score {score} ({grade}); {report['summary']}",
+        "viewport_flags": viewport_flags,
+        "summary": f"score {score} ({grade}); {report['summary']}"
+        + (f"; viewport: {', '.join(viewport_flags)}" if viewport_flags else ""),
     }
 
 

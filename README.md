@@ -180,14 +180,21 @@ thumbnail with an `is_black` / `is_flat` verdict — so the agent can self‑hea
 ## Grow the knowledge base
 
 `chunks.jsonl` (1,091 chunks) is **generated** from curated records — never hand‑edited.
+`kb_receipt.json` is also generated alongside it and pins the SHA‑256 for integrity
+verification on load.
 
 ```bash
-uv run python -m td_mcp.kb.build_kb          # curated records -> chunks.jsonl
+uv run python -m td_mcp.kb.build_kb          # curated records -> chunks.jsonl + kb_receipt.json
 uv run python -m td_mcp.rag.eval             # re-check recall / MRR / nDCG
 uv add --optional scrape
 uv run python -m td_mcp.kb.scrape            # crawl docs.derivative.ca (optional)
 uv run python -m td_mcp.kb.build_index       # validate / dense-embed
 ```
+
+> **CI / fresh-clone note:** `chunks.jsonl` is **not** committed. A fresh clone has no
+> KB until `uv run python -m td_mcp.kb.build_kb` runs — the CI workflow does this
+> automatically before pytest. The retriever degrades gracefully to an empty index
+> (returns "no docs", never crashes) if you skip that step.
 
 ---
 

@@ -207,6 +207,13 @@ class TDClient:
     def get_parameters(self, path):
         return self._call("get_parameters", {"path": path})
 
+    def get_parameter_info(self, path, names=None):
+        return self._call("get_parameter_info", {"path": path, "names": names})
+
+    def bind_parameter_expression(self, path, param, expression):
+        return self._call("bind_parameter_expression",
+                          {"path": path, "param": param, "expression": expression})
+
     def get_errors(self, path):
         return self._call("get_errors", {"path": path})
 
@@ -220,7 +227,24 @@ class TDClient:
         return self._call("project_info", {})
 
     def capture_viewport(self, path, detail="normal"):
-        return self._call("capture_viewport", {"path": path, "detailLevel": detail})
+        result = self._call("capture_viewport", {"path": path, "detailLevel": detail})
+        # Image-block feedback (mintiasaikoh): when the bridge returns a PNG
+        # file, attach base64 image content so MCP clients can render it
+        # directly instead of only seeing the verdict text.
+        if isinstance(result, dict) and result.get("ok") and result.get("file"):
+            try:
+                with open(result["file"], "rb") as f:
+                    import base64
+                    b64 = base64.b64encode(f.read()).decode("ascii")
+                    result["image"] = {
+                        "mime_type": "image/png",
+                        "data": b64,
+                        "description": result.get("verdict", {}).get("caption",
+                                      "TouchDesigner viewport capture"),
+                    }
+            except Exception:  # noqa: BLE001
+                pass
+        return result
 
     def get_resource(self, uri):
         return self._call("get_resource", {"uri": uri})
@@ -240,10 +264,22 @@ class TDClient:
     def read_dat(self, path, rows=10):
         return self._call("read_dat", {"path": path, "rows": rows})
 
+    def set_dat_text(self, path, text, expected_sha256=None):
+        return self._call("set_dat_text", {"path": path, "text": text,
+                                           "expected_sha256": expected_sha256})
+
     def scan_network(self, path, depth=3):
         return self._call("scan_network", {"path": path, "depth": depth})
 
     def build_and_verify(self, path, op_type, params=None):
+        """Create → set parameters → errors → viewport verdict → offline heal.
+
+        The last hop is the offline↔live integration point (§3.1): after
+        capturing the viewport, the client asks the offline orchestrator to
+        validate/score the *created network* with the viewport verdict folded
+        in — so a flat render triggers a low score and self-heal candidates
+        instead of being silently accepted.
+        """
         created = self.create_node(path, op_type)
         if not created.get("ok"):
             return created
@@ -252,7 +288,24 @@ class TDClient:
             self.set_parameters(node_path, params)
         errs = self.get_errors(node_path)
         verdict = self.capture_viewport(node_path)
-        return {"created": created, "errors": errs, "preview": verdict}
+        offline = None
+        try:
+            from td_mcp.server_offline import td_validate_live
+            from td_mcp import tdn as tdn_mod
+            snapshot = tdn_mod.new_network(
+                path,
+                operators=[tdn_mod.operator(
+                    node_path.rsplit("/", 1)[-1], op_type,
+                    parameters=params or {})])
+            offline = td_validate_live(
+                tdn_mod.export_network(snapshot),
+                viewport_verdict=verdict)
+        except Exception:  # noqa: BLE001
+            offline = None
+        out = {"created": created, "errors": errs, "preview": verdict}
+        if offline:
+            out["offline_validation"] = offline
+        return out
 
     def connect_nodes(self, from_path, to_path, from_output=0, to_input=0):
         return self._call("connect_nodes", {"from_path": from_path, "to_path": to_path,
@@ -270,6 +323,16 @@ class TDClient:
 
     def get_node(self, path):
         return self._call("get_node", {"path": path})
+
+    def get_non_default_params(self, path):
+        """Token-efficient read (vedant1317): non-default params only."""
+        result = self.get_node(path)
+        if not result.get("ok"):
+            return result
+        params = result.get("params", {})
+        return {"ok": True, "path": path,
+                "non_default_count": len(params),
+                "non_default_params": params}
 
     def set_node_color(self, path, r, g, b):
         return self._call("set_node_color", {"path": path, "r": r, "g": g, "b": b})
@@ -559,6 +622,8 @@ TOOL_REGISTRY = {
     "delete_node": _wrap_tool(lambda c, a: c.delete_node(a.get("path"))),
     "set_parameters": _wrap_tool(lambda c, a: c.set_parameters(a.get("path"), a.get("params", {}))),
     "get_parameters": _wrap_tool(lambda c, a: c.get_parameters(a.get("path"))),
+    "get_parameter_info": _wrap_tool(lambda c, a: c.get_parameter_info(a.get("path"), a.get("names"))),
+    "bind_parameter_expression": _wrap_tool(lambda c, a: c.bind_parameter_expression(a.get("path"), a.get("param"), a.get("expression"))),
     "get_errors": _wrap_tool(lambda c, a: c.get_errors(a.get("path"))),
     "execute_python": _wrap_tool(lambda c, a: c.execute_python(a.get("code"))),
     "list_nodes": _wrap_tool(lambda c, a: c.list_nodes(a.get("path"))),
@@ -570,6 +635,7 @@ TOOL_REGISTRY = {
     "read_chop": _wrap_tool(lambda c, a: c.read_chop(a.get("path"), a.get("channel"), a.get("samples", 10))),
     "read_top": _wrap_tool(lambda c, a: c.read_top(a.get("path"), a.get("detail", "brief"))),
     "read_dat": _wrap_tool(lambda c, a: c.read_dat(a.get("path"), a.get("rows", 10))),
+    "set_dat_text": _wrap_tool(lambda c, a: c.set_dat_text(a.get("path"), a.get("text", ""), a.get("expected_sha256"))),
     "scan_network": _wrap_tool(lambda c, a: c.scan_network(a.get("path"), a.get("depth", 3))),
     "build_and_verify": _wrap_tool(lambda c, a: c.build_and_verify(a.get("path"), a.get("op_type"), a.get("params"))),
     "connect_nodes": _wrap_tool(lambda c, a: c.connect_nodes(a.get("from_path"), a.get("to_path"),
@@ -579,6 +645,7 @@ TOOL_REGISTRY = {
     "auto_layout": _wrap_tool(lambda c, a: c.auto_layout(a.get("path"), a.get("direction", "left-right"),
                                                           a.get("spacing_x", 200), a.get("spacing_y", 200))),
     "get_node": _wrap_tool(lambda c, a: c.get_node(a.get("path"))),
+    "get_non_default_params": _wrap_tool(lambda c, a: c.get_non_default_params(a.get("path"))),
     "set_node_color": _wrap_tool(lambda c, a: c.set_node_color(a.get("path"), a.get("r"), a.get("g"), a.get("b"))),
     "set_node_comment": _wrap_tool(lambda c, a: c.set_node_comment(a.get("path"), a.get("comment"), a.get("tags"))),
     "map_network": _wrap_tool(lambda c, a: c.map_network(a.get("path"), a.get("depth", 2))),
@@ -610,6 +677,8 @@ _TOOL_META = [
     ("delete_node", "Delete a node.", {"path": {"type": "string"}}),
     ("set_parameters", "Set parameters.", {"path": {"type": "string"}, "params": {"type": "object"}}),
     ("get_parameters", "Get parameters.", {"path": {"type": "string"}}),
+    ("get_parameter_info", "Full per-parameter schema: label/value/mode/default/page/style/bounds/menu.", {"path": {"type": "string"}, "names": {"type": "string"}}),
+    ("bind_parameter_expression", "Bind a parameter expression with eval-error reporting.", {"path": {"type": "string"}, "param": {"type": "string"}, "expression": {"type": "string"}}),
     ("get_errors", "Get errors.", {"path": {"type": "string"}}),
     ("execute_python", "Execute Python in TD.", {"code": {"type": "string"}}),
     ("list_nodes", "List child nodes.", {"path": {"type": "string"}}),
@@ -621,6 +690,7 @@ _TOOL_META = [
     ("read_chop", "Read CHOP channels.", {"path": {"type": "string"}, "channel": {"type": "string"}, "samples": {"type": "integer"}}),
     ("read_top", "Read TOP metadata.", {"path": {"type": "string"}, "detail": {"type": "string"}}),
     ("read_dat", "Read DAT rows.", {"path": {"type": "string"}, "rows": {"type": "integer"}}),
+    ("set_dat_text", "Set a DAT's text with optional SHA-256 optimistic concurrency guard.", {"path": {"type": "string"}, "text": {"type": "string"}, "expected_sha256": {"type": "string"}}),
     ("scan_network", "Scan network topology.", {"path": {"type": "string"}, "depth": {"type": "integer"}}),
     ("build_and_verify", "Create->verify->preview loop.", {"path": {"type": "string"}, "op_type": {"type": "string"}, "params": {"type": "object"}}),
     ("connect_nodes", "Wire nodes.", {"from_path": {"type": "string"}, "to_path": {"type": "string"}, "from_output": {"type": "integer"}, "to_input": {"type": "integer"}}),
@@ -628,6 +698,7 @@ _TOOL_META = [
     ("copy_node", "Copy node.", {"path": {"type": "string"}, "new_parent": {"type": "string"}, "new_name": {"type": "string"}}),
     ("auto_layout", "Auto-arrange nodes.", {"path": {"type": "string"}, "direction": {"type": "string"}, "spacing_x": {"type": "integer"}, "spacing_y": {"type": "integer"}}),
     ("get_node", "Get detailed node info.", {"path": {"type": "string"}}),
+    ("get_non_default_params", "Token-efficient read: non-default params only.", {"path": {"type": "string"}}),
     ("set_node_color", "Set node color (RGB 0..1).", {"path": {"type": "string"}, "r": {"type": "number"}, "g": {"type": "number"}, "b": {"type": "number"}}),
     ("set_node_comment", "Annotate node.", {"path": {"type": "string"}, "comment": {"type": "string"}, "tags": {"type": "string"}}),
     ("map_network", "Emit Graphviz DOT.", {"path": {"type": "string"}, "depth": {"type": "integer"}}),

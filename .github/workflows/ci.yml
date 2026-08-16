@@ -18,7 +18,13 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: uv pip install -e ".[mcp]"
+        run: uv pip install -e ".[test]"
+
+      - name: Build knowledge base (chunks.jsonl)
+        run: uv run python -m td_mcp.kb.build_kb
+
+      - name: Check bridge surface is not stale
+        run: uv run python scripts/check_bridge_stale.py
 
       - name: Run tests
         run: uv run pytest -q

@@ -124,6 +124,56 @@ def resolve_parameters(op_type: Optional[str], params: Dict[str, Any]
     return resolved, warnings, ok
 
 
+# ---------------------------------------------------------------------------
+# Parameter-family collapse/expansion (TrueFiasco technique, MIT-safe reimpl).
+# ---------------------------------------------------------------------------
+_XYZ_FAMILIES = {"t", "r", "s", "p", "scale", "pos", "rot", "color", "rgb"}
+_INDEXED_FAMILIES = {"fromrange", "torange", "const", "fills", "value"}
+
+
+def _strip_trailing_digits(name):
+    return name.rstrip("0123456789")
+
+
+def expand_family_parameter(name, value):
+    """Expand a list-valued param into TouchDesigner's flat suffix params.
+
+    Returns a dict ``{param_name: value}``. Rules (described, not copied from
+    AGPL): XYZ-like bases get letter suffixes (x/y/z), indexed bases get
+    numeric suffixes (1/2/3), 3-element lists default to x/y/z (except
+    color/rgb -> r/g/b), 2-element lists default to 1/2. Non-list values are
+    returned unchanged under the original name.
+    """
+    if not isinstance(value, (list, tuple)):
+        return {name: value}
+    if len(value) == 1:
+        return {name: value[0]}
+    base = _strip_trailing_digits(name)
+    suffixes = None
+    if base in _XYZ_FAMILIES:
+        if base in ("color", "rgb"):
+            suffixes = ["r", "g", "b", "a"][:len(value)]
+        else:
+            suffixes = ["x", "y", "z", "w"][:len(value)]
+    elif base in _INDEXED_FAMILIES:
+        suffixes = [str(i + 1) for i in range(len(value))]
+    elif len(value) == 3:
+        suffixes = ["x", "y", "z"]
+    elif len(value) == 2:
+        suffixes = ["1", "2"]
+    if suffixes is None:
+        return {name: value}
+    return {f"{base}{suffixes[i]}": value[i] for i in range(len(value))}
+
+
+def expand_params(params):
+    """Expand every list-valued param in ``params`` via :func:`expand_family_parameter`."""
+    out = {}
+    for k, v in (params or {}).items():
+        out.update(expand_family_parameter(k, v))
+    return out
+
+
 def resolve_build(spec: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, Any]], bool]:
     """Resolve parameters for every operator in a build description.
 

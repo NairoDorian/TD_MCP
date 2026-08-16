@@ -9,6 +9,8 @@ is exercised by the `td-mcp-offline` console script.
 Run:  uv run python -m tests.test_mcp_server
 """
 
+import os
+
 from mcp.server import Server
 
 from td_mcp.server_offline import create_server, td_docs_search, get_pr
@@ -32,6 +34,20 @@ def test_six_strategies():
     assert isinstance(pr, ParallelRetriever)
     assert len(pr.strategies) == 6, [s.name() for s in pr.strategies]
     print("ok  6 fusion strategies wired:", [s.name() for s in pr.strategies])
+
+
+def test_citation_url_in_search():
+    out = td_docs_search("blur top parameters", k=1)
+    assert "link: https://docs.derivative.ca/" in out, out[:300]
+
+
+def test_disambiguation_in_search():
+    if not os.path.exists(os.path.join(os.path.dirname(__file__), "..",
+                                       "td_mcp", "kb", "corpus", "operators.json")):
+        return
+    from td_mcp.server_offline import td_docs_operator
+    out = td_docs_operator("Noise")
+    assert "Ambiguous" in out
 
 
 if __name__ == "__main__":
