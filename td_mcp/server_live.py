@@ -1,11 +1,11 @@
 """td-mcp live server: Streamable HTTP MCP server for TouchDesigner.
 
-Implements the MCP Streamable HTTP spec (8beeeaaat / TD_Builder_alpha style):
-- JSON-RPC over POST (initialize, tools/list, tools/call, prompts/list, resources/list, etc.)
-- Server-Sent Events (SSE) for server→client streaming
-- Multi-session via Mcp-Session-Id header
-- DNS-rebind protection (Host must be localhost)
+Implements the MCP Streamable HTTP + stdio spec (stateless, MCP SDK 2.0):
+- JSON-RPC over POST (initialize, tools/list, tools/call, prompts/list, resources/list, server/discover)
+- Stateless Streamable HTTP via SDK v2 (no Mcp-Session-Id, stateless_http=True)
+- DNS-rebind protection (built into SDK for loopback)
 - Backward-compatible stdio mode for Claude Desktop / Cursor
+- Bearer-token auth via per-request middleware (TD_MCP_AUTH_TOKEN)
 - Talks to TD bridge at http://127.0.0.1:9980 (or TD_MCP_HOST:TD_MCP_PORT)
 
 CLI:
@@ -19,13 +19,9 @@ import hmac
 import json
 import os
 import sys
-import threading
-import time
-import uuid
+
 import urllib.request
 import urllib.error
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse, parse_qs
 
 from td_mcp import __version__
 
@@ -40,16 +36,6 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9980
 DEFAULT_HTTP_HOST = "127.0.0.1"
 DEFAULT_HTTP_PORT = 8765
-
-# Session management
-_sessions = {}  # session_id -> {"created": float, "last_seen": float, "auth_token": str}
-_sessions_lock = threading.Lock()
-SESSION_TTL = 3600
-SESSION_CLEANUP_INTERVAL = 300
-
-# SSE clients
-_sse_clients = set()
-_sse_lock = threading.Lock()
 
 ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
@@ -67,64 +53,11 @@ def _validate_origin_header(origin_header):
     return (origin_header or "") in ALLOWED_ORIGINS
 
 
-def _generate_session_id():
-    return str(uuid.uuid4())
-
-
-def _cleanup_sessions():
-    now = time.time()
-    with _sessions_lock:
-        dead = [sid for sid, s in _sessions.items() if now - s["last_seen"] > SESSION_TTL]
-        for sid in dead:
-            del _sessions[sid]
-
-
-def _touch_session(session_id, auth_token=None):
-    with _sessions_lock:
-        if session_id not in _sessions:
-            _sessions[session_id] = {"created": time.time(), "last_seen": time.time(), "auth_token": auth_token}
-        else:
-            _sessions[session_id]["last_seen"] = time.time()
-            if auth_token:
-                _sessions[session_id]["auth_token"] = auth_token
-        return _sessions[session_id]
-
-
-def _get_session(session_id):
-    with _sessions_lock:
-        s = _sessions.get(session_id)
-        if s and time.time() - s["last_seen"] <= SESSION_TTL:
-            s["last_seen"] = time.time()
-            return s
-        elif s:
-            del _sessions[session_id]
-    return None
-
-
 def _validate_host_header(host_header):
     if not host_header:
         return False
     host = host_header.split(":")[0].lower()
     return host in ALLOWED_HOSTS
-
-
-def _sse_push(event_type, data):
-    frame = []
-    if event_type:
-        frame.append(f"event: {event_type}")
-    frame.append(f"data: {json.dumps(data)}")
-    frame.append("")
-    payload = "\n".join(frame) + "\n"
-    with _sse_lock:
-        drop = []
-        for client in _sse_clients:
-            try:
-                client.write(payload.encode("utf-8"))
-                client.flush()
-            except Exception:
-                drop.append(client)
-        for client in drop:
-            _sse_clients.discard(client)
 
 
 # ---------------------------------------------------------------------------
@@ -386,218 +319,6 @@ class TDClient:
         return self._call("save_tox", {"path": path, "file_path": file_path})
 
 
-# ---------------------------------------------------------------------------
-# Streamable HTTP Request Handler (MCP over HTTP + SSE)
-# ---------------------------------------------------------------------------
-class MCPStreamableHandler(BaseHTTPRequestHandler):
-    """Handles MCP Streamable HTTP (POST /) and SSE (GET /)."""
-
-    def _check_dns_rebind(self):
-        host = self.headers.get("Host", "")
-        if not _validate_host_header(host):
-            self._send_error(403, -32600, "Forbidden: DNS-rebind protection")
-            return False
-        return True
-
-    def _get_or_create_session(self):
-        session_id = self.headers.get("Mcp-Session-Id")
-        if session_id:
-            session = _get_session(session_id)
-            if session:
-                return session_id, session
-        session_id = _generate_session_id()
-        session = _touch_session(session_id)
-        return session_id, session
-
-    def _auth_ok(self, session):
-        supplied = self.headers.get("Authorization", "")
-        expected = f"Bearer {session.get('auth_token', '')}"
-        return hmac.compare_digest(supplied, expected)
-
-    def _send_jsonrpc(self, request_id, result=None, error=None):
-        resp = {"jsonrpc": "2.0", "id": request_id}
-        if error is not None:
-            resp["error"] = error
-        else:
-            resp["result"] = result
-        body = json.dumps(resp).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Mcp-Session-Id", self._current_session_id)
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _send_sse(self, event_type, data):
-        out = []
-        if event_type:
-            out.append(f"event: {event_type}")
-        out.append(f"data: {json.dumps(data)}")
-        out.append("")
-        frame = "\n".join(out) + "\n"
-        self.wfile.write(frame.encode("utf-8"))
-        self.wfile.flush()
-
-    def do_POST(self):
-        if not self._check_dns_rebind():
-            return
-        if not _validate_origin_header(self.headers.get("Origin")):
-            self._send_error(403, -32600, "Forbidden: Origin not pinned")
-            return
-
-        session_id, session = self._get_or_create_session()
-        self._current_session_id = session_id
-
-        if not self._auth_ok(session):
-            self._send_jsonrpc(None, error={"code": -32600, "message": "Unauthorized"})
-            return
-
-        if "application/json" not in self.headers.get("Content-Type", ""):
-            self._send_error(415, -32600, "Content-Type must be application/json")
-            return
-
-        length = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(length) if length else b"{}"
-        try:
-            payload = json.loads(raw.decode("utf-8") or "{}")
-        except Exception:
-            self._send_jsonrpc(None, error={"code": -32700, "message": "Parse error"})
-            return
-
-        # Handle batch (array) or single request
-        requests = payload if isinstance(payload, list) else [payload]
-        responses = []
-
-        for req in requests:
-            req_id = req.get("id")
-            method = req.get("method")
-            params = req.get("params", {})
-
-            if method == "initialize":
-                responses.append({
-                    "jsonrpc": "2.0", "id": req_id,
-                    "result": {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {"tools": {}, "prompts": {}, "resources": {}, "logging": {}},
-                        "serverInfo": {"name": "td-mcp-live", "version": __version__}
-                    }
-                })
-            elif method == "notifications/initialized":
-                # Client ack - no response
-                pass
-            elif method == "tools/list":
-                tool_list = _http_tool_meta()
-                responses.append({"jsonrpc": "2.0", "id": req_id, "result": {"tools": tool_list}})
-            elif method == "tools/call":
-                tool_name = params.get("name")
-                args = params.get("arguments", {})
-                fn = TOOL_REGISTRY.get(tool_name)
-                if fn is None:
-                    responses.append({"jsonrpc": "2.0", "id": req_id,
-                                     "error": {"code": -32601, "message": f"Unknown tool: {tool_name}"}})
-                else:
-                    try:
-                        result = fn(args)
-                        responses.append({
-                            "jsonrpc": "2.0", "id": req_id,
-                            "result": {"content": [{"type": "text", "text": json.dumps(result)}],
-                                      "isError": result.get("ok") is False}
-                        })
-                        ok = result.get("ok") if isinstance(result, dict) else True
-                        _sse_push("tool_result", {"tool": tool_name, "ok": ok})
-                    except Exception as e:
-                        responses.append({"jsonrpc": "2.0", "id": req_id,
-                                         "error": {"code": -32603, "message": str(e)}})
-            elif method == "prompts/list":
-                responses.append({"jsonrpc": "2.0", "id": req_id, "result": {"prompts": []}})
-            elif method == "resources/list":
-                responses.append({"jsonrpc": "2.0", "id": req_id, "result": {"resources": []}})
-            elif method == "resources/templates/list":
-                responses.append({"jsonrpc": "2.0", "id": req_id, "result": {"resourceTemplates": []}})
-            else:
-                responses.append({"jsonrpc": "2.0", "id": req_id,
-                                 "error": {"code": -32601, "message": f"Method not found: {method}"}})
-
-        # JSON-RPC framing: a batch request yields an ARRAY of full
-        # {"jsonrpc","id","result"} objects; a single request yields ONE such
-        # object. `responses` already holds complete envelopes, so we must pass
-        # the *inner* result/id, never the whole envelope (a previous bug
-        # double-wrapped single responses, which MCP clients cannot parse).
-        if isinstance(payload, list):
-            self._send_jsonrpc(None, result=responses)
-        else:
-            first = responses[0] if responses else None
-            self._send_jsonrpc(first.get("id") if first else None,
-                              result=first.get("result") if first else None)
-
-    def do_GET(self):
-        if not self._check_dns_rebind():
-            return
-        if not _validate_origin_header(self.headers.get("Origin")):
-            self._send_error(403, -32600, "Forbidden: Origin not pinned")
-            return
-
-        # SSE stream
-        accept = self.headers.get("Accept", "")
-        if "text/event-stream" in accept:
-            self._handle_sse()
-            return
-
-        # Health/status
-        if self.path in ("/", "/health", "/api/status"):
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"ok": True, "status": "running"}).encode())
-            return
-
-        self._send_error(404, -32601, "Not found")
-
-    def _handle_sse(self):
-        session_id = self.headers.get("Mcp-Session-Id")
-        if not session_id:
-            session_id, _ = _get_or_create_session()
-        session = _get_session(session_id)
-        if not session:
-            self._send_error(404, -32600, "Session not found")
-            return
-        if not self._auth_ok(session):
-            self._send_error(401, -32600, "Unauthorized")
-            return
-
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.send_header("Mcp-Session-Id", session_id)
-        self.end_headers()
-        self.wfile.flush()
-
-        # Register SSE client
-        with _sse_lock:
-            _sse_clients.add(self.wfile)
-
-        try:
-            self._send_sse("open", {"type": "connected", "session": session_id})
-            while True:
-                time.sleep(30)
-                self._send_sse("ping", {"type": "heartbeat", "ts": time.time()})
-        except Exception:
-            pass
-        finally:
-            with _sse_lock:
-                _sse_clients.discard(self.wfile)
-
-    def _send_error(self, http_code, jsonrpc_code, message):
-        self.send_response(http_code)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps({"jsonrpc": "2.0", "error": {"code": jsonrpc_code, "message": message}}).encode())
-
-    def log_message(self, *args):
-        pass
-
-
-# ---------------------------------------------------------------------------
 # Tool Registry (maps tool name -> callable(args) -> result dict)
 # ---------------------------------------------------------------------------
 _client = TDClient()  # instantiated lazily in start()
@@ -735,108 +456,162 @@ def _http_tool_meta():
 # ---------------------------------------------------------------------------
 # MCP stdio server (for Claude Desktop / Cursor)
 # ---------------------------------------------------------------------------
-def _run_stdio_server(host=DEFAULT_HOST, port=DEFAULT_PORT, auth_token=None, anchor=False):
+async def _live_list_tools(ctx, params):
+    """List all bridge tools with v2 cache hints."""
+    from td_mcp.tools.risk import tool_annotations
+    return types.ListToolsResult(
+        tools=[
+            types.Tool(name=name, description=desc,
+                       inputSchema={"type": "object", "properties": props},
+                       annotations=tool_annotations(name))
+            for name, desc, props in _TOOL_META
+        ],
+        ttl_ms=60000,
+        cache_scope="private",
+    )
+
+
+async def _live_call_tool(ctx, params):
+    """Dispatch a tool call to the bridge. Errors are returned as
+    CallToolResult(isError=True) — never raised into the transport."""
+    a = params.arguments or {}
+    try:
+        fn = TOOL_REGISTRY.get(params.name)
+        if fn is None:
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=f"unknown tool: {params.name}")],
+                is_error=True,
+            )
+        result = fn(a)
+        return types.CallToolResult(
+            content=[types.TextContent(type="text", text=json.dumps(result, indent=2))],
+            result_type="complete",
+        )
+    except Exception as e:
+        return types.CallToolResult(
+            content=[types.TextContent(type="text", text=f"error: {e}")],
+            is_error=True,
+        )
+
+
+async def _live_list_prompts(ctx, params):
+    from td_mcp import prompts as prompts_mod
+    prompts = []
+    for pname in prompts_mod.list_experts():
+        prompts.append(types.Prompt(name=pname, description=f"Expert persona: {pname}",
+                                    arguments=[]))
+    for phase in ("plan", "build", "self_improve"):
+        prompts.append(types.Prompt(
+            name=f"phase_{phase}",
+            description=f"Combined system prompt for the '{phase}' build phase.",
+            arguments=[]))
+    return types.ListPromptsResult(prompts=prompts, ttl_ms=60000, cache_scope="private")
+
+
+async def _live_get_prompt(ctx, params):
+    from td_mcp import prompts as prompts_mod
+    name = params.name
+    if name in prompts_mod.list_experts():
+        text = prompts_mod.get_expert_prompt(name) or ""
+    elif name.startswith("phase_"):
+        text = prompts_mod.build_phase_prompt(name[len("phase_"):])
+    else:
+        text = prompts_mod.build_phase_prompt("build")
+    return types.GetPromptResult(
+        description=name,
+        messages=[types.PromptMessage(role="user",
+                   content=types.TextContent(type="text", text=text))])
+
+
+async def _live_list_resources(ctx, params):
+    return types.ListResourcesResult(resources=[], ttl_ms=60000, cache_scope="private")
+
+
+async def _live_read_resource(ctx, params):
+    return types.ReadResourceResult(contents=[])
+
+
+# ---------------------------------------------------------------------------
+# MCP stdio server (for Claude Desktop / Cursor)
+# ---------------------------------------------------------------------------
+def _run_stdio_server(auth_token=None, anchor=False):
+    """Build the MCP Server for stdio mode (Claude Desktop / Cursor)."""
     if not MCP_AVAILABLE:
         print("mcp package not installed. pip install mcp", file=sys.stderr)
         sys.exit(1)
 
-    app = Server("td-mcp-live", version=__version__)
-    client = _get_client()
-
-    @app.list_tools()
-    async def list_tools():
-        from td_mcp.tools.risk import tool_annotations
-        return [
-            types.Tool(name, desc, {"type": "object", "properties": props},
-                       annotations=tool_annotations(name))
-            for name, desc, props in _TOOL_META
-        ]
-
-    @app.call_tool()
-    async def call_tool(name, arguments):
-        a = arguments or {}
-        try:
-            fn = TOOL_REGISTRY.get(name)
-            if fn is None:
-                raise ValueError(f"unknown tool: {name}")
-            result = fn(a)
-            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
-        except Exception as e:
-            return [types.TextContent(type="text", text=f"error: {e}")]
-
-    # Prompts — expose expert personas + phase prompts as discoverable MCP prompts.
-    from td_mcp import prompts as prompts_mod
-
-    @app.list_prompts()
-    async def list_prompts():
-        prompts = []
-        for pname in prompts_mod.list_experts():
-            prompts.append(types.Prompt(pname, description=f"Expert persona: {pname}",
-                                        arguments=[]))
-        for phase in ("plan", "build", "self_improve"):
-            prompts.append(types.Prompt(
-                f"phase_{phase}",
-                description=f"Combined system prompt for the '{phase}' build phase.",
-                arguments=[]))
-        return prompts
-
-    @app.get_prompt()
-    async def get_prompt(name, arguments):
-        if name in prompts_mod.list_experts():
-            text = prompts_mod.get_expert_prompt(name) or ""
-        elif name.startswith("phase_"):
-            text = prompts_mod.build_phase_prompt(name[len("phase_"):])
-        else:
-            text = prompts_mod.build_phase_prompt("build")
-        return types.GetPromptResult(
-            description=name,
-            messages=[types.PromptMessage(role="user",
-                       content=types.TextContent(type="text", text=text))])
-
-    # Resources (empty but registered for compat)
-    @app.list_resources()
-    async def list_resources():
-        return []
-
-    @app.list_resource_templates()
-    async def list_resource_templates():
-        return []
-
-    @app.read_resource()
-    async def read_resource(uri):
-        return []
-
+    app = Server(
+        name="td-mcp-live",
+        version=__version__,
+        on_list_tools=_live_list_tools,
+        on_call_tool=_live_call_tool,
+        on_list_resources=_live_list_resources,
+        on_read_resource=_live_read_resource,
+        on_list_prompts=_live_list_prompts,
+        on_get_prompt=_live_get_prompt,
+    )
+    _get_client()
     return app
-
 
 def create_server(host=DEFAULT_HOST, port=DEFAULT_PORT, auth_token=None, anchor=False):
     """Create the MCP Server for stdio mode (backward compat with tests)."""
-    return _run_stdio_server(host=host, port=port, auth_token=auth_token, anchor=anchor)
+    return _run_stdio_server(auth_token=auth_token, anchor=anchor)
 
 
 # Legacy exports for backward compat
-__all__ = ["TDClient", "create_server", "main"]
+__all__ = ["TDClient", "create_server", "main", "_BearerAuthMiddleware"]
 
 
 # ---------------------------------------------------------------------------
 # Streamable HTTP server
 # ---------------------------------------------------------------------------
-def _run_http_server(host=DEFAULT_HTTP_HOST, port=DEFAULT_HTTP_PORT):
-    global _client
-    _client = TDClient()
-    _cleanup_sessions()
-    # Start background session cleanup
-    def cleanup_loop():
-        while True:
-            time.sleep(SESSION_CLEANUP_INTERVAL)
-            _cleanup_sessions()
-    threading.Thread(target=cleanup_loop, daemon=True).start()
+class _BearerAuthMiddleware:
+    """ASGI middleware: require a Bearer token on every request (stateless).
 
-    server = HTTPServer((host, port), MCPStreamableHandler)
-    print(f"td-mcp-live Streamable HTTP on http://{host}:{port}")
-    print("  POST / (JSON-RPC)  |  GET / (SSE)  |  Mcp-Session-Id header for sessions")
-    server.serve_forever()
+    The token is passed via TD_MCP_AUTH_TOKEN at startup and compared with
+    hmac.compare_digest to avoid timing leaks.  No session store is needed —
+    every request is independently authenticated.
+    """
 
+    def __init__(self, app, auth_token):
+        self.app = app
+        self._expected = f"Bearer {auth_token}".encode() if auth_token else None
+
+    async def __call__(self, scope, receive, send):
+        if self._expected is None or scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = scope.get("headers", [])
+        auth = b""
+        for k, v in headers:
+            if k == b"authorization":
+                auth = v
+                break
+        if not hmac.compare_digest(auth, self._expected):
+            await send({"type": "http.response.start", "status": 401,
+                        "headers": [(b"content-type", b"application/json")]})
+            await send({"type": "http.response.body",
+                        "body": json.dumps({"error": "Unauthorized"}).encode()})
+            return
+        await self.app(scope, receive, send)
+
+
+def _run_http_server(host=DEFAULT_HTTP_HOST, port=DEFAULT_HTTP_PORT, auth_token=None):
+    """Run the stateless Streamable HTTP MCP server via uvicorn (SDK 2.0).
+
+    Replaces the old custom BaseHTTPRequestHandler + Mcp-Session-Id session
+    store with the SDK's built-in stateless transport.  DNS-rebinding
+    protection and server/discover are handled by the SDK automatically.
+    """
+    _get_client()
+    server = create_server()
+    app = server.streamable_http_app(stateless_http=True)
+    if auth_token:
+        app = _BearerAuthMiddleware(app, auth_token)
+    print(f"td-mcp-live Streamable HTTP (stateless) on http://{host}:{port}")
+    print("  POST /mcp  |  GET /mcp -> 405  |  server/discover on POST /mcp")
+    import uvicorn
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 # ---------------------------------------------------------------------------
 # Legacy CLI (typed commands against the bridge)
@@ -921,7 +696,7 @@ def main():
         args, _ = ap.parse_known_args()
         global _client
         _client = TDClient(host=args.bridge_host, port=args.bridge_port, auth_token=args.auth_token)
-        _run_http_server(host=args.host, port=args.port)
+        _run_http_server(host=args.host, port=args.port, auth_token=args.auth_token)
     elif os.environ.get("TD_MCP_MODE") == "mcp" or "--mcp" in sys.argv:
         sys.argv = [a for a in sys.argv if a != "--mcp"]
         app = _run_stdio_server()

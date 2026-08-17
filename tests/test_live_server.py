@@ -13,11 +13,15 @@ def test_live_wiring():
 
 def test_live_registered_handlers():
     app = create_server()
-    keys = {k.__name__ for k in app.request_handlers}
+    keys = set(app._request_handlers.keys())
     # Core + newly added live tools/prompts/resources
-    for name in ["ListToolsRequest", "CallToolRequest", "ListPromptsRequest",
-                 "GetPromptRequest", "ListResourceTemplatesRequest", "ReadResourceRequest"]:
+    for name in ["tools/list", "tools/call", "prompts/list",
+                 "prompts/get", "resources/read"]:
         assert name in keys, name
+    # server/discover is auto-registered by SDK v2
+    assert "server/discover" in keys
+    # Resource templates (list_resource_templates) was deprecated in 2026-07-28
+    assert "resources/list" in keys
     print("ok  live server registers tool/prompt/resource handlers")
 
 
@@ -36,7 +40,7 @@ def test_live_tool_names():
     from td_mcp.server_live import create_server
     app = create_server()
     # The call_tool handler is registered under CallToolRequest.
-    assert types.CallToolRequest in app.request_handlers
+    assert "tools/call" in app._request_handlers
     print("ok  CallToolRequest handler present for new tools")
 
 

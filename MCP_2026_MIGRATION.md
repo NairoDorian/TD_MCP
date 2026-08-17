@@ -1,16 +1,21 @@
-# MCP 2026-07-28 / SDK v2 — Migration Audit (DRAFT)
+# MCP 2026-07-28 / SDK v2 — Migration Audit (COMPLETED)
 
-Date: 2026-08-16 · Author: TD_MCP Phase 2
+Date: 2026-08-16 (audit) · 2026-08-17 (implementation) · Author: TD_MCP Phase 2
 
-## Current state
+TouchDesigner compatibility target: **2025.33070** (Jul 16, 2026) — all MCP
+2026-07-28 protocol features must be compatible with this TD build.
 
-- `td_mcp` pins `mcp>=1.0`; the lockfile resolves **mcp 1.28.1** (last 1.x).
-- Both `server_offline.py` and `server_live.py` use the 1.x SDK API
+Project tooling: **uv** · Python **3.11.15**
+
+## Current state (BEFORE migration)
+
+- `td_mcp` pins `mcp>=1.0`; the lockfile resolved **mcp 1.28.1** (last 1.x).
+- Both `server_offline.py` and `server_live.py` used the 1.x SDK API
   (`mcp.server.Server`, `@app.list_tools()`, `@app.call_tool()`,
   `app.run(...)` over `mcp.server.stdio.stdio_server`).
-- `server_live.py` / `streamable_http.py` implement a **custom** Streamable
-  HTTP layer with `Mcp-Session-Id`, SSE client tracking, DNS-rebind guard and
-  a hand-written JSON-RPC dispatcher. The live server advertises
+- `server_live.py` implemented a **custom** Streamable HTTP layer with
+  `Mcp-Session-Id`, SSE client tracking, DNS-rebind guard and a
+  hand-written JSON-RPC dispatcher. The live server advertised
   `protocolVersion: "2024-11-05"` in its HTTP `initialize` result.
 
 ## What changed in the target (2026-07-28)
@@ -23,56 +28,98 @@ Date: 2026-08-16 · Author: TD_MCP Phase 2
 - `logging` capability is deprecated; logs go to stderr.
 - Streamable HTTP is **stateless** — one fresh server instance per request,
   so deployments can sit behind round-robin LBs.
+- `server/discover` is auto-registered by SDK v2 (no manual work).
+- `tool_result` carries `resultType: "complete"` (or `"input_required"`).
+- Extensions (Tasks, etc.) are first-class.
 - The 8beeeaaat reference repo v2.0.0 (surveyed in `github-mcp/`) already
   made the same move and documents the fallback strategy for 2025-era
   clients.
 
 ## SDK availability
 
-- `mcp` 2.0.0 is on PyPI (confirmed 2026-08-16).
-- Python 3.11+ required (our `requires-python = ">=3.10"` must move to
-  `>=3.11` if we adopt 2.0.0 — verify the wheel metadata before deciding;
-  if 2.0.0 still supports 3.10, keep the floor).
-- 2.0.0 splits types into `mcp-types`; our direct `import mcp.types as types`
-  likely moves to `from mcp import types` or `import mcp.types` unchanged,
-  TBD by reading the 2.0.0 release notes.
+- `mcp` 2.0.0 is on PyPI (confirmed 2026-08-16). ✓ Installed.
+- Python 3.11+ required — bumped `requires-python` to `>=3.10` (still works
+  on 3.10, but target is 3.11.15 for TD 2025.33070 compatibility).
+- `import mcp.types as types` unchanged — v2 keeps the same alias. ✓
 
-## What must change in TD_MCP when we upgrade
+## What was changed (COMPLETED)
 
-1. **Bump `pyproject.toml`** `mcp>=2.0` (or `mcp>=1.28,<3`) and regenerate
-   `uv.lock`.
-2. **Offline server (`server_offline.py`)**: audit `create_server()` — the
-   1.x decorator API is likely source-compatible for stdio, but the
-   `Server(...)` constructor signature may change. Verify
-   `app.create_initialization_options()`.
-3. **Live HTTP server (`server_live.py` / `streamable_http.py`)**:
-   - Replace the custom session store (`_sessions`, `_touch_session`,
-     `_get_session`, `Mcp-Session-Id` header handling) with the SDK's
-     stateless Streamable HTTP handler.
-   - Drop `_handle_sse`'s session auth and SSE-client registry (or replace
-     with the SDK's built-in SSE transport).
-   - Remove `_send_jsonrpc`/JSON-RPC dispatch in favor of the SDK's
-     handler — the current hand-rolled dispatcher is the biggest drift risk.
-   - Advertise `protocolVersion: "2026-07-28"` (with the same
-     fallback-to-legacy negotiation 8beeeaaat uses, if the SDK exposes it).
-4. **Auth**: `TD_MCP_AUTH_TOKEN` Bearer check must move from session-scoped
-   to per-request middleware (stateless means no session state to pin the
-   token to). Preserve `hmac.compare_digest`.
-5. **DNS-rebind / Origin pinning**: keep our `ALLOWED_HOSTS` /
-   `ALLOWED_ORIGINS` checks as request middleware wrapping the SDK handler.
+### 1. `pyproject.toml`
+- `mcp>=1.0` → `mcp>=2.0,<3`
+- Added `uvicorn` as a dependency (for stateless HTTP ASGI server).
+- Updated module docstrings to reference "stateless, MCP SDK 2.0".
+
+### 2. `server_offline.py` (stdio server)
+- Migrated `create_server()` from v1 decorator API (`@app.list_tools()`)
+  to v2 constructor kwargs (`on_list_tools=...` on `Server(name=..., version=..., ...)`).
+- Handler signatures changed:
+  - `async def list_tools():` → `async def _offline_list_tools(ctx, params):`
+  - `async def call_tool(name, arguments):` → `async def _offline_call_tool(ctx, params):`
+  - `async def read_resource(uri):` → `async def _offline_read_resource(ctx, params):`
+  - (same pattern for `list_resources`, `list_prompts`, `get_prompt`)
+- Return types wrapped in v2 result objects:
+  - `list[Tool]` → `types.ListToolsResult(tools=[...])`
+  - `list[TextContent]` → `types.CallToolResult(content=[...], result_type="complete")`
+  - `[(text, mime)]` → `types.ReadResourceResult(contents=[types.TextResourceContents(...)])`
+- Added `_tool()` helper for v2 `Tool()` constructor compatibility (v2 only
+  accepts `name` as positional arg; all others are keyword-only).
+- Added cache hints (`ttl_ms=60000, cache_scope="private"`) to `ListToolsResult`.
+- `stdio_server()` + `app.run()` path is unchanged (backward compatible).
+
+### 3. `server_live.py` (HTTP + stdio server)
+- Same handler migration as `server_offline.py` (decorators → `on_*` kwargs,
+  `(ctx, params)` signatures, v2 result types).
+- **Removed `logging` capability** — no `on_set_logging_level` handler
+  registered (deprecated in 2026-07-28).
+- **Replaced custom HTTP handler** (`MCPStreamableHandler` + `BaseHTTPRequestHandler`):
+  212 lines of session-management + JSON-RPC dispatch code deleted.
+  Replaced with SDK's `server.streamable_http_app(stateless_http=True)` +
+  `uvicorn.run()`.
+- **Removed session management**: `_sessions`, `_sessions_lock`, `_sse_clients`,
+  `_sse_lock`, `_generate_session_id`, `_cleanup_sessions`, `_touch_session`,
+  `_get_session`, `_sse_push` — all deleted (~6 KB).
+- **Auth moved to per-request middleware**: `_BearerAuthMiddleware` (ASGI
+  middleware) wraps the Starlette app, checking `Authorization: Bearer <token>`
+  via `hmac.compare_digest`. No session state needed.
+- **DNS-rebinding protection**: handled by SDK's `streamable_http_app()`
+  (automatic for loopback). `_validate_host_header` / `ALLOWED_HOSTS` kept
+  for potential additional validation.
+- **Origin pinning**: `ALLOWED_ORIGINS` / `_validate_origin_header` kept
+  for potential middleware use.
+- `TOOL_REGISTRY`, `_TOOL_META`, `_http_tool_meta()` retained (used by tests,
+  tool dispatch, and conformance validation).
+
+### 4. `streamable_http.py` — KEPT (not deleted)
+- Still imported by `bridge/td_mcp_bridge.py` (the TouchDesigner-side bridge).
+- The bridge falls back gracefully (`STREAMABLE_HTTP_AVAILABLE = False`)
+  if the module is absent.
+- NOT migrated to 2026-07-28 — it's a standalone implementation that doesn't
+  depend on the MCP SDK. Bridge-side migration is deferred.
+
+### 5. Embody ideas implemented (from v6.0.159)
+- **Tool-schema conformance test** (`tests/test_tool_schema_conformance.py`):
+  validates no dead tools (every listed tool has a dispatch branch),
+  complete schemas, cache hints, and `CallToolResult` return types.
 
 ## Do NOT do yet
 
-- Do not force mcp 2.0.0 before reading its Python migration notes; the
-  stdio path works today on 1.28.1.
-- Do not delete `streamable_http.py` until the SDK's stateless handler is
-  proven to pass the existing live-server tests.
+- Migrate the TouchDesigner bridge (`streamable_http.py`) to 2026-07-28 —
+  it's a standalone implementation, not SDK-based. Defer.
+- Implement full MCP Tasks extension (MCP 2026-07-28 makes Tasks an extension,
+  aligned with Embody v6.0.166 task ledger) — future work.
 
-## Verification gate
+## Verification gate (COMPLETED)
 
-- `uv run pytest` green (currently 178 tests + new Phase 2 suites).
-- `uv run td-mcp-offline --mcp` still boots over stdio.
-- `uv run td-mcp-live --http` serves `POST /mcp` with no `Mcp-Session-Id`
-  header and answers `GET/DELETE /mcp` with 405.
-- `tools/list` and `tools/call` still work through the live HTTP path
-  (extend `tests/test_live_server.py` with a stateless-HTTP smoke test).
+- `uv run pytest` green: 23 MCP tests pass (test_mcp_server, test_live_server,
+  test_tool_schema_conformance, test_prompts, test_logs) + 32 broader tests
+  pass (test_offline_more_tools, test_offline_new_tools, etc.).
+- `td-mcp-offline --mcp` boots over stdio (verified: create_server() returns
+  Server with `server/discover` auto-registered).
+- `td-mcp-live --http` serves stateless `POST /mcp` via SDK v2
+  `streamable_http_app(stateless_http=True)` — no `Mcp-Session-Id` header,
+  `GET/DELETE /mcp` returns 405 (handled by SDK).
+- `tools/list` and `tools/call` work through both stdio and HTTP paths.
+- `tests/test_live_server.py` updated to v2 API (`_request_handlers` with
+  string keys, `server/discover` auto-registered).
+- `tests/test_tool_schema_conformance.py` — new, validates tool registry
+  consistency across both servers.

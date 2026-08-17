@@ -3,12 +3,12 @@ name = "td-mcp"
 version = "1.9.0"
 description = "Local-first TouchDesigner MCP: offline doc/RAG server + live bridge client + TD-side bridge."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "MIT" }
-dependencies = ["pyyaml", "mcp>=1.0", "anyio"]
+dependencies = ["pyyaml", "mcp>=2.0,<3", "anyio", "uvicorn>=0.29"]
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.0", "anyio"]
+mcp = ["mcp>=2.0,<3", "anyio", "uvicorn>=0.29"]
 rag = ["sentence-transformers", "networkx"]   # dense vectors + CrossEncoder reranker + knowledge graph
 scrape = ["requests", "beautifulsoup4"]
 test = ["pytest", "pytest-cov", "networkx"]  # enough to run the suite (rag minus sentence-transformers/torch)

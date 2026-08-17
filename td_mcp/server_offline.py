@@ -8,6 +8,8 @@ import argparse
 import os
 import sys
 
+import mcp.types as types
+
 from td_mcp.rag.retriever import build_retriever
 from td_mcp.rag.strategies import ParallelRetriever
 from td_mcp import __version__
@@ -921,405 +923,435 @@ def td_scaffold_recipe(spec):
 
 
 # ============================================================
-# MCP server
+# MCP server (MCP SDK 2.0 — on_* constructor kwargs, stateless transports)
 # ============================================================
+
+def _tool(name, description, schema, annotations=None):
+    """Create a Tool with v2-compatible keyword Args.
+
+    MCP SDK 2.0 made every Tool field except ``name`` keyword-only, so the
+    positional pattern ``Tool(name, desc, schema)`` from 1.x no longer works.
+    This helper bridges the two call sites.
+    """
+    kwargs = {"name": name, "description": description, "inputSchema": schema}
+    if annotations is not None:
+        kwargs["annotations"] = annotations
+    return types.Tool(**kwargs)
+
+
+async def _offline_list_tools(ctx, params):
+    read_only = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
+    additive = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
+    return types.ListToolsResult(
+        tools=[
+            _tool("td_docs_search", "Hybrid search across scraped TouchDesigner docs (operators, Python classes, GLSL, tutorials).",
+                    {"query": {"type": "string"}, "family": {"type": "string", "optional": True},
+                     "category": {"type": "string", "optional": True}, "version": {"type": "string", "optional": True},
+                     "k": {"type": "integer", "optional": True},
+                     "detail": {"type": "string", "optional": True}},
+                    annotations=read_only),
+            _tool("td_docs_operator", "Full parameter + connector spec for one operator (e.g. 'Noise TOP').",
+                   {"name": {"type": "string"}, "k": {"type": "integer", "optional": True}},
+                   annotations=read_only),
+            _tool("td_docs_python", "Python API class/method lookup (e.g. 'OP_Class').",
+                   {"name": {"type": "string"}, "k": {"type": "integer", "optional": True}},
+                   annotations=read_only),
+            _tool("td_docs_glsl", "GLSL shader snippet search.",
+                   {"query": {"type": "string", "optional": True}, "k": {"type": "integer", "optional": True}},
+                   annotations=read_only),
+            _tool("td_docs_template", "Tutorial / workflow template search.",
+                   {"query": {"type": "string", "optional": True}, "k": {"type": "integer", "optional": True}},
+                   annotations=read_only),
+            _tool("td_docs_version", "List docs applicable to a TD build (version-aware).",
+                   {"build": {"type": "string", "optional": True}, "k": {"type": "integer", "optional": True}},
+                   annotations=read_only),
+            _tool("td_docs_family", "List every operator in a family (TOP/CHOP/SOP/DAT/COMP/POP) with a one-line description.",
+                   {"family": {"type": "string"}, "version": {"type": "string", "optional": True}},
+                   annotations=read_only),
+            _tool("td_docs_parameter", "Return the full parameter schema for one operator, merged from the 900+ operator corpus.",
+                   {"op_name": {"type": "string"}, "k": {"type": "integer", "optional": True}},
+                   annotations=read_only),
+            _tool("td_docs_compare", "Compare two operators: shared / only-A / only-B parameters. Use to choose between near-equivalents.",
+                   {"a": {"type": "string"}, "b": {"type": "string"}},
+                   annotations=read_only),
+            _tool("td_docs_connections", "Inputs / outputs / related operators for one operator (port-level wiring hints).",
+                   {"name": {"type": "string"}},
+                   annotations=read_only),
+            _tool("td_docs_workflow", "Suggest a workflow / operator chain for a goal via keyword overlap across the corpus.",
+                   {"query": {"type": "string"}, "k": {"type": "integer", "optional": True}},
+                   annotations=read_only),
+            _tool("td_docs_version_info", "Version metadata (Python version, support status, notes) for a TD build.",
+                   {"build": {"type": "string", "optional": True}},
+                   annotations=read_only),
+            _tool("td_docs_related", "Graph-RAG: operators related to the given one (networkx, depth-limited).",
+                   {"name": {"type": "string"}, "depth": {"type": "integer", "optional": True}},
+                   annotations=read_only),
+            _tool("td_build_network", "Generate a diffable TDN YAML from a list of operator specs, validating every type against the corpus.",
+                   {"spec": {"type": "string"}},
+                   annotations=additive),
+            _tool("td_showcontrol_plan", "Build a show-control plan: Art-Net / sACN / OSC / MIDI / timecode (familienak).",
+                   {"spec": {"type": "string"}},
+                   annotations=read_only),
+            _tool("td_led_map", "Define an LED / pixel mapping (wall / strip / voxel) + DMX channel-map export (familienak).",
+                   {"spec": {"type": "string"}},
+                   annotations=read_only),
+            _tool("td_docs_glossary", "Compact index of every KB entry — exploration / autocomplete over the whole documentation source.",
+                    {"limit": {"type": "integer", "optional": True}},
+                    annotations=read_only),
+            _tool("td_docs_browse", "L0 orientation: section/title map of the KB, optionally scoped to a family or query.",
+                    {"query": {"type": "string", "optional": True}, "family": {"type": "string", "optional": True},
+                     "limit": {"type": "integer", "optional": True}},
+                    annotations=read_only),
+            _tool("td_docs_read_page", "L2 read: return the full KB page(s) for a title, optionally filtered by a section substring.",
+                    {"title": {"type": "string"}, "section": {"type": "string", "optional": True}},
+                    annotations=read_only),
+            _tool("td_scaffold_show", "Scaffold a TouchDesigner show/VJ project blueprint (vj / audio_reactive / installation).",
+                    {"project_type": {"type": "string", "optional": True}},
+                    annotations=read_only),
+            _tool("td_gotcha_template", "Return a gotcha-annotated network template (chop_source_with_null / glsl_top_vec4_uniform / audio_in_with_analyze / feedback_loop_top / render_pipeline).",
+                    {"name": {"type": "string", "optional": True}},
+                    annotations=read_only),
+            _tool("td_source_registry", "List vetted TouchDesigner asset/reference sources with license + TD-version notes.",
+                    {"source_id": {"type": "string", "optional": True}},
+                    annotations=read_only),
+            _tool("td_show_readiness", "Return the live-build/show-readiness checklist (before_automation / before_show / asset_intake / all).",
+                    {"section": {"type": "string", "optional": True}},
+                    annotations=read_only),
+            _tool("td_activity_log", "Return the recent tool-call activity log.",
+                    {"limit": {"type": "integer", "optional": True}},
+                    annotations=read_only),
+            _tool("td_history_recall", "Recall matching entries across session memory and technique store.",
+                    {"query": {"type": "string"}, "k": {"type": "integer", "optional": True}},
+                    annotations=read_only),
+            _tool("td_docs_version_compat", "Per-operator addedIn/removedIn/changedIn compatibility for a TD build.",
+                    {"name": {"type": "string"}, "build": {"type": "string", "optional": True}},
+                    annotations=read_only),
+            _tool("td_kb_stats", "Return KB coverage statistics (chunk counts, operators per family, wiki-rag integration).",
+                    {}, annotations=read_only),
+            _tool("td_docs_experimental", "Return bottobot's experimental technique library (glsl/gpu-compute/ml/audio/networking/python/generative).",
+                    {"category": {"type": "string", "optional": True},
+                     "technique_id": {"type": "string", "optional": True},
+                     "show_code": {"type": "boolean", "optional": True}},
+                    annotations=read_only),
+            _tool("td_tool_batch", "Run multiple offline tools in one round-trip (bounded to 8).",
+                    {"ops": {"type": "string"}},
+                    annotations=read_only),
+            _tool("td_build_feedback", "Create a feedback network (Noise -> Level decay -> Feedback -> Threshold/Level -> Out).",
+                   {"spec": {"type": "string"}},
+                   annotations=additive),
+            _tool("td_build_audio_reactive", "Create an audio-reactive network (Audio Device In -> Math/Filter -> Export to visual params).",
+                   {"spec": {"type": "string"}},
+                   annotations=additive),
+            _tool("td_build_particle", "Create a particle system (POP or GPU TOP based).",
+                   {"spec": {"type": "string"}},
+                   annotations=additive),
+            _tool("td_build_3d_scene", "Create a 3D scene (Geometry + Camera + Light + Render).",
+                   {"spec": {"type": "string"}},
+                   annotations=additive),
+            _tool("td_build_glsl_shader", "Create a GLSL TOP with a shader template.",
+                   {"spec": {"type": "string"}},
+                   annotations=additive),
+            _tool("td_build_led_wall", "Create a pixel-mapping pipeline for an LED wall (Noise -> Resolution -> TOP to CHOP -> DMX Out).",
+                   {"spec": {"type": "string"}},
+                   annotations=additive),
+            _tool("td_build_dmx_fixture", "Create a DMX input pipeline to receive sACN/Art-Net control channels (DMX In -> Select -> Math -> Out).",
+                    {"spec": {"type": "string"}},
+                    annotations=additive),
+            _tool("td_build_video_pipeline", "Create a video playback/processing pipeline (Movie File In -> optional Chroma Key -> LUT -> Level -> Out).",
+                    {"spec": {"type": "string"}},
+                    annotations=additive),
+            _tool("td_build_midi_rig", "Create a MIDI input rig (MIDI In -> Select -> Math normalize -> Filter -> Out CHOP).",
+                    {"spec": {"type": "string"}},
+                    annotations=additive),
+            _tool("td_build_kinect_skeleton", "Create a Kinect Azure skeleton-tracking rig (joints -> select -> remap -> optional Point Sprite visualization).",
+                    {"spec": {"type": "string"}},
+                    annotations=additive),
+            _tool("td_glsl_pattern", "Return a named, paste-ready GLSL fragment shader (simple_noise / rgb_shift / hue_cycle / feedback_blend / kaleidoscope / scanline).",
+                    {"name": {"type": "string", "optional": True}},
+                    annotations=read_only),
+            _tool("td_network_template", "Return a ready-to-build operator-chain template (audio_reactive / feedback / render_scene / led_wall).",
+                    {"name": {"type": "string", "optional": True}},
+                    annotations=read_only),
+            _tool("td_expert_prompt", "Return an expert system prompt for a build phase (plan/build/self_improve) or a named expert (TD_Builder).",
+                    {"phase": {"type": "string", "optional": True}, "name": {"type": "string", "optional": True}},
+                    annotations=read_only),
+            _tool("td_compat_check", "Compare client vs bridge versions: MAJOR=error, MINOR=warning, PATCH=tolerated.",
+                    {"client_ver": {"type": "string"}, "bridge_ver": {"type": "string"}},
+                    annotations=read_only),
+            _tool("td_score_build", "Score a network description 0..100 (A–F) from validity, typed/wired completeness and corpus backing (tdmcp scoreBuild).",
+                    {"spec": {"type": "string"}},
+                    annotations=read_only),
+            _tool("td_validate_build", "Validate + score a network description and attach recovery hints for each finding (pure, no running TD).",
+                    {"spec": {"type": "string"}},
+                    annotations=read_only),
+            _tool("td_analyze_build", "Liveness/dead-weight analysis of a network description: isolated nodes, only-fed nodes, empty COMPs, broken file paths (pure, no running TD).",
+                    {"spec": {"type": "string"}},
+                    annotations=read_only),
+            _tool("td_diff_networks", "Structural A/B diff of two network descriptions: added/removed/changed operators + parameter deltas + connection deltas.",
+                    {"a": {"type": "string"}, "b": {"type": "string"}},
+                    annotations=read_only),
+            _tool("td_optimize_layout", "De-overlap a network description's node positions with deterministic, collision-free placement.",
+                    {"spec": {"type": "string"}},
+                    annotations=read_only),
+            _tool("td_resolve_params", "Normalize friendly parameter names + menu values to exact TD codes via the corpus (prevents silent no-op params).",
+                    {"spec": {"type": "string"}},
+                    annotations=read_only),
+            _tool("td_docs_combos", "Operators that commonly work together with the given one (corpus workflowPatterns co-occurrence).",
+                    {"name": {"type": "string"}, "k": {"type": "integer", "optional": True}},
+                    annotations=read_only),
+            _tool("td_self_heal", "Self-heal a network description: validate -> auto-repair -> re-assess with recovery hints (pure, no running TD).",
+                    {"spec": {"type": "string"}},
+                    annotations=read_only),
+            _tool("td_mediaserver", "Plan a connector to a media server (millumin / resolume / notch / disguise / qlab / madmapper).",
+                    {"name": {"type": "string", "optional": True}},
+                    annotations=read_only),
+            _tool("td_analyze_performance", "Analyze a performance snapshot (fps + per-node cook times) into a verdict + suggestions.",
+                    {"perf": {"type": "string"}},
+                    annotations=read_only),
+            _tool("td_discover", "Discover running TouchDesigner bridge instances on known local ports (multi-instance, twozero).",
+                    {}, annotations=read_only),
+            _tool("td_memory_save", "Persist an interaction turn to local session memory for cross-session continuity. Optional trust_tier weights recall ordering.",
+                   {"role": {"type": "string"}, "text": {"type": "string"}, "tags": {"type": "string", "optional": True},
+                    "trust_tier": {"type": "string", "optional": True}},
+                   annotations=read_only),
+            _tool("td_memory_recall", "Recall the most relevant past interactions by keyword overlap.",
+                    {"query": {"type": "string"}, "k": {"type": "integer", "optional": True}},
+                    annotations=read_only),
+            _tool("td_scaffold_recipe", "Scaffold a reusable recipe blueprint from a network description (TDN/JSON/operators).",
+                    {"spec": {"type": "string"}},
+                    annotations=read_only),
+        ],
+        ttl_ms=60000,
+        cache_scope="private",
+    )
+
+
+async def _offline_call_tool(ctx, params):
+    name = params.name
+    a = params.arguments or {}
+    import time as _time
+    _t0 = _time.perf_counter()
+    ok_flag = True
+    # Opt-in observability: record a timed span per tool call when
+    # TD_MCP_OBSERVE is set (no-op otherwise — zero overhead when off).
+    with get_trace_log().span("tool_call", tool=name):
+        try:
+            if name == "td_docs_search":
+                _max = 500 if a.get("detail") == "brief" else None
+                out = (_fmt(ret.search(a.get("query", ""), family=a.get("family"),
+                                       category=a.get("category"), version=a.get("version"), k=a.get("k", 5)),
+                         a.get("query", ""), max_chars=_max), "")
+            elif name == "td_docs_operator":
+                out = (td_docs_operator(a.get("name", ""), a.get("k", 3)), "")
+            elif name == "td_docs_python":
+                out = (td_docs_python(a.get("name", ""), a.get("k", 3)), "")
+            elif name == "td_docs_glsl":
+                out = (td_docs_glsl(a.get("query", "fragment"), a.get("k", 2)), "")
+            elif name == "td_docs_template":
+                out = (td_docs_template(a.get("query", ""), a.get("k", 2)), "")
+            elif name == "td_docs_version":
+                out = (td_docs_version(a.get("build", "all"), a.get("k", 5)), "")
+            elif name == "td_docs_family":
+                out = (td_docs_family(a.get("family", ""), a.get("version")), "")
+            elif name == "td_docs_parameter":
+                out = (td_docs_parameter(a.get("op_name", ""), a.get("k", 1)), "")
+            elif name == "td_docs_compare":
+                out = (td_docs_compare(a.get("a", ""), a.get("b", "")), "")
+            elif name == "td_docs_connections":
+                out = (td_docs_connections(a.get("name", "")), "")
+            elif name == "td_docs_workflow":
+                out = (td_docs_workflow(a.get("query", ""), a.get("k", 8)), "")
+            elif name == "td_docs_version_info":
+                out = (td_docs_version_info(a.get("build", "2023.10000")), "")
+            elif name == "td_docs_related":
+                out = (td_docs_related(a.get("name", ""), a.get("depth", 1)), "")
+            elif name == "td_build_network":
+                out = (td_build_network(a.get("spec", "[]")), "")
+            elif name == "td_showcontrol_plan":
+                out = (td_showcontrol_plan(a.get("spec", "{}")), "")
+            elif name == "td_led_map":
+                out = (td_led_map(a.get("spec", "{}")), "")
+            elif name == "td_docs_glossary":
+                out = (td_docs_glossary(a.get("limit", 200)), "")
+            elif name == "td_build_feedback":
+                out = (td_build_feedback(a.get("spec", "{}")), "")
+            elif name == "td_build_audio_reactive":
+                out = (td_build_audio_reactive(a.get("spec", "{}")), "")
+            elif name == "td_build_particle":
+                out = (td_build_particle(a.get("spec", "{}")), "")
+            elif name == "td_build_3d_scene":
+                out = (td_build_3d_scene(a.get("spec", "{}")), "")
+            elif name == "td_build_glsl_shader":
+                out = (td_build_glsl_shader(a.get("spec", "{}")), "")
+            elif name == "td_build_led_wall":
+                out = (td_build_led_wall(a.get("spec", "{}")), "")
+            elif name == "td_build_dmx_fixture":
+                out = (td_build_dmx_fixture(a.get("spec", "{}")), "")
+            elif name == "td_build_video_pipeline":
+                out = (td_build_video_pipeline(a.get("spec", "{}")), "")
+            elif name == "td_build_midi_rig":
+                out = (td_build_midi_rig(a.get("spec", "{}")), "")
+            elif name == "td_build_kinect_skeleton":
+                out = (td_build_kinect_skeleton(a.get("spec", "{}")), "")
+            elif name == "td_glsl_pattern":
+                out = (td_glsl_pattern(a.get("name", "simple_noise")), "")
+            elif name == "td_network_template":
+                out = (td_network_template(a.get("name", "feedback")), "")
+            elif name == "td_expert_prompt":
+                out = (td_expert_prompt(a.get("phase"), a.get("name")), "")
+            elif name == "td_compat_check":
+                out = (td_compat_check(a.get("client_ver", "1.0.0"), a.get("bridge_ver", "1.0.0")), "")
+            elif name == "td_score_build":
+                out = (td_score_build(a.get("spec", "[]")), "")
+            elif name == "td_validate_build":
+                out = (td_validate_build(a.get("spec", "[]")), "")
+            elif name == "td_analyze_build":
+                out = (td_analyze_build(a.get("spec", "[]")), "")
+            elif name == "td_diff_networks":
+                out = (td_diff_networks(a.get("a", "[]"), a.get("b", "[]")), "")
+            elif name == "td_optimize_layout":
+                out = (td_optimize_layout(a.get("spec", "[]")), "")
+            elif name == "td_resolve_params":
+                out = (td_resolve_params(a.get("spec", "[]")), "")
+            elif name == "td_docs_combos":
+                out = (td_docs_combos(a.get("name", ""), a.get("k", 8)), "")
+            elif name == "td_self_heal":
+                out = (td_self_heal(a.get("spec", "[]")), "")
+            elif name == "td_mediaserver":
+                out = (td_mediaserver(a.get("name", "resolume")), "")
+            elif name == "td_analyze_performance":
+                out = (td_analyze_performance(a.get("perf", "{}")), "")
+            elif name == "td_discover":
+                out = (td_discover(), "")
+            elif name == "td_memory_save":
+                out = (td_memory_save(a.get("role", "user"), a.get("text", ""), a.get("tags"),
+                                      a.get("trust_tier", "personal")), "")
+            elif name == "td_memory_recall":
+                out = (td_memory_recall(a.get("query", ""), a.get("k", 5)), "")
+            elif name == "td_scaffold_recipe":
+                out = (td_scaffold_recipe(a.get("spec", "[]")), "")
+            elif name == "td_docs_browse":
+                out = (td_docs_browse(a.get("query"), a.get("family"),
+                                      a.get("limit", 40)), "")
+            elif name == "td_docs_read_page":
+                out = (td_docs_read_page(a.get("title", ""),
+                                         a.get("section")), "")
+            elif name == "td_scaffold_show":
+                out = (td_scaffold_show(a.get("project_type", "vj")), "")
+            elif name == "td_gotcha_template":
+                out = (td_gotcha_template(a.get("name", "feedback_loop_top")), "")
+            elif name == "td_source_registry":
+                out = (td_source_registry(a.get("source_id")), "")
+            elif name == "td_show_readiness":
+                out = (td_show_readiness(a.get("section", "all")), "")
+            elif name == "td_activity_log":
+                out = (td_activity_log(a.get("limit", 50)), "")
+            elif name == "td_history_recall":
+                out = (td_history_recall(a.get("query", ""), a.get("k", 5)), "")
+            elif name == "td_docs_version_compat":
+                out = (td_docs_version_compat(a.get("name", ""), a.get("build")), "")
+            elif name == "td_kb_stats":
+                out = (td_kb_stats(), "")
+            elif name == "td_docs_experimental":
+                out = (td_docs_experimental(a.get("category"), a.get("technique_id"),
+                                            a.get("show_code", True)), "")
+            elif name == "td_tool_batch":
+                out = (td_tool_batch(a.get("ops", "[]")), "")
+            else:
+                out = ("unknown tool", "")
+        except Exception as e:  # noqa: BLE001
+            ok_flag = False
+            out = (f"error: {e}", "")
+        finally:
+            _dt_ms = (_time.perf_counter() - _t0) * 1000.0
+            try:
+                activity_mod.get_activity_log().add(
+                    name, args_summary=str(a)[:200],
+                    result_summary=(str(out[0])[:200] if out else ""),
+                    duration_ms=_dt_ms, ok=ok_flag)
+            except Exception:  # noqa: BLE001
+                pass
+    return types.CallToolResult(
+        content=[types.TextContent(type="text", text=out[0])],
+        result_type="complete",
+    )
+
+
+async def _offline_list_resources(ctx, params):
+    ret = get_pr()
+    families = ret.families()
+    resources = [types.Resource(
+        "manual://index",
+        name="TouchDesigner manual index",
+        description="Compact index of every operator + Python class in the KB.",
+        mimeType="text/plain")]
+    for fam in families:
+        resources.append(types.Resource(
+            f"manual://operators/{fam.lower()}",
+            name=f"{fam} operators",
+            description=f"All {fam} operators in the local KB.",
+            mimeType="text/plain"))
+    return types.ListResourcesResult(resources=resources, ttl_ms=60000, cache_scope="private")
+
+
+async def _offline_read_resource(ctx, params):
+    uri = params.uri
+    ret = get_pr()
+    if uri == "manual://index":
+        text = td_docs_glossary(limit=200)
+    elif uri.startswith("manual://operators/"):
+        fam = uri.rsplit("/", 1)[-1].upper()
+        text = td_docs_family(fam)
+    else:
+        text = f"Unknown resource: {uri}"
+    return types.ReadResourceResult(
+        contents=[types.TextResourceContents(uri=uri, text=text, mimeType="text/plain")]
+    )
+
+
+async def _offline_list_prompts(ctx, params):
+    # Expose the expert personas + phase prompts as discoverable MCP prompts
+    # (Touchdesigner___MCP_server PROMPT_TEMPLATES idea) so clients can pull
+    # the right workflow prompt without knowing tool names.
+    prompts = []
+    for name in prompts_mod.list_experts():
+        prompts.append(types.Prompt(name, description=f"Expert persona: {name}",
+                                    arguments=[]))
+    for phase in ("plan", "build", "self_improve"):
+        prompts.append(types.Prompt(
+            f"phase_{phase}",
+            description=f"Combined system prompt for the '{phase}' build phase.",
+            arguments=[]))
+    return types.ListPromptsResult(prompts=prompts, ttl_ms=60000, cache_scope="private")
+
+
+async def _offline_get_prompt(ctx, params):
+    name = params.name
+    if name in prompts_mod.list_experts():
+        text = prompts_mod.get_expert_prompt(name) or ""
+    elif name.startswith("phase_"):
+        text = prompts_mod.build_phase_prompt(name[len("phase_"):])
+    else:
+        text = prompts_mod.build_phase_prompt("build")
+    return types.GetPromptResult(
+        description=name,
+        messages=[types.PromptMessage(role="user",
+                   content=types.TextContent(type="text", text=text))])
+
+
 def create_server():
     from mcp.server import Server
-    import mcp.types as types
-
-    app = Server("td-mcp-offline", version=__version__)
-    ret = get_pr()
-
-    @app.list_tools()
-    async def list_tools():
-        # Risk tiering (TrueFiasco): READ_ONLY / WRITE_ADDITIVE / WRITE_CHECKPOINT / DESTRUCTIVE
-        # Offline server = read-only + additive (td_build_network generates YAML)
-        read_only = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
-        additive = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
-        return [
-            types.Tool("td_docs_search", "Hybrid search across scraped TouchDesigner docs (operators, Python classes, GLSL, tutorials).",
-                        {"query": {"type": "string"}, "family": {"type": "string", "optional": True},
-                         "category": {"type": "string", "optional": True}, "version": {"type": "string", "optional": True},
-                         "k": {"type": "integer", "optional": True},
-                         "detail": {"type": "string", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_docs_operator", "Full parameter + connector spec for one operator (e.g. 'Noise TOP').",
-                       {"name": {"type": "string"}, "k": {"type": "integer", "optional": True}},
-                       annotations=read_only),
-            types.Tool("td_docs_python", "Python API class/method lookup (e.g. 'OP_Class').",
-                       {"name": {"type": "string"}, "k": {"type": "integer", "optional": True}},
-                       annotations=read_only),
-            types.Tool("td_docs_glsl", "GLSL shader snippet search.",
-                       {"query": {"type": "string", "optional": True}, "k": {"type": "integer", "optional": True}},
-                       annotations=read_only),
-            types.Tool("td_docs_template", "Tutorial / workflow template search.",
-                       {"query": {"type": "string", "optional": True}, "k": {"type": "integer", "optional": True}},
-                       annotations=read_only),
-            types.Tool("td_docs_version", "List docs applicable to a TD build (version-aware).",
-                       {"build": {"type": "string", "optional": True}, "k": {"type": "integer", "optional": True}},
-                       annotations=read_only),
-            types.Tool("td_docs_family", "List every operator in a family (TOP/CHOP/SOP/DAT/COMP/POP) with a one-line description.",
-                       {"family": {"type": "string"}, "version": {"type": "string", "optional": True}},
-                       annotations=read_only),
-            types.Tool("td_docs_parameter", "Return the full parameter schema for one operator, merged from the 900+ operator corpus.",
-                       {"op_name": {"type": "string"}, "k": {"type": "integer", "optional": True}},
-                       annotations=read_only),
-            types.Tool("td_docs_compare", "Compare two operators: shared / only-A / only-B parameters. Use to choose between near-equivalents.",
-                       {"a": {"type": "string"}, "b": {"type": "string"}},
-                       annotations=read_only),
-            types.Tool("td_docs_connections", "Inputs / outputs / related operators for one operator (port-level wiring hints).",
-                       {"name": {"type": "string"}},
-                       annotations=read_only),
-            types.Tool("td_docs_workflow", "Suggest a workflow / operator chain for a goal via keyword overlap across the corpus.",
-                       {"query": {"type": "string"}, "k": {"type": "integer", "optional": True}},
-                       annotations=read_only),
-            types.Tool("td_docs_version_info", "Version metadata (Python version, support status, notes) for a TD build.",
-                       {"build": {"type": "string", "optional": True}},
-                       annotations=read_only),
-            types.Tool("td_docs_related", "Graph-RAG: operators related to the given one (networkx, depth-limited).",
-                       {"name": {"type": "string"}, "depth": {"type": "integer", "optional": True}},
-                       annotations=read_only),
-            types.Tool("td_build_network", "Generate a diffable TDN YAML from a list of operator specs, validating every type against the corpus.",
-                       {"spec": {"type": "string"}},
-                       annotations=additive),
-            types.Tool("td_showcontrol_plan", "Build a show-control plan: Art-Net / sACN / OSC / MIDI / timecode (familienak).",
-                       {"spec": {"type": "string"}},
-                       annotations=read_only),
-            types.Tool("td_led_map", "Define an LED / pixel mapping (wall / strip / voxel) + DMX channel-map export (familienak).",
-                       {"spec": {"type": "string"}},
-                       annotations=read_only),
-            types.Tool("td_docs_glossary", "Compact index of every KB entry — exploration / autocomplete over the whole documentation source.",
-                        {"limit": {"type": "integer", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_docs_browse", "L0 orientation: section/title map of the KB, optionally scoped to a family or query.",
-                        {"query": {"type": "string", "optional": True}, "family": {"type": "string", "optional": True},
-                         "limit": {"type": "integer", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_docs_read_page", "L2 read: return the full KB page(s) for a title, optionally filtered by a section substring.",
-                        {"title": {"type": "string"}, "section": {"type": "string", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_scaffold_show", "Scaffold a TouchDesigner show/VJ project blueprint (vj / audio_reactive / installation).",
-                        {"project_type": {"type": "string", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_gotcha_template", "Return a gotcha-annotated network template (chop_source_with_null / glsl_top_vec4_uniform / audio_in_with_analyze / feedback_loop_top / render_pipeline).",
-                        {"name": {"type": "string", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_source_registry", "List vetted TouchDesigner asset/reference sources with license + TD-version notes.",
-                        {"source_id": {"type": "string", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_show_readiness", "Return the live-build/show-readiness checklist (before_automation / before_show / asset_intake / all).",
-                        {"section": {"type": "string", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_activity_log", "Return the recent tool-call activity log.",
-                        {"limit": {"type": "integer", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_history_recall", "Recall matching entries across session memory and technique store.",
-                        {"query": {"type": "string"}, "k": {"type": "integer", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_docs_version_compat", "Per-operator addedIn/removedIn/changedIn compatibility for a TD build.",
-                        {"name": {"type": "string"}, "build": {"type": "string", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_kb_stats", "Return KB coverage statistics (chunk counts, operators per family, wiki-rag integration).",
-                        {}, annotations=read_only),
-            types.Tool("td_docs_experimental", "Return bottobot's experimental technique library (glsl/gpu-compute/ml/audio/networking/python/generative).",
-                        {"category": {"type": "string", "optional": True},
-                         "technique_id": {"type": "string", "optional": True},
-                         "show_code": {"type": "boolean", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_tool_batch", "Run multiple offline tools in one round-trip (bounded to 8).",
-                        {"ops": {"type": "string"}},
-                        annotations=read_only),
-            types.Tool("td_build_feedback", "Create a feedback network (Noise -> Level decay -> Feedback -> Threshold/Level -> Out).",
-                       {"spec": {"type": "string"}},
-                       annotations=additive),
-            types.Tool("td_build_audio_reactive", "Create an audio-reactive network (Audio Device In -> Math/Filter -> Export to visual params).",
-                       {"spec": {"type": "string"}},
-                       annotations=additive),
-            types.Tool("td_build_particle", "Create a particle system (POP or GPU TOP based).",
-                       {"spec": {"type": "string"}},
-                       annotations=additive),
-            types.Tool("td_build_3d_scene", "Create a 3D scene (Geometry + Camera + Light + Render).",
-                       {"spec": {"type": "string"}},
-                       annotations=additive),
-            types.Tool("td_build_glsl_shader", "Create a GLSL TOP with a shader template.",
-                       {"spec": {"type": "string"}},
-                       annotations=additive),
-            types.Tool("td_build_led_wall", "Create a pixel-mapping pipeline for an LED wall (Noise -> Resolution -> TOP to CHOP -> DMX Out).",
-                       {"spec": {"type": "string"}},
-                       annotations=additive),
-            types.Tool("td_build_dmx_fixture", "Create a DMX input pipeline to receive sACN/Art-Net control channels (DMX In -> Select -> Math -> Out).",
-                        {"spec": {"type": "string"}},
-                        annotations=additive),
-            types.Tool("td_build_video_pipeline", "Create a video playback/processing pipeline (Movie File In -> optional Chroma Key -> LUT -> Level -> Out).",
-                        {"spec": {"type": "string"}},
-                        annotations=additive),
-            types.Tool("td_build_midi_rig", "Create a MIDI input rig (MIDI In -> Select -> Math normalize -> Filter -> Out CHOP).",
-                        {"spec": {"type": "string"}},
-                        annotations=additive),
-            types.Tool("td_build_kinect_skeleton", "Create a Kinect Azure skeleton-tracking rig (joints -> select -> remap -> optional Point Sprite visualization).",
-                        {"spec": {"type": "string"}},
-                        annotations=additive),
-            types.Tool("td_glsl_pattern", "Return a named, paste-ready GLSL fragment shader (simple_noise / rgb_shift / hue_cycle / feedback_blend / kaleidoscope / scanline).",
-                        {"name": {"type": "string", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_network_template", "Return a ready-to-build operator-chain template (audio_reactive / feedback / render_scene / led_wall).",
-                        {"name": {"type": "string", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_expert_prompt", "Return an expert system prompt for a build phase (plan/build/self_improve) or a named expert (TD_Builder).",
-                        {"phase": {"type": "string", "optional": True}, "name": {"type": "string", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_compat_check", "Compare client vs bridge versions: MAJOR=error, MINOR=warning, PATCH=tolerated.",
-                        {"client_ver": {"type": "string"}, "bridge_ver": {"type": "string"}},
-                        annotations=read_only),
-            types.Tool("td_score_build", "Score a network description 0..100 (A–F) from validity, typed/wired completeness and corpus backing (tdmcp scoreBuild).",
-                        {"spec": {"type": "string"}},
-                        annotations=read_only),
-            types.Tool("td_validate_build", "Validate + score a network description and attach recovery hints for each finding (pure, no running TD).",
-                        {"spec": {"type": "string"}},
-                        annotations=read_only),
-            types.Tool("td_analyze_build", "Liveness/dead-weight analysis of a network description: isolated nodes, only-fed nodes, empty COMPs, broken file paths (pure, no running TD).",
-                        {"spec": {"type": "string"}},
-                        annotations=read_only),
-            types.Tool("td_diff_networks", "Structural A/B diff of two network descriptions: added/removed/changed operators + parameter deltas + connection deltas.",
-                        {"a": {"type": "string"}, "b": {"type": "string"}},
-                        annotations=read_only),
-            types.Tool("td_optimize_layout", "De-overlap a network description's node positions with deterministic, collision-free placement.",
-                        {"spec": {"type": "string"}},
-                        annotations=read_only),
-            types.Tool("td_resolve_params", "Normalize friendly parameter names + menu values to exact TD codes via the corpus (prevents silent no-op params).",
-                        {"spec": {"type": "string"}},
-                        annotations=read_only),
-            types.Tool("td_docs_combos", "Operators that commonly work together with the given one (corpus workflowPatterns co-occurrence).",
-                        {"name": {"type": "string"}, "k": {"type": "integer", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_self_heal", "Self-heal a network description: validate -> auto-repair -> re-assess with recovery hints (pure, no running TD).",
-                        {"spec": {"type": "string"}},
-                        annotations=read_only),
-            types.Tool("td_mediaserver", "Plan a connector to a media server (millumin / resolume / notch / disguise / qlab / madmapper).",
-                        {"name": {"type": "string", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_analyze_performance", "Analyze a performance snapshot (fps + per-node cook times) into a verdict + suggestions.",
-                        {"perf": {"type": "string"}},
-                        annotations=read_only),
-            types.Tool("td_discover", "Discover running TouchDesigner bridge instances on known local ports (multi-instance, twozero).",
-                        {}, annotations=read_only),
-            types.Tool("td_memory_save", "Persist an interaction turn to local session memory for cross-session continuity. Optional trust_tier weights recall ordering.",
-                       {"role": {"type": "string"}, "text": {"type": "string"}, "tags": {"type": "string", "optional": True},
-                        "trust_tier": {"type": "string", "optional": True}},
-                       annotations=read_only),
-            types.Tool("td_memory_recall", "Recall the most relevant past interactions by keyword overlap.",
-                        {"query": {"type": "string"}, "k": {"type": "integer", "optional": True}},
-                        annotations=read_only),
-            types.Tool("td_scaffold_recipe", "Scaffold a reusable recipe blueprint from a network description (TDN/JSON/operators).",
-                        {"spec": {"type": "string"}},
-                        annotations=read_only),
-        ]
-
-    @app.call_tool()
-    async def call_tool(name, arguments):
-        a = arguments or {}
-        import time as _time
-        _t0 = _time.perf_counter()
-        ok_flag = True
-        # Opt-in observability: record a timed span per tool call when
-        # TD_MCP_OBSERVE is set (no-op otherwise — zero overhead when off).
-        with get_trace_log().span("tool_call", tool=name):
-            try:
-                if name == "td_docs_search":
-                    _max = 500 if a.get("detail") == "brief" else None
-                    out = (_fmt(ret.search(a.get("query", ""), family=a.get("family"),
-                                           category=a.get("category"), version=a.get("version"), k=a.get("k", 5)),
-                             a.get("query", ""), max_chars=_max), "")
-                elif name == "td_docs_operator":
-                    out = (td_docs_operator(a.get("name", ""), a.get("k", 3)), "")
-                elif name == "td_docs_python":
-                    out = (td_docs_python(a.get("name", ""), a.get("k", 3)), "")
-                elif name == "td_docs_glsl":
-                    out = (td_docs_glsl(a.get("query", "fragment"), a.get("k", 2)), "")
-                elif name == "td_docs_template":
-                    out = (td_docs_template(a.get("query", ""), a.get("k", 2)), "")
-                elif name == "td_docs_version":
-                    out = (td_docs_version(a.get("build", "all"), a.get("k", 5)), "")
-                elif name == "td_docs_family":
-                    out = (td_docs_family(a.get("family", ""), a.get("version")), "")
-                elif name == "td_docs_parameter":
-                    out = (td_docs_parameter(a.get("op_name", ""), a.get("k", 1)), "")
-                elif name == "td_docs_compare":
-                    out = (td_docs_compare(a.get("a", ""), a.get("b", "")), "")
-                elif name == "td_docs_connections":
-                    out = (td_docs_connections(a.get("name", "")), "")
-                elif name == "td_docs_workflow":
-                    out = (td_docs_workflow(a.get("query", ""), a.get("k", 8)), "")
-                elif name == "td_docs_version_info":
-                    out = (td_docs_version_info(a.get("build", "2023.10000")), "")
-                elif name == "td_docs_related":
-                    out = (td_docs_related(a.get("name", ""), a.get("depth", 1)), "")
-                elif name == "td_build_network":
-                    out = (td_build_network(a.get("spec", "[]")), "")
-                elif name == "td_showcontrol_plan":
-                    out = (td_showcontrol_plan(a.get("spec", "{}")), "")
-                elif name == "td_led_map":
-                    out = (td_led_map(a.get("spec", "{}")), "")
-                elif name == "td_docs_glossary":
-                    out = (td_docs_glossary(a.get("limit", 200)), "")
-                elif name == "td_build_feedback":
-                    out = (td_build_feedback(a.get("spec", "{}")), "")
-                elif name == "td_build_audio_reactive":
-                    out = (td_build_audio_reactive(a.get("spec", "{}")), "")
-                elif name == "td_build_particle":
-                    out = (td_build_particle(a.get("spec", "{}")), "")
-                elif name == "td_build_3d_scene":
-                    out = (td_build_3d_scene(a.get("spec", "{}")), "")
-                elif name == "td_build_glsl_shader":
-                    out = (td_build_glsl_shader(a.get("spec", "{}")), "")
-                elif name == "td_build_led_wall":
-                    out = (td_build_led_wall(a.get("spec", "{}")), "")
-                elif name == "td_build_dmx_fixture":
-                    out = (td_build_dmx_fixture(a.get("spec", "{}")), "")
-                elif name == "td_build_video_pipeline":
-                    out = (td_build_video_pipeline(a.get("spec", "{}")), "")
-                elif name == "td_build_midi_rig":
-                    out = (td_build_midi_rig(a.get("spec", "{}")), "")
-                elif name == "td_build_kinect_skeleton":
-                    out = (td_build_kinect_skeleton(a.get("spec", "{}")), "")
-                elif name == "td_glsl_pattern":
-                    out = (td_glsl_pattern(a.get("name", "simple_noise")), "")
-                elif name == "td_network_template":
-                    out = (td_network_template(a.get("name", "feedback")), "")
-                elif name == "td_expert_prompt":
-                    out = (td_expert_prompt(a.get("phase"), a.get("name")), "")
-                elif name == "td_compat_check":
-                    out = (td_compat_check(a.get("client_ver", "1.0.0"), a.get("bridge_ver", "1.0.0")), "")
-                elif name == "td_score_build":
-                    out = (td_score_build(a.get("spec", "[]")), "")
-                elif name == "td_validate_build":
-                    out = (td_validate_build(a.get("spec", "[]")), "")
-                elif name == "td_analyze_build":
-                    out = (td_analyze_build(a.get("spec", "[]")), "")
-                elif name == "td_diff_networks":
-                    out = (td_diff_networks(a.get("a", "[]"), a.get("b", "[]")), "")
-                elif name == "td_optimize_layout":
-                    out = (td_optimize_layout(a.get("spec", "[]")), "")
-                elif name == "td_resolve_params":
-                    out = (td_resolve_params(a.get("spec", "[]")), "")
-                elif name == "td_docs_combos":
-                    out = (td_docs_combos(a.get("name", ""), a.get("k", 8)), "")
-                elif name == "td_self_heal":
-                    out = (td_self_heal(a.get("spec", "[]")), "")
-                elif name == "td_mediaserver":
-                    out = (td_mediaserver(a.get("name", "resolume")), "")
-                elif name == "td_analyze_performance":
-                    out = (td_analyze_performance(a.get("perf", "{}")), "")
-                elif name == "td_discover":
-                    out = (td_discover(), "")
-                elif name == "td_memory_save":
-                    out = (td_memory_save(a.get("role", "user"), a.get("text", ""), a.get("tags"),
-                                          a.get("trust_tier", "personal")), "")
-                elif name == "td_memory_recall":
-                    out = (td_memory_recall(a.get("query", ""), a.get("k", 5)), "")
-                elif name == "td_scaffold_recipe":
-                    out = (td_scaffold_recipe(a.get("spec", "[]")), "")
-                elif name == "td_docs_browse":
-                    out = (td_docs_browse(a.get("query"), a.get("family"),
-                                          a.get("limit", 40)), "")
-                elif name == "td_docs_read_page":
-                    out = (td_docs_read_page(a.get("title", ""),
-                                             a.get("section")), "")
-                elif name == "td_scaffold_show":
-                    out = (td_scaffold_show(a.get("project_type", "vj")), "")
-                elif name == "td_gotcha_template":
-                    out = (td_gotcha_template(a.get("name", "feedback_loop_top")), "")
-                elif name == "td_source_registry":
-                    out = (td_source_registry(a.get("source_id")), "")
-                elif name == "td_show_readiness":
-                    out = (td_show_readiness(a.get("section", "all")), "")
-                elif name == "td_activity_log":
-                    out = (td_activity_log(a.get("limit", 50)), "")
-                elif name == "td_history_recall":
-                    out = (td_history_recall(a.get("query", ""), a.get("k", 5)), "")
-                elif name == "td_docs_version_compat":
-                    out = (td_docs_version_compat(a.get("name", ""), a.get("build")), "")
-                elif name == "td_kb_stats":
-                    out = (td_kb_stats(), "")
-                elif name == "td_docs_experimental":
-                    out = (td_docs_experimental(a.get("category"), a.get("technique_id"),
-                                                a.get("show_code", True)), "")
-                elif name == "td_tool_batch":
-                    out = (td_tool_batch(a.get("ops", "[]")), "")
-                else:
-                    out = ("unknown tool", "")
-            except Exception as e:  # noqa: BLE001
-                ok_flag = False
-                out = (f"error: {e}", "")
-            finally:
-                _dt_ms = (_time.perf_counter() - _t0) * 1000.0
-                try:
-                    activity_mod.get_activity_log().add(
-                        name, args_summary=str(a)[:200],
-                        result_summary=(str(out[0])[:200] if out else ""),
-                        duration_ms=_dt_ms, ok=ok_flag)
-                except Exception:  # noqa: BLE001
-                    pass
-        return [types.TextContent(type="text", text=out[0])]
-
-    @app.list_resources()
-    async def list_resources():
-        ret = get_pr()
-        families = ret.families()
-        resources = [types.Resource(
-            "manual://index",
-            name="TouchDesigner manual index",
-            description="Compact index of every operator + Python class in the KB.",
-            mimeType="text/plain")]
-        for fam in families:
-            resources.append(types.Resource(
-                f"manual://operators/{fam.lower()}",
-                name=f"{fam} operators",
-                description=f"All {fam} operators in the local KB.",
-                mimeType="text/plain"))
-        return resources
-
-    @app.read_resource()
-    async def read_resource(uri):
-        ret = get_pr()
-        if uri == "manual://index":
-            text = td_docs_glossary(limit=200)
-        elif uri.startswith("manual://operators/"):
-            fam = uri.rsplit("/", 1)[-1].upper()
-            text = td_docs_family(fam)
-        else:
-            text = f"Unknown resource: {uri}"
-        return [types.TextContent(type="text", text=text)]
-
-    @app.list_prompts()
-    async def list_prompts():
-        # Expose the expert personas + phase prompts as discoverable MCP prompts
-        # (Touchdesigner___MCP_server PROMPT_TEMPLATES idea) so clients can pull
-        # the right workflow prompt without knowing tool names.
-        prompts = []
-        for name in prompts_mod.list_experts():
-            prompts.append(types.Prompt(name, description=f"Expert persona: {name}",
-                                        arguments=[]))
-        for phase in ("plan", "build", "self_improve"):
-            prompts.append(types.Prompt(
-                f"phase_{phase}",
-                description=f"Combined system prompt for the '{phase}' build phase.",
-                arguments=[]))
-        return prompts
-
-    @app.get_prompt()
-    async def get_prompt(name, arguments):
-        if name in prompts_mod.list_experts():
-            text = prompts_mod.get_expert_prompt(name) or ""
-        elif name.startswith("phase_"):
-            text = prompts_mod.build_phase_prompt(name[len("phase_"):])
-        else:
-            text = prompts_mod.build_phase_prompt("build")
-        return types.GetPromptResult(
-            description=name,
-            messages=[types.PromptMessage(role="user",
-                       content=types.TextContent(type="text", text=text))])
-
+    app = Server(
+        name="td-mcp-offline",
+        version=__version__,
+        on_list_tools=_offline_list_tools,
+        on_call_tool=_offline_call_tool,
+        on_list_resources=_offline_list_resources,
+        on_read_resource=_offline_read_resource,
+        on_list_prompts=_offline_list_prompts,
+        on_get_prompt=_offline_get_prompt,
+    )
+    get_pr()
     return app
 
 
@@ -1355,7 +1387,7 @@ def _main_cli():
     else:
         q = " ".join(args.query) or "blur top parameters"
         print(td_docs_search(q, family=args.family, category=args.category,
-                              version=args.version, k=args.k))
+                             version=args.version, k=args.k))
 
 
 def main():
