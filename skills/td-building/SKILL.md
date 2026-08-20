@@ -46,8 +46,36 @@ op('x').store('key', value)  # persistent per-node state
 op('x').fetch('key')
 ```
 
+## Threading — never call `run()` off the main thread
+
+TouchDesigner's global `run()` is main-thread-only. Calling it from a worker
+thread does **not** raise (Derivative-confirmed 2026-08-17): it corrupts TD
+state silently and crashes minutes later, far from the call site, so the
+traceback you eventually get points at innocent code.
+
+```python
+# WRONG — the exception you want never arrives; the crash does.
+def worker():
+    run("op('moviefilein1').par.play = 1")     # corrupts TD from a thread
+threading.Thread(target=worker).start()
+
+# RIGHT — hand the work to the main thread and let TD drain it.
+_pending = []
+def worker():
+    _pending.append("op('moviefilein1').par.play = 1")   # thread-safe append
+# ...then in a CHOP/DAT Execute callback, which runs on the main thread:
+def onFrameStart(frame):
+    while _pending:
+        run(_pending.pop(0))
+```
+
+`execute_python` and `set_dat_text` statically lint what you submit and return
+a `THREADING WARNING` when a thread target reaches `run()`. The write still
+lands — treat the warning as a defect to fix, not as noise.
+
 ## Common mistakes to avoid
 
+- Calling `run()` from a thread target (see above) — it fails silently, later.
 - Calling `par.val` on an expression-driven parameter — use `.eval()`.
 - Storing operator references long-term (they go stale on delete/rename).
 - Using `exec_python` when a structured tool (`set_parameters`,

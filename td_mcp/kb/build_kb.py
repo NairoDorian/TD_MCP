@@ -825,7 +825,14 @@ RECORDS += [
 ]
 
 
-def main():
+def main(argv=None):
+    import argparse
+    ap = argparse.ArgumentParser(description="Build chunks.jsonl from curated + corpus + wiki sources.")
+    ap.add_argument("--wiki-root", help="local wiki mirror root (overrides TD_MCP_WIKI_ROOT / auto-detect)")
+    ap.add_argument("--no-wiki", action="store_true", help="skip local wiki ingestion even if a root exists")
+    ap.add_argument("--wiki-limit", type=int, help="cap wiki pages (debugging)")
+    args = ap.parse_args(argv)
+
     # Merge the merged MIT operator/Python corpus into the curated seeds so the
     # retriever benefits from 900+ operators + classes with version stamps.
     try:
@@ -833,6 +840,38 @@ def main():
         RECORDS.extend(corpus_chunks())
     except Exception:  # noqa: BLE001
         pass
+
+    # Structured local-wiki ingestion (full official docs, section-level with
+    # citations). Runs whenever a mirror is found: TD_MCP_WIKI_ROOT, the TD
+    # install's OfflineHelp tree, or a sibling "TD HELP" dump. The wiki chunks
+    # are part of the deterministic build so the integrity receipt stays valid.
+    if not args.no_wiki:
+        try:
+            from td_mcp.kb import wiki_ingest
+            wiki_chunks = wiki_ingest.ingest(args.wiki_root, limit=args.wiki_limit, verbose=True)
+            RECORDS.extend(wiki_chunks)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  wiki ingest skipped: {exc}")
+
+    # Version reconciliation: curated seeds are the authority on build gates
+    # (PBR MAT >= 2022.20000, POPs >= 2023.10000, ...). Propagate their
+    # min_version onto imported corpus/wiki chunks of the same title that
+    # still say "all", so version-filtered queries can't leak gated operators
+    # through an unstamped twin chunk.
+    gates = {}
+    for r in RECORDS:
+        mv = r.get("min_version")
+        if mv and mv != "all":
+            key = re.sub(r"[^a-z0-9]+", "_", (r.get("title") or "").lower()).strip("_")
+            prev = gates.get(key)
+            if not prev or prev == mv:
+                gates[key] = mv
+    for r in RECORDS:
+        if (r.get("min_version") or "all") == "all":
+            key = re.sub(r"[^a-z0-9]+", "_", (r.get("title") or "").lower()).strip("_")
+            mv = gates.get(key)
+            if mv:
+                r["min_version"] = mv
 
     # assign stable ids (records may already carry an explicit 'id')
     seen = {}

@@ -29,11 +29,22 @@ def test_tool_implementation():
     print("ok  td_docs_search returns KB chunk (Blur TOP)")
 
 
-def test_six_strategies():
+def test_fusion_strategies_wired():
+    """Global BM25 + title boost + one per-source BM25 per chunk category.
+
+    The count is data-dependent — a KB built with a local wiki mirror adds a
+    ``concept`` category — so assert the composition, not a magic number.
+    """
     pr = get_pr()
     assert isinstance(pr, ParallelRetriever)
-    assert len(pr.strategies) == 6, [s.name() for s in pr.strategies]
-    print("ok  6 fusion strategies wired:", [s.name() for s in pr.strategies])
+    names = [s.name() for s in pr.strategies]
+    assert "BM25Strategy" in names, names
+    assert "TitleStrategy" in names, names
+    categories = {c.get("category") for c in pr.index.chunks if c.get("category")}
+    for cat in categories:
+        assert f"BM25[{cat}]" in names, (cat, names)
+    assert len(pr.strategies) == 2 + len(categories), names
+    print(f"ok  {len(names)} fusion strategies wired:", names)
 
 
 def test_citation_url_in_search():
@@ -53,5 +64,5 @@ def test_disambiguation_in_search():
 if __name__ == "__main__":
     test_wiring()
     test_tool_implementation()
-    test_six_strategies()
+    test_fusion_strategies_wired()
     print("\nMCP SERVER TEST PASSED")

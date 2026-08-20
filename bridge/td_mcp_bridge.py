@@ -12,7 +12,20 @@ Hardening (from axysar / superdwayne / TrueFiasco):
   * Auth token  - TD_MCP_AUTH_TOKEN (auto-generated if unset, printed
     to the TD textport). Client must send `Authorization: Bearer <token>`.
   * CORS         - loopback-only; the old `*` wildcard is removed (CSRF).
-  * Exec gate    - TD_MCP_ALLOW_EXEC=0 disables execute_python (RCE).
+  * Exec gate    - TD_MCP_ALLOW_EXEC=0 / TD_MCP_EXEC_MODE=off disables *every*
+    route that hands TouchDesigner caller-supplied code, not just
+    execute_python: parameter expressions, bind_parameter_expression, DAT
+    text, a DAT's file parameter, Script/Execute/GLSL/Expression operator
+    creation, exec_node_method, and import_recipe blueprints carrying any of
+    those (tdmcp #143).
+  * Threading    - execute_python / set_dat_text statically lint submitted
+    Python and return a THREADING WARNING when a thread target reaches TD's
+    global run(), which corrupts TD silently instead of raising
+    (Embody v6.0.251, Derivative-confirmed 2026-08-17). Advisory: the write
+    still lands.
+  * Versioning   - BRIDGE_VERSION is stamped here and returned by
+    project_info/describe so the live server can spot a stale pasted-in
+    bridge instead of reporting its tools as unknown (quentinR2 #8).
   * Protected     - TD_MCP_PROTECTED_PATHS (comma list) shields listed
     paths/descendants from delete / RCE (superdwayne).
   * Detail level  - every read tool takes detailLevel (brief/normal/full)
@@ -39,10 +52,12 @@ Every mutating tool wraps op changes in ui.undo so one Ctrl+Z
 reverts a whole agent batch.
 """
 
+import ast as _ast
 import base64
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import secrets
@@ -95,6 +110,14 @@ def _ws_push(event):
         for client in drop:
             _ws_clients.discard(client)
 
+# Bridge/server version handshake (quentinR2 #8): the bridge is pasted into a
+# .toe by hand, so it drifts from the installed td-mcp package silently and
+# only shows up as "unknown tool" on a tool added since the paste. Stamping the
+# version lets the live server say so on the first call instead. Keep in sync
+# with pyproject.toml [project].version -- scripts/check_bridge_stale.py fails
+# CI when they diverge.
+BRIDGE_VERSION = "1.11.0"
+
 TD_MCP_PORT = int(os.environ.get("TD_MCP_PORT", "9980"))
 
 ALLOW_EXEC = os.environ.get("TD_MCP_ALLOW_EXEC", "1") != "0"
@@ -130,6 +153,337 @@ def _cap(value, limit):
         return max(0, min(int(value), limit))
     except (TypeError, ValueError):
         return limit
+
+
+# ===========================================================================
+# BEGIN PURE HELPERS (no TouchDesigner dependency; exercised by
+# tests/bridge_pure.py, which slices this block out of the source and execs
+# it, so the bridge is tested as shipped rather than re-implemented.)
+# ===========================================================================
+
+# --- Code-bearing route guard (tdmcp #143, 2026-08-11) ---------------------
+#
+# Disabling `execute_python` is not the same as disabling code execution.
+# TouchDesigner runs caller-supplied Python from many other places: a
+# parameter expression, an Execute/Script DAT's text, a GLSL TOP's shader,
+# a DAT pointed at a file on disk. Before this guard, TD_MCP_EXEC_MODE=off
+# blocked exactly one route and left all of those open, so "exec is off"
+# was not a claim the bridge could actually honour.
+#
+# The detector matches on the *trailing* identifier so scriptCHOP,
+# glslmultiTOP and textDAT all resolve without an operator-type table.
+
+_EXECUTABLE_OP_FRAGMENTS = (
+    "script", "execute", "expression", "evaluate", "glsl", "shaderpark",
+)
+_CODE_PARAM_PREFIXES = ("callback", "python", "script", "glsl", "shader")
+_CODE_PARAM_NAMES = frozenset(("code", "expr", "expression", "bindexpr"))
+# Filter/format params that TD evaluates as Python on specific op types.
+_TYPE_SPECIFIC_CODE_PARAMS = {
+    "groupsop": frozenset(("filter",)),
+    "deletesop": frozenset(("filter",)),
+    "grouppop": frozenset(("filter",)),
+    "deletepop": frozenset(("filter",)),
+    "textcomp": frozenset(("customformatting",)),
+}
+# Pointing a DAT at a file loads that file's contents as the DAT's text --
+# for an Execute/Script DAT that is code execution by another name.
+_DAT_FILE_PARAMS = frozenset(("file", "syncfile", "loadonstart", "loadonstartpulse"))
+
+
+def _normalized_ident(value):
+    """Lowercase, strip to [a-z0-9]: 'GLSL Multi TOP' -> 'glslmultitop'."""
+    if not isinstance(value, str):
+        return ""
+    return "".join(ch for ch in value.lower() if ch.isalnum())
+
+
+def _is_code_param(normalized_type, normalized_name):
+    if normalized_name in _CODE_PARAM_NAMES:
+        return True
+    if normalized_name.endswith("expr"):
+        return True
+    if re.match(r"^ext\d+object$", normalized_name):
+        return True
+    if any(normalized_name.startswith(p) for p in _CODE_PARAM_PREFIXES):
+        return True
+    return normalized_name in _TYPE_SPECIFIC_CODE_PARAMS.get(normalized_type, ())
+
+
+def code_bearing_sources(op_type=None, params=None, text=None):
+    """Every way this call could hand TouchDesigner caller-supplied code.
+
+    Returns a list of human-readable source labels (empty = no code route).
+    Pure: types/dicts/strings in, list of strings out.
+    """
+    sources = []
+    normalized_type = _normalized_ident(op_type)
+    if normalized_type and any(f in normalized_type for f in _EXECUTABLE_OP_FRAGMENTS):
+        sources.append("operator type %s" % (op_type,))
+    for name in (params or {}):
+        normalized_name = _normalized_ident(name)
+        value = (params or {}).get(name)
+        # A {"expr": ...} form is an expression regardless of the param name.
+        is_expr_form = isinstance(value, dict) and "expr" in value
+        is_dat_file = (normalized_type.endswith("dat")
+                       and normalized_name in _DAT_FILE_PARAMS)
+        if is_expr_form or is_dat_file or _is_code_param(normalized_type, normalized_name):
+            sources.append("parameter %s" % (name,))
+    if text is not None:
+        # Any DAT's text can be executed (Execute/Script DATs run it directly,
+        # and a Text DAT is one op('...').run() away), so a text write is a
+        # code route unless the type is known and is not a DAT.
+        if not normalized_type or normalized_type.endswith("dat"):
+            sources.append("DAT text")
+    seen, ordered = set(), []
+    for s in sources:
+        if s not in seen:
+            seen.add(s)
+            ordered.append(s)
+    return ordered
+
+
+def code_route_denied(action, sources):
+    """Uniform refusal for a code-bearing call while exec is off."""
+    return {
+        "ok": False,
+        "error": (
+            "%s is refused because it carries caller-supplied code (%s) and "
+            "execution is disabled (TD_MCP_EXEC_MODE=off / TD_MCP_ALLOW_EXEC=0). "
+            "Disabling execution blocks every code route, not just "
+            "execute_python. Re-enable exec only for code you trust."
+            % (action, ", ".join(sources))
+        ),
+        "code_sources": list(sources),
+        "exec_mode": EXEC_MODE,
+    }
+
+
+# --- Worker-thread run() lint (Embody v6.0.251, 2026-08-17) ----------------
+#
+# Derivative confirmed on 2026-08-17 that calling TouchDesigner's global
+# run() from a worker thread does NOT raise on current builds: it silently
+# corrupts TD state and crashes later, far from the call site. Nothing
+# catches it at runtime, so the bridge catches it at WRITE time and rides a
+# warning back on the response. Advisory only -- the write still lands.
+#
+# Bounded up front: oversized sources and sources with no "run(" at all skip
+# the parse entirely, and each distinct thread target is scanned once.
+
+_THREAD_CTORS = ("Thread", "TDTask")
+_THREAD_DISPATCHERS = ("EnqueueTask", "submit")
+_THREAD_TARGET_KWARGS = ("target", "task")
+_THREAD_BASES = ("Thread", "TDThread", "TDTask", "Timer")
+_WORKER_RUN_MAX_BYTES = 131072
+_WORKER_RUN_MAX_FINDINGS = 64
+
+
+def _called_name(node):
+    """Trailing callable name of a Call: 'Thread' for threading.Thread(...) too."""
+    func = node.func
+    if isinstance(func, _ast.Name):
+        return func.id
+    if isinstance(func, _ast.Attribute):
+        return func.attr
+    return None
+
+
+def _module_bound_names(tree):
+    """Names bound at MODULE scope only -- a method or local named `run` must
+    not silence the lint on exactly the threading-heavy code it exists for."""
+    bound = set()
+    stack = list(tree.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+            bound.add(node.name)
+            continue  # do not descend into the body
+        if isinstance(node, (_ast.Import, _ast.ImportFrom)):
+            for alias in node.names:
+                bound.add((alias.asname or alias.name).split(".")[0])
+            continue
+        if isinstance(node, _ast.Name) and isinstance(node.ctx, _ast.Store):
+            bound.add(node.id)
+        stack.extend(_ast.iter_child_nodes(node))
+    return bound
+
+
+def _run_calls_in(node, run_shadowed):
+    """(label, lineno) for every worker-hostile run() call inside `node`.
+
+    Only TD's global run() is the hazard: bare run(...) and td.run(...).
+    subprocess.run and every other x.run() are deliberately not matched.
+    """
+    out = []
+    for child in _ast.walk(node):
+        if not isinstance(child, _ast.Call):
+            continue
+        func = child.func
+        if isinstance(func, _ast.Name) and func.id == "run" and not run_shadowed:
+            out.append(("run()", child.lineno))
+        elif (isinstance(func, _ast.Attribute) and func.attr == "run"
+                and isinstance(func.value, _ast.Name) and func.value.id == "td"):
+            out.append(("td.run()", child.lineno))
+    return out
+
+
+def _direct_callees(node, defs):
+    """Names called inside `node` that are defined in the same source -- a
+    helper the thread target calls runs on the worker thread too."""
+    names = []
+    for child in _ast.walk(node):
+        if isinstance(child, _ast.Call):
+            name = _called_name(child)
+            if name in defs and name not in names:
+                names.append(name)
+    return names
+
+
+def worker_run_findings(source):
+    """Findings for code a *thread* will execute that calls TD's global run().
+
+    Covers functions handed to a thread as a target (plus one level of
+    helpers they call in the same source) and the run() override of a
+    threading.Thread subclass.
+
+    Pure: source string in, list of {function, call, line, via} out.
+    Unparseable source lints to nothing -- submitted code may be a fragment,
+    and a lint must never be the thing that fails a write.
+    """
+    if not isinstance(source, str) or not source:
+        return []
+    if len(source) > _WORKER_RUN_MAX_BYTES or "run(" not in source:
+        return []
+    try:
+        tree = _ast.parse(source)
+    except Exception:  # noqa: BLE001
+        return []
+
+    defs = {}
+    for node in _ast.walk(tree):
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            defs.setdefault(node.name, node)
+
+    run_shadowed = "run" in _module_bound_names(tree)
+
+    resolved = []
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Call):
+            name = _called_name(node)
+            if name not in _THREAD_CTORS and name not in _THREAD_DISPATCHERS:
+                continue
+            expr = None
+            for kw in node.keywords:
+                if kw.arg in _THREAD_TARGET_KWARGS:
+                    expr = kw.value
+                    break
+            # EnqueueTask(fn, ...) / executor.submit(fn, ...) pass the callable
+            # positionally; Thread's first positional is `group`, so positional
+            # targets are read for dispatchers only.
+            if expr is None and name in _THREAD_DISPATCHERS and node.args:
+                expr = node.args[0]
+            if expr is None:
+                continue
+            if isinstance(expr, _ast.Lambda):
+                resolved.append(("<lambda>", expr))
+            elif isinstance(expr, (_ast.Name, _ast.Attribute)):
+                key = expr.id if isinstance(expr, _ast.Name) else expr.attr
+                body = defs.get(key)
+                if body is not None:
+                    resolved.append((key, body))
+        elif isinstance(node, _ast.ClassDef):
+            bases = set()
+            for b in node.bases:
+                if isinstance(b, _ast.Name):
+                    bases.add(b.id)
+                elif isinstance(b, _ast.Attribute):
+                    bases.add(b.attr)
+            if not bases.intersection(_THREAD_BASES):
+                continue
+            for stmt in node.body:
+                if (isinstance(stmt, (_ast.FunctionDef, _ast.AsyncFunctionDef))
+                        and stmt.name == "run"):
+                    resolved.append((node.name + ".run", stmt))
+
+    # Scan each distinct target once -- N spawn sites of one worker is one scan.
+    scan, scanned = [], set()
+    for label, body in resolved:
+        key = (label, id(body))
+        if key in scanned:
+            continue
+        scanned.add(key)
+        scan.append((label, body, None))
+        for callee in _direct_callees(body, defs):
+            if defs[callee] is not body:
+                scan.append((label, defs[callee], callee))
+
+    findings = []
+    for label, body, via in scan:
+        for call, line in _run_calls_in(body, run_shadowed):
+            findings.append({"function": label, "call": call,
+                             "line": line, "via": via})
+            if len(findings) >= _WORKER_RUN_MAX_FINDINGS:
+                return findings
+    return findings
+
+
+def threading_warning(source, where):
+    """THREADING WARNING string for `source`, or None when it is clean."""
+    findings = worker_run_findings(source)
+    if not findings:
+        return None
+    detail = "; ".join(
+        '"%s" reaches %s at line %d%s'
+        % (f["function"], f["call"], f["line"],
+           (" (via %s)" % f["via"]) if f["via"] else "")
+        for f in findings[:5])
+    return (
+        "THREADING WARNING: %s -- thread target %s. TouchDesigner's global "
+        "run() called off the main thread does not raise; it corrupts TD "
+        "state and crashes later, far from the call site "
+        "(Derivative-confirmed 2026-08-17). Queue the work to the main "
+        "thread instead (e.g. append to a list a CHOP Execute drains)."
+        % (where, detail)
+    )
+
+
+def touchdesigner_release(version, build):
+    """Public TD release id from app.version/app.build (dcc-mcp #5).
+
+    ``app.version`` still reports the legacy generation ("099"); the public
+    year.build identifier lives on ``app.build``. Version-compat checks that
+    compare against "2023.11000"-style corpus builds need the latter.
+    """
+    version = str(version).strip() if version is not None else ""
+    build = str(build).strip() if build is not None else ""
+    if build:
+        if "." in build or not version:
+            return build
+        return "%s.%s" % (version, build)
+    return version or "unknown"
+
+
+def split_diagnostics(errors, warnings):
+    """Errors + warnings as one severity-tagged list plus per-severity counts.
+
+    tdmcp #146: the bridge used to return only ``errors``, so a caller
+    counting them read warnings as errors (or never saw them at all).
+    """
+    items = []
+    for e in errors or []:
+        items.append({"message": str(e), "severity": "error"})
+    for w in warnings or []:
+        items.append({"message": str(w), "severity": "warning"})
+    return {
+        "diagnostics": items,
+        "total": len(items),
+        "error_count": sum(1 for i in items if i["severity"] == "error"),
+        "warning_count": sum(1 for i in items if i["severity"] == "warning"),
+    }
+
+# ===========================================================================
+# END PURE HELPERS
+# ===========================================================================
 
 # Recovery-hint rules (Embody-style): (compiled regex, cause, action, next_tools)
 RECOVERY_HINT_RULES = [
@@ -239,6 +593,10 @@ def _auto_position(parent_node, family):
 
 
 def _do_create(path, type, name=None, nodeX=None, nodeY=None):
+    if not ALLOW_EXEC:
+        sources = code_bearing_sources(op_type=type)
+        if sources:
+            return code_route_denied("create_node", sources)
     parent = _op(path) or parent()
     if parent is None:
         return {"ok": False, "error": f"parent not found: {path}"}
@@ -265,9 +623,35 @@ def _do_delete(path):
 
 
 def _json_safe(value):
-    """Recursively convert a TD Python value to JSON-safe form (TDPilot exec shape)."""
-    if value is None or isinstance(value, (bool, int, float, str)):
+    """Recursively convert a TD Python value to JSON-safe form (TDPilot exec shape).
+
+    Handles non-finite floats (inf / -inf / nan -> None, since those produce
+    invalid JSON tokens) and numpy scalars/arrays so TouchDesigner's numpyArray()
+    output serializes to valid JSON (mrinalghosh: emit valid values for
+    non-finite floats and serialize numpy scalars as numbers, not str()).
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
         return value
+    if isinstance(value, float):
+        # Non-finite floats produce invalid JSON (Infinity / NaN tokens).
+        if not math.isfinite(value):
+            return None
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        return value
+    # numpy scalars (np.float64, np.int32, np.bool_, ...) → native Python.
+    try:
+        import numpy as _np
+        if isinstance(value, _np.generic):
+            return _json_safe(value.item())
+        if isinstance(value, _np.ndarray):
+            return [_json_safe(v) for v in value.tolist()]
+    except ImportError:
+        pass
     if isinstance(value, (list, tuple, set)):
         return [_json_safe(v) for v in list(value)]
     if isinstance(value, dict):
@@ -353,6 +737,9 @@ def _do_bind_parameter_expression(path, param, expression):
     Sets ``par.expr``, snaps ``par.mode`` to EXPRESSION, evals, and returns any
     *new* cook errors so a bad expression never silently no-ops.
     """
+    if not ALLOW_EXEC:
+        return code_route_denied("bind_parameter_expression",
+                                 ["parameter expression %s" % (param,)])
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
@@ -382,11 +769,26 @@ def _do_bind_parameter_expression(path, param, expression):
             "value": value, "error": err, "op_errors": new_errors}
 
 
-def _do_get_errors(path):
+def _do_get_errors(path, include_warnings=True):
+    """Diagnostics under a node, split by severity (tdmcp #146).
+
+    ``errors`` stays a flat list of error strings for backwards compatibility;
+    warnings are reported separately with counts so a caller cannot mistake a
+    warning for an error (or miss it entirely, as before).
+    """
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
-    return {"ok": True, "errors": [str(e) for e in node.errors]}
+    errors = list(getattr(node, "errors", []) or [])
+    warnings = list(getattr(node, "warnings", []) or []) if include_warnings else []
+    split = split_diagnostics(errors, warnings)
+    return {"ok": True,
+            "errors": [str(e) for e in errors],
+            "warnings": [str(w) for w in warnings],
+            "diagnostics": split["diagnostics"],
+            "total": split["total"],
+            "error_count": split["error_count"],
+            "warning_count": split["warning_count"]}
 
 
 def _do_execute_python(code):
@@ -395,11 +797,16 @@ def _do_execute_python(code):
     for name in _EXEC_FORBIDDEN:
         if name in code:
             return {"ok": False, "error": f"execute_python forbids {name!r}"}
+    # Lint BEFORE running: a worker-thread run() does not raise, so the only
+    # moment we can warn is the write itself (Embody v6.0.251).
+    warning = threading_warning(code, "execute_python")
     ns = {"op": op, "project": project, "me": me, "parent": parent}
     exec(code, ns)  # noqa: S102 - intentional in-TD RCE, gated by host/exec flag
     value = ns.get("__result__", ns.get("result", None))
     out = {"ok": True, "exec_mode": EXEC_MODE}
     out.update(_serialize_exec_result(value))
+    if warning:
+        out["warning"] = warning
     return out
 
 
@@ -639,6 +1046,11 @@ def _do_set_parameters(path, params, detail="normal"):
         return {"ok": False,
                 "error": f"too many parameters: {len(params)} > {MAX_PARAMS} "
                           "(TD_MCP_MAX_PARAMS)"}
+    if not ALLOW_EXEC:
+        sources = code_bearing_sources(op_type=getattr(node, "OPType", None),
+                                       params=params)
+        if sources:
+            return code_route_denied("set_parameters", sources)
     applied = {}
     for k, v in params.items():
         if k not in node.par:
@@ -703,8 +1115,19 @@ def _do_get_connections(path):
     return {"ok": True, "inputs": ins, "outputs": outs}
 
 
+# Methods that only ever recompute or reset an operator -- safe to keep
+# available when exec is off, since none of them evaluate caller text.
+_SAFE_NODE_METHODS = frozenset((
+    "cook", "reset", "pulse", "destroy", "save", "openViewer", "closeViewer",
+    "resetPars", "copy", "collapseSelected",
+))
+
+
 def _do_exec_node_method(path, method, args=None):
     """Call a method on a node (e.g. cook, reset, pulse a parameter)."""
+    if not ALLOW_EXEC and method not in _SAFE_NODE_METHODS:
+        return code_route_denied("exec_node_method",
+                                 ["node method %s" % (method,)])
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
@@ -945,6 +1368,18 @@ def _do_import_recipe(recipe, target_parent="*here"):
     nodes = recipe if isinstance(recipe, list) else recipe.get("recipe", [])
     if not isinstance(nodes, list):
         return {"ok": False, "error": "recipe must be a list of node specs"}
+    if not ALLOW_EXEC:
+        sources = []
+        for spec in nodes:
+            if not isinstance(spec, dict):
+                continue
+            found = code_bearing_sources(op_type=spec.get("type"),
+                                         params=spec.get("params"))
+            label = spec.get("name")
+            sources.extend("%s on %s" % (f, label) if label else f
+                           for f in found)
+        if sources:
+            return code_route_denied("import_recipe", sources[:10])
     # 1) create all nodes under target_parent (flatten hierarchy into one level
     #    of uniquely-named ops for reliable rewiring).
     created = {}
@@ -985,7 +1420,16 @@ def _do_import_recipe(recipe, target_parent="*here"):
 
 
 def _do_project_info():
-    return {"ok": True, "td_build": app.version, "fps": project.cook.rate,
+    # app.version still reports the legacy generation ("099"); the public
+    # year.build identifier lives on app.build (dcc-mcp #5). Version-compat
+    # checks compare against "2023.11000"-style builds, so they need the
+    # latter -- td_build was previously unusable for that.
+    return {"ok": True,
+            "td_build": touchdesigner_release(getattr(app, "version", None),
+                                              getattr(app, "build", None)),
+            "td_version": str(getattr(app, "version", "")),
+            "bridge_version": BRIDGE_VERSION,
+            "fps": project.cook.rate,
             "file": project.name}
 
 
@@ -1111,7 +1555,7 @@ def _do_batch(ops):
 def _do_describe():
     """Self-documenting tool manifest (8beeeaaat)."""
     return {"ok": True, "auth_required": True, "allow_exec": ALLOW_EXEC,
-            "exec_mode": EXEC_MODE,
+            "exec_mode": EXEC_MODE, "bridge_version": BRIDGE_VERSION,
             "protected_paths": PROTECTED, "tools": sorted(_DISPATCH.keys())}
 
 
@@ -1160,6 +1604,8 @@ def _do_set_dat_text(path, text, expected_sha256=None):
     current text in ``expected_sha256``. If it doesn't match, the write is
     refused so concurrent edits can't clobber each other.
     """
+    if not ALLOW_EXEC:
+        return code_route_denied("set_dat_text", ["DAT text"])
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
@@ -1178,10 +1624,15 @@ def _do_set_dat_text(path, text, expected_sha256=None):
                              "computed; re-read and retry",
                     "expected_sha256": str(expected_sha256).lower(),
                     "actual_sha256": actual}
+    warning = threading_warning(text if isinstance(text, str) else "",
+                                "set_dat_text %s" % (path,))
     try:
         node.text = text
         new_sha = hashlib.sha256(encoded).hexdigest()
-        return {"ok": True, "path": node.path, "sha256": new_sha}
+        out = {"ok": True, "path": node.path, "sha256": new_sha}
+        if warning:
+            out["warning"] = warning
+        return out
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)}
 
@@ -1194,7 +1645,7 @@ _DISPATCH = {
     "get_parameters": lambda a: _do_get_parameters(a.get("path"), a.get("detailLevel", "normal")),
     "get_parameter_info": lambda a: _do_get_parameter_info(a.get("path"), a.get("names")),
     "bind_parameter_expression": lambda a: _do_bind_parameter_expression(a.get("path"), a.get("param"), a.get("expression")),
-    "get_errors": lambda a: _do_get_errors(a.get("path")),
+    "get_errors": lambda a: _do_get_errors(a.get("path"), a.get("include_warnings", True)),
     "execute_python": lambda a: _do_execute_python(a.get("code")),
     "list_nodes": lambda a: _do_list_nodes(a.get("path"), a.get("detailLevel", "normal")),
     "project_info": lambda a: _do_project_info(),
@@ -1431,7 +1882,7 @@ class _Handler(StreamableHTTPMixin, BaseHTTPRequestHandler):
             return None
         if method == "initialize":
             return self._jsonrpc_result(req_id, {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": "2026-07-28",
                 "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
                 "serverInfo": {"name": "td-mcp-bridge"},
             })

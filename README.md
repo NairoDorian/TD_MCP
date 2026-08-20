@@ -8,8 +8,8 @@
 **Local-first TouchDesigner [MCP](https://modelcontextprotocol.io) toolkit** that unifies the
 best ideas of the public TD‑MCP ecosystem into one cohesive package:
 
-- **Offline doc / RAG server** — version‑aware retrieval over a merged MIT corpus (no TouchDesigner required). Several lexical + semantic backends run **in parallel** and fuse via Reciprocal Rank Fusion, with an optional CrossEncoder reranker and optional external RAG fusion.
-- **Eval harness** — recall@k / MRR / nDCG over a labelled query set, so retrieval quality is provable and regressions are caught. **k=5 recall ≈ 0.966**, zero version‑gating violations.
+- **Offline doc / RAG server** — version‑aware retrieval over a merged MIT corpus **plus the complete official documentation** (no TouchDesigner required, no network, no API keys). Several lexical + semantic backends run **in parallel** and fuse via Reciprocal Rank Fusion, with an optional CrossEncoder reranker and optional external RAG fusion.
+- **Eval harness** — recall@k / MRR / nDCG over a labelled query set, so retrieval quality is provable and regressions are caught. **k=5 recall 1.000** with the wiki KB (**0.991** curated‑only), zero version‑gating violations.
 - **Live bridge + MCP server** — control a running TouchDesigner session (create / wire / inspect / verify) over **Streamable HTTP + SSE**, WebSocket, or stdio. Exposes **39 live tools**; every mutation is wrapped in `ui.undo` so one Ctrl+Z reverts a whole agent batch.
 - **Natively embedded chat UI** and a **zero‑dependency autonomous agent** that run *inside* TouchDesigner Text DATs.
 
@@ -179,17 +179,37 @@ thumbnail with an `is_black` / `is_flat` verdict — so the agent can self‑hea
 
 ## Grow the knowledge base
 
-`chunks.jsonl` (1,091 chunks) is **generated** from curated records — never hand‑edited.
-`kb_receipt.json` is also generated alongside it and pins the SHA‑256 for integrity
-verification on load.
+`chunks.jsonl` is **generated** — never hand‑edited. `kb_receipt.json` is generated
+alongside it and pins the SHA‑256 for integrity verification on load.
 
 ```bash
-uv run python -m td_mcp.kb.build_kb          # curated records -> chunks.jsonl + kb_receipt.json
+uv run python -m td_mcp.kb.build_kb          # curated + corpus (+ wiki) -> chunks.jsonl + kb_receipt.json
 uv run python -m td_mcp.rag.eval             # re-check recall / MRR / nDCG
-uv add --optional scrape
-uv run python -m td_mcp.kb.scrape            # crawl docs.derivative.ca (optional)
 uv run python -m td_mcp.kb.build_index       # validate / dense-embed
 ```
+
+### Ingest the full official documentation (recommended, offline)
+
+TouchDesigner ships a complete local mirror of `docs.derivative.ca` under
+`<TD_INSTALL>/Samples/Learn/OfflineHelp/https.docs.derivative.ca`. Point the build
+at it (or at any saved dump of the wiki) and the KB grows from **1,091 curated
+chunks to ~9,600**, parsed in about 17 seconds with no network access:
+
+```bash
+uv run python -m td_mcp.kb.build_kb --wiki-root "C:/Program Files/Derivative/TouchDesigner/Samples/Learn/OfflineHelp/https.docs.derivative.ca"
+# or set TD_MCP_WIKI_ROOT once and just run build_kb
+```
+
+The mirror is auto‑detected from `TD_MCP_WIKI_ROOT`, the standard install paths, or a
+sibling `TD HELP` folder. Pass `--no-wiki` to skip it.
+
+Ingestion is **structured**, not a tag‑strip: one chunk per documentation section,
+each carrying a `Page § Section` citation with a deep link to its anchor, the
+operator title prefixed onto the text, and the *internal* parameter names
+(`size`, `horzandvert`) harvested into tags so lexical retrieval matches the name
+an agent must actually write. Inherited class sections, cross‑page boilerplate, and
+experimental duplicates of released operators are dropped; POP and experimental
+pages are version‑stamped so build‑filtered queries exclude them.
 
 > **CI / fresh-clone note:** `chunks.jsonl` is **not** committed. A fresh clone has no
 > KB until `uv run python -m td_mcp.kb.build_kb` runs — the CI workflow does this
@@ -215,9 +235,15 @@ per‑source RRF fusion).
 ## Evaluate
 
 ```bash
-uv run python -m td_mcp.rag.eval                 # zero-dep: k=5 recall ≈ 0.966
+uv run python -m td_mcp.rag.eval                 # zero-dep: k=5 recall 1.000 (wiki KB)
+uv run python -m td_mcp.rag.eval --name-integrity  # + every labelled id must resolve
 TD_MCP_DENSE=1 uv run python -m td_mcp.rag.eval --k 5
 ```
+
+Each labelled expectation is credited to at most one retrieved chunk, so a page
+that contributes several section chunks cannot inflate the score. Queries whose
+answer only exists in the wiki are skipped automatically when the KB was built
+without a mirror (curated‑only baseline: **recall@5 0.991**).
 
 ---
 
@@ -279,7 +305,7 @@ td-mcp/
 │   │   ├── logs.py            # token-efficient ring-buffer logs
 │   │   └── layout.py          # network layout lint (overlap / origin / dock)
 │   ├── rag/                   # retrieval: retriever (BM25+dense), strategies (RRF fusion), rerank, knowledge_graph, eval
-│   └── kb/                    # corpus records, build_kb, import_corpus, scrape, build_index, chunks.jsonl
+│   └── kb/                    # corpus records, build_kb, import_corpus, wiki_ingest, scrape, build_index, chunks.jsonl
 ├── bridge/
 │   ├── td_mcp_bridge.py       # paste into a Text DAT in TD (JSON-RPC/WS/SSE/chat UI server)
 │   ├── td_mcp_agent.py        # paste into a Text DAT (autonomous builder agent)

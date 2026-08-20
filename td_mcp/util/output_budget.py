@@ -14,6 +14,8 @@ import json
 import os
 from typing import Any, Dict, Tuple
 
+from td_mcp.util import _json_safe
+
 # Env-tunable caps. None = unlimited.
 DEFAULT_MAX_CHARS = int(os.environ.get("TD_MCP_OUTPUT_MAX_CHARS", "0") or "0") or 0
 DEFAULT_MAX_BYTES = int(os.environ.get("TD_MCP_OUTPUT_MAX_BYTES", "0") or "0") or 0
@@ -21,7 +23,7 @@ DEFAULT_MAX_BYTES = int(os.environ.get("TD_MCP_OUTPUT_MAX_BYTES", "0") or "0") o
 
 def _measure(obj: Any) -> int:
     try:
-        return len(json.dumps(obj, default=str, ensure_ascii=False).encode("utf-8"))
+        return len(json.dumps(_json_safe(obj), ensure_ascii=False).encode("utf-8"))
     except Exception:  # pragma: no cover - defensive
         return len(str(obj).encode("utf-8"))
 

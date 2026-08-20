@@ -23,7 +23,8 @@ from td_mcp.rag.strategies import ParallelRetriever
 QUERIES = [
     # --- operators (matched by name + nickname via aliases) ---
     {"q": "blur top parameters", "exp": ["blur_top"]},
-    {"q": "movie file in top set the file parameter", "exp": ["movie_file_in_top", "moviefileintop_class"]},
+    {"q": "movie file in top set the file parameter",
+     "exp": [["movie_file_in_top", "moviefileintop_class"]]},
     {"q": "read a video file into TOPs", "exp": ["movie_file_in_top"]},
     {"q": "movie", "exp": ["movie_file_in_top"]},                       # nickname
     {"q": "phong material lighting", "exp": ["phong_mat"]},
@@ -47,11 +48,15 @@ QUERIES = [
     {"q": "glsl custom uniform binding", "exp": ["glsl_custom_uniforms"]},
 
     # --- tutorials / recipes ---
-    {"q": "export chop channel to a parameter", "exp": ["chop_export_to_parameters"]},
+    # A list *inside* exp is an OR-group: the official CHOP Export wiki page
+    # and the curated recipe are both correct canonical answers.
+    {"q": "export chop channel to a parameter",
+     "exp": [["chop_export_to_parameters", "chop_export"]]},
     {"q": "audio reactive setup with chop", "exp": ["audio_reactive_recipe", "chop_export_to_parameters"]},
     {"q": "feedback trails recipe", "exp": ["feedback_top", "feedback_trails_recipe", "level_top"]},
     {"q": "wire operators together in python", "exp": ["connecting_operators_in_python"]},
-    {"q": "render a 3d scene with camera and light", "exp": ["render_top", "camera_comp", "geometry_comp"]},
+    {"q": "render a 3d scene with camera and light",
+     "exp": ["render_top", "camera_comp", "light_comp"]},
     {"q": "gpu instancing thousands of copies", "exp": ["instancing_recipe"]},
     {"q": "call a rest api from touchdesigner", "exp": ["web_api_request_recipe"]},
     {"q": "particle simulation with pops", "exp": ["pops_family_overview", "pop_solver", "particle_render_recipe_pops"]},
@@ -64,7 +69,19 @@ QUERIES = [
 
     # --- operator-parameter recall (plan sec.6) ---
     {"q": "blur top kernel width level parameters", "exp": ["blur_top", "corpus_blur_top"]},
-    {"q": "movie file in top file parameter python", "exp": ["movie_file_in_top", "corpus_movie_file_in_top"]},
+    {"q": "movie file in top file parameter python", "exp": ["movie_file_in_top"]},
+
+    # --- wiki coverage (full local docs mirror, section-level chunks) ---
+    # `needs: "wiki"` queries are skipped when the KB was built without a wiki
+    # mirror (a fresh clone / CI), since their answers only exist in it.
+    {"q": "blur top filter size pixels", "exp": ["blur_top"], "needs": "wiki"},
+    {"q": "what is cooking in touchdesigner", "exp": ["cook"], "needs": "wiki"},
+    {"q": "perform mode fullscreen", "needs": "wiki",
+     "exp": [["perform_mode", "perform_mode_windowing"]]},
+    {"q": "widgets ui building", "exp": ["widgets"], "needs": "wiki"},
+    {"q": "python working with ops", "exp": ["working_with_ops_in_python"], "needs": "wiki"},
+    {"q": "timeline frame rate settings", "exp": [["frame_rate", "timeline"]], "needs": "wiki"},
+    {"q": "optimize performance monitor", "exp": [["optimize", "category_optimize"]], "needs": "wiki"},
     {"q": "GLSL TOP custom uniform parameter page", "exp": ["glsl_top", "corpus_glsl_top"]},
     {"q": "feedback top feedback parameter trails", "exp": ["feedback_top", "corpus_feedback_top"]},
     {"q": "noise top type amplitude frequency parameters", "exp": ["noise_top", "corpus_noise_top"]},
@@ -80,27 +97,63 @@ def _dcg(rels):
     return sum(r / math.log2(i + 2) for i, r in enumerate(rels))
 
 
+def _same_doc(rid, exp_id):
+    """True when a retrieved chunk id covers the same operator/class/page as
+    the labelled expectation.
+
+    ``corpus_*`` variants are the imported-corpus twin of a curated seed, and
+    ``wiki_*`` chunks are the official wiki page (any section) of that same
+    subject — a retrieved wiki section chunk of Blur TOP satisfies an
+    expectation labelled ``blur_top``. An expectation given as a list is an
+    OR-group: any alternative satisfies it.
+    """
+    if isinstance(exp_id, (list, tuple)):
+        return any(_same_doc(rid, e) for e in exp_id)
+    if rid == exp_id:
+        return True
+    if rid in ("corpus_" + exp_id, "corpus_py_" + exp_id):
+        return True
+    wiki_base = "wiki_" + exp_id
+    return rid == wiki_base or rid.startswith(wiki_base + "__")
+
+
 def _metrics(retrieved_ids, exp, must_not, k):
-    # corpus_* variants are the same operator/class as the curated seed, so a
-    # retrieved corpus chunk satisfies the same expected hit.
-    variants = set(exp)
-    for e in exp:
-        variants.add("corpus_" + e)
-        variants.add("corpus_py_" + e)
-    hit = [rid for rid in retrieved_ids[:k] if rid in variants] if exp else []
-    rec = (len(hit) / len(exp)) if exp else 1.0
-    rec = min(rec, 1.0)
-    rank = next((i + 1 for i, rid in enumerate(retrieved_ids[:k]) if rid in exp), None)
+    # Each expectation is credited to at most one retrieved chunk. A wiki page
+    # contributes many section chunks that all satisfy the same expectation;
+    # counting each of them as a separate relevant result would inflate nDCG
+    # above 1.0 and hide real ranking regressions.
+    rel = [0.0] * len(retrieved_ids[:k])
+    matched = set()              # indices into exp (entries may be OR-lists)
+    for i, rid in enumerate(retrieved_ids[:k]):
+        for j, e in enumerate(exp):
+            if j not in matched and _same_doc(rid, e):
+                matched.add(j)
+                rel[i] = 1.0
+                break
+    rec = (len(matched) / len(exp)) if exp else 1.0
+    rank = next((i + 1 for i, r in enumerate(rel) if r), None)
     mrr = (1.0 / rank) if rank else 0.0
-    rel = [1.0 if rid in exp else 0.0 for rid in retrieved_ids[:k]]
     idcg = _dcg([1.0] * min(len(exp), k)) if exp else 1.0
     ndcg = _dcg(rel) / idcg if idcg > 0 else 0.0
-    viol = [rid for rid in retrieved_ids[:k] if rid in (must_not or [])]
+    viol = [rid for rid in retrieved_ids[:k]
+            if any(_same_doc(rid, m) for m in (must_not or []))]
     return rec, mrr, ndcg, viol
 
 
+def applicable_queries(retriever, queries=None):
+    """Drop labelled queries whose source is absent from the built KB.
+
+    The wiki-coverage queries only have an answer when ``build_kb`` found a
+    local wiki mirror; on a fresh clone or in CI they would fail for a reason
+    that says nothing about retrieval quality.
+    """
+    queries = QUERIES if queries is None else queries
+    chunks = getattr(retriever, "index", retriever).chunks
+    have = {c.get("source") for c in chunks}
+    return [q for q in queries if not q.get("needs") or q["needs"] in have]
+
+
 def run(retriever, queries, ks=(1, 3, 5)):
-    import math
     print(f"strategies: {[s.name() for s in retriever.strategies]}")
     for k in ks:
         recalls, mrrs, ndcgs = [], [], []
@@ -129,8 +182,11 @@ def main():
 
     ret = build_retriever()
     pr = ParallelRetriever(ret)
-    print(f"KB chunks: {len(ret.chunks)}")
-    run(pr, QUERIES, ks=(1, 3, args.k))
+    queries = applicable_queries(ret)
+    skipped = len(QUERIES) - len(queries)
+    print(f"KB chunks: {len(ret.chunks)}  queries: {len(queries)}"
+          + (f"  ({skipped} skipped — source not in KB)" if skipped else ""))
+    run(pr, queries, ks=(1, 3, args.k))
     if args.name_integrity:
         report = name_integrity(ret)
         print(f"name-integrity: operators={report['operators']} "
@@ -167,13 +223,23 @@ def name_integrity(retriever, corpus=None):
                 .removeprefix("corpus_py_")
                 .removeprefix("corpus_"))
 
-    for q in QUERIES:
+    def _resolves(exp_id):
+        # An OR-group resolves when any alternative does.
+        if isinstance(exp_id, (list, tuple)):
+            return any(_resolves(e) for e in exp_id)
+        base = _base(exp_id)
+        # Curated chunks use snake_case ids; corpus chunks are corpus_<key>;
+        # wiki pages are wiki_<key> with per-section suffixes.
+        if base in chunk_ids or f"corpus_{base}" in chunk_ids or f"corpus_py_{base}" in chunk_ids:
+            return True
+        wiki_base = f"wiki_{base}"
+        return any(cid == wiki_base or cid.startswith(wiki_base + "__")
+                   for cid in chunk_ids)
+
+    for q in applicable_queries(retriever):
         for exp in q.get("exp", []):
-            base = _base(exp)
-            # Curated chunks use snake_case ids; corpus chunks are corpus_<key>.
-            if base in chunk_ids or f"corpus_{base}" in chunk_ids or f"corpus_py_{base}" in chunk_ids:
-                continue
-            unresolved_ids.append(exp)
+            if not _resolves(exp):
+                unresolved_ids.append(exp)
 
     by_family = {}
     for rec in ops.values():

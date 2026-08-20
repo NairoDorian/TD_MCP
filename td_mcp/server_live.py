@@ -24,6 +24,7 @@ import urllib.request
 import urllib.error
 
 from td_mcp import __version__
+from td_mcp.util import _json_safe
 
 try:
     from mcp.server import Server
@@ -60,6 +61,39 @@ def _validate_host_header(host_header):
     return host in ALLOWED_HOSTS
 
 
+_BRIDGE_UPDATE_HINT = (
+    "Re-paste bridge/td_mcp_bridge.py into the TouchDesigner Text DAT "
+    "(or reinstall the .tox) so the bridge matches this server."
+)
+
+
+def version_mismatch_warning(bridge_version, server_version=None):
+    """Warning when the in-TD bridge does not match this server, else None.
+
+    The bridge is installed by pasting a file into a .toe, so it goes stale
+    invisibly: the project keeps working until the server calls a tool added
+    after the paste, which fails as an unknown tool with no hint that the
+    bridge is the reason. quentinR2 #8 (2026-08-18) surfaces it on the first
+    call instead.
+
+    ``server_version`` defaults to this package's version, read at call time
+    so it tracks the module rather than freezing at import.
+    """
+    if server_version is None:
+        server_version = globals().get("__version__")
+    if not server_version or server_version == "0.0.0":
+        return None
+    if bridge_version == server_version:
+        return None
+    if bridge_version is None:
+        return (f"TouchDesigner bridge version is unknown - it predates version "
+                f"stamping and is older than this server (v{server_version}). "
+                + _BRIDGE_UPDATE_HINT)
+    return (f"TouchDesigner bridge is v{bridge_version} but this server is "
+            f"v{server_version}. Tools added since the bridge was installed will "
+            f"fail as unknown tools. " + _BRIDGE_UPDATE_HINT)
+
+
 # ---------------------------------------------------------------------------
 # Bridge HTTP client (unchanged API, just used by tools)
 # ---------------------------------------------------------------------------
@@ -70,6 +104,9 @@ class TDClient:
         self.timeout = timeout
         self.anchor = anchor
         self.auth_token = auth_token or os.environ.get("TD_MCP_AUTH_TOKEN")
+        # Bridge version handshake, resolved once per client and then reused.
+        # None = not yet determined (retried on the next call).
+        self._bridge_check = None
 
     def _anchor(self, tool, args):
         try:
@@ -117,7 +154,35 @@ class TDClient:
                 pass
         if self.anchor and result.get("ok"):
             result["shots"] = self._anchor(tool, args or {})
+        self._note_bridge_version(tool, result)
         return result
+
+    def _note_bridge_version(self, tool, result):
+        """Learn the bridge's version and ride a warning on stale responses.
+
+        describe_td_tools/project_info already carry bridge_version, so the
+        common path costs nothing; any other tool triggers one describe call,
+        once per client.
+        """
+        if not isinstance(result, dict):
+            return
+        if "bridge_version" in result:
+            self._bridge_check = {"bridge_version": result.get("bridge_version")}
+        elif self._bridge_check is None and result.get("ok"):
+            if tool == "describe_td_tools":
+                # The handshake call itself answered without a version: this
+                # bridge predates stamping. Record that instead of looping.
+                self._bridge_check = {"bridge_version": None}
+            else:
+                probe = self._call("describe_td_tools")
+                self._bridge_check = (
+                    {"bridge_version": probe.get("bridge_version")}
+                    if isinstance(probe, dict) and probe.get("ok") else None
+                )
+        if self._bridge_check is not None:
+            warning = version_mismatch_warning(self._bridge_check["bridge_version"])
+            if warning:
+                result.setdefault("warning", warning)
 
     @staticmethod
     def _fail(tool, err):
@@ -147,8 +212,9 @@ class TDClient:
         return self._call("bind_parameter_expression",
                           {"path": path, "param": param, "expression": expression})
 
-    def get_errors(self, path):
-        return self._call("get_errors", {"path": path})
+    def get_errors(self, path, include_warnings=True):
+        return self._call("get_errors", {"path": path,
+                                         "include_warnings": include_warnings})
 
     def execute_python(self, code):
         return self._call("execute_python", {"code": code})
@@ -345,7 +411,8 @@ TOOL_REGISTRY = {
     "get_parameters": _wrap_tool(lambda c, a: c.get_parameters(a.get("path"))),
     "get_parameter_info": _wrap_tool(lambda c, a: c.get_parameter_info(a.get("path"), a.get("names"))),
     "bind_parameter_expression": _wrap_tool(lambda c, a: c.bind_parameter_expression(a.get("path"), a.get("param"), a.get("expression"))),
-    "get_errors": _wrap_tool(lambda c, a: c.get_errors(a.get("path"))),
+    "get_errors": _wrap_tool(lambda c, a: c.get_errors(
+        a.get("path"), a.get("include_warnings", True))),
     "execute_python": _wrap_tool(lambda c, a: c.execute_python(a.get("code"))),
     "list_nodes": _wrap_tool(lambda c, a: c.list_nodes(a.get("path"))),
     "project_info": _wrap_tool(lambda c, a: c.project_info()),
@@ -400,7 +467,10 @@ _TOOL_META = [
     ("get_parameters", "Get parameters.", {"path": {"type": "string"}}),
     ("get_parameter_info", "Full per-parameter schema: label/value/mode/default/page/style/bounds/menu.", {"path": {"type": "string"}, "names": {"type": "string"}}),
     ("bind_parameter_expression", "Bind a parameter expression with eval-error reporting.", {"path": {"type": "string"}, "param": {"type": "string"}, "expression": {"type": "string"}}),
-    ("get_errors", "Get errors.", {"path": {"type": "string"}}),
+    ("get_errors", "Get errors and warnings under a node, split by severity "
+     "(error_count / warning_count); a warning is not a failure.",
+     {"path": {"type": "string"},
+      "include_warnings": {"type": "boolean"}}),
     ("execute_python", "Execute Python in TD.", {"code": {"type": "string"}}),
     ("list_nodes", "List child nodes.", {"path": {"type": "string"}}),
     ("project_info", "Project info.", {}),
@@ -484,7 +554,7 @@ async def _live_call_tool(ctx, params):
             )
         result = fn(a)
         return types.CallToolResult(
-            content=[types.TextContent(type="text", text=json.dumps(result, indent=2))],
+            content=[types.TextContent(type="text", text=json.dumps(_json_safe(result), indent=2, default=_json_safe))],
             result_type="complete",
         )
     except Exception as e:

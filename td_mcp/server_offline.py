@@ -33,6 +33,7 @@ from td_mcp import validation as validation_mod
 from td_mcp.tools import layout as layout_mod
 from td_mcp import param_resolver as param_resolver_mod
 from td_mcp.tools.risk import risk_class, tool_annotations
+from td_mcp.util import _json_safe
 from td_mcp.util.output_budget import truncate_text, DEFAULT_MAX_CHARS
 from td_mcp.observability import get_trace_log
 from td_mcp import freshness as freshness_mod
@@ -51,7 +52,10 @@ def _fmt(results, query, max_chars=None):
     if banner:
         lines.append("> " + banner + "\n")
     for c, sc in results:
-        head = f"### {c.get('title')}  [{c.get('family') or c.get('category')}]  (score {sc})"
+        head = f"### {c.get('title')}"
+        if c.get('section'):
+            head += f" § {c['section']}"
+        head += f"  [{c.get('family') or c.get('category')}]  (score {sc})"
         meta = f"source: {c.get('source', '')}"
         url = c.get('url')
         if url:
@@ -131,11 +135,26 @@ def td_docs_operator(name, k=3):
     note = knowledge_graph.family_disambiguation(name)
     if note:
         out += note + "\n\n"
+    # Provenance first (tdmcp #150): the corpus is an imported snapshot, so a
+    # miss has to say which snapshot missed and that a miss proves nothing
+    # about the caller's actual TouchDesigner build. Without this an agent
+    # reads a weak fuzzy match as "here is your operator", or an empty result
+    # as "no such operator", and reports either to the user as fact.
+    lookup = corpus.operator_lookup(name)
+    if not lookup["found"]:
+        out += ("> **Not in the documentation snapshot** (%s).\n> %s\n"
+                % (lookup["data_version"], corpus.SNAPSHOT_NOTICE))
+        if lookup["suggestions"]:
+            out += ("> Closest names in the snapshot: %s\n"
+                    % ", ".join(lookup["suggestions"]))
+        out += "\n"
     # First get the operator doc
     out += td_docs_search(name, category="operator", k=k)
+    if lookup["found"]:
+        out += "\n\n_Source: documentation snapshot (%s)._" % lookup["data_version"]
     # Then try to append the Python class (cacheflowe technique)
     # Map operator name to Python class: "Movie File In TOP" -> "MoviefileinTOP"
-    op_rec = corpus.operator_record(name)
+    op_rec = lookup.get("record")
     if op_rec:
         py_name = op_rec.get("className")
         if py_name:
@@ -440,16 +459,20 @@ def td_docs_browse(query=None, family=None, limit=40):
         return (f"Unknown family {family!r}. Known families: "
                 f"{', '.join(ret.families())}.")
     rows = []
+    seen = set()
     for c in ret.chunks:
         if family and c.get("family") != family.upper():
             continue
         title = c.get("title")
         kind = c.get("family") or c.get("category")
-        if (title, kind) in rows:
+        section = c.get("section")
+        label = f"{title} § {section}" if section else title
+        if (label, kind) in seen:
             continue
-        if query and query.lower() not in title.lower():
+        if query and query.lower() not in label.lower():
             continue
-        rows.append((title, kind))
+        seen.add((label, kind))
+        rows.append((label, kind))
         if len(rows) >= limit:
             break
     header = f"### KB section map ({len(rows)} entries"
@@ -479,9 +502,18 @@ def td_docs_read_page(title, section=None):
     lines = [f"### {matches[0].get('title')}  [{matches[0].get('family') or matches[0].get('category')}]", ""]
     for c in matches:
         text = c.get("text", "")
-        if section and section.lower() not in text.lower():
-            continue
+        if section:
+            # Prefer the structured section field (wiki chunks carry one);
+            # fall back to a substring probe for legacy chunks.
+            sec = c.get("section")
+            if sec is not None:
+                if section.lower() not in sec.lower():
+                    continue
+            elif section.lower() not in text.lower():
+                continue
         lines.append(text)
+        if c.get("url"):
+            lines.append(f"[source: {c['url']}]")
         lines.append("")
     return "\n".join(lines).strip()
 
@@ -871,7 +903,7 @@ def td_analyze_performance(perf):
 
 def _json_dumps(obj):
     import json as _json
-    return _json.dumps(obj, indent=2, default=str)
+    return _json.dumps(_json_safe(obj), indent=2, default=_json_safe)
 
 
 def td_discover():

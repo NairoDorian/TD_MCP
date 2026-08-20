@@ -154,6 +154,97 @@ def operators_matching(name):
     return matches
 
 
+# --- Snapshot provenance (tdmcp #150, 2026-08-11) --------------------------
+#
+# The corpus is an imported *snapshot* of the TouchDesigner docs, not the
+# running build. An agent that asks for an operator and gets nothing back
+# will otherwise conclude the operator does not exist, and go on to tell the
+# user so -- when the truth may be that the snapshot predates it, or that TD
+# spells it differently. Every miss therefore says which snapshot was
+# searched and that a miss is not a non-existence proof.
+
+SNAPSHOT_NOTICE = (
+    "Absence from the imported documentation snapshot does not prove the "
+    "operator is absent from your TouchDesigner build. Verify against a live "
+    "instance (td-mcp-live: describe_td_tools / create_node) before reporting "
+    "it as unavailable."
+)
+
+_snapshot_version_cache = None
+
+
+def snapshot_version():
+    """Stable identifier for the imported corpus: '<n> operators @ <date>'.
+
+    Derived from what the corpus actually contains rather than a hand-edited
+    constant, so it cannot claim to be fresher than the data.
+    """
+    global _snapshot_version_cache
+    if _snapshot_version_cache is not None:
+        return _snapshot_version_cache
+    ops = load_operators() or {}
+    latest = ""
+    for rec in ops.values():
+        stamp = (rec.get("lastUpdated") or "")[:10]
+        if stamp > latest:
+            latest = stamp
+    _snapshot_version_cache = (
+        "%d operators @ %s" % (len(ops), latest) if ops else "no corpus imported"
+    )
+    return _snapshot_version_cache
+
+
+def operator_lookup(name):
+    """Operator record plus provenance, so a miss is never read as absence.
+
+    Returns ``{found, lookup_status, data_version, record?, suggestions?,
+    snapshot_notice?}``.
+    """
+    rec = operator_record(name)
+    if rec is not None:
+        return {
+            "found": True,
+            "lookup_status": "found_in_snapshot",
+            "data_version": snapshot_version(),
+            "record": rec,
+        }
+    return {
+        "found": False,
+        "lookup_status": "not_in_snapshot",
+        "data_version": snapshot_version(),
+        "suggestions": nearest_operator_names(name),
+        "snapshot_notice": SNAPSHOT_NOTICE,
+    }
+
+
+def nearest_operator_names(name, k=5):
+    """Closest operator display names to `name` (vedant1317 close-match idea).
+
+    A miss is far more often a spelling or family slip ("Blur COP", "movie in
+    TOP") than a genuinely unknown operator, so the miss path should hand back
+    the names worth trying next.
+    """
+    import difflib
+
+    ops = load_operators() or {}
+    if not ops:
+        return []
+    display = {}
+    for key, rec in ops.items():
+        label = rec.get("displayName") or rec.get("name") or key
+        display[label] = None
+    query = (name or "").strip()
+    if not query:
+        return []
+    close = difflib.get_close_matches(query, list(display), n=k, cutoff=0.5)
+    if close:
+        return close
+    # difflib is unforgiving about a wrong family suffix ("Blur COP"); fall
+    # back to matching the leading word so those still get suggestions.
+    head = query.split()[0].lower()
+    return [label for label in display if label.lower().startswith(head)][:k]
+
+
 def python_class_for_operator(op_name):
     """Derive the Python class name for an operator (e.g. 'Noise TOP' -> 'NoiseTOP_Class').
 

@@ -483,7 +483,19 @@ class ParallelRetriever:
         try:
             from td_mcp.kb import corpus
             ops = corpus.load_operators()
-            ql = query.lower()
+            ql = query.lower().strip()
+            # Nickname path: a 1-2 word query that exactly equals a curated
+            # chunk's alias ("movie" -> Movie File In TOP) boosts that chunk —
+            # exact-alias-only so short queries don't spray boosts.
+            if len(ql.split()) <= 2:
+                keys = []
+                for c in self.index.chunks:
+                    if ql in [a.lower() for a in (c.get("aliases") or [])]:
+                        uri = LOCAL_PREFIX + c["id"]
+                        if uri not in keys:
+                            keys.append(uri)
+                if keys:
+                    return keys
             if self._op_title_map_cache is None:
                 m = {}
                 for c in self.index.chunks:

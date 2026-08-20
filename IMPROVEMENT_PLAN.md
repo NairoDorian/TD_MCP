@@ -274,6 +274,23 @@ Claude Desktop / Cursor / Codex config in one shot (the manual parts already exi
 23. [x] Wave 8: bottobot experimental techniques KB (7 categories) + cacheflowe skills pack expansion.
 24. [x] Wave 9 RAG: perfect eval recall (1.000 @k=5) — plural stemming, precise operator boost, family/tutorial boosts, sibling disambiguation, `td_kb_stats`.
 25. [x] Wave 10: tool parity bug (13 tools missing from `_OFFLINE_DISPATCH`), exec-mode simplification (4→2 tiers), dead-code cleanup, `PICKED_FROM.md`.
+26. [x] **Wave 11 — §2.2 closed for real: structured local-wiki KB.** The plan's
+    §2.2 assumed wiki coverage would come from *consuming* wiki-rag's SQLite
+    index. That still works (`TD_MCP_WIKI_DB`), but it makes wiki-wide coverage
+    conditional on a second project being installed and crawled. `kb/wiki_ingest.py`
+    instead parses the mirror TouchDesigner already ships (OfflineHelp) directly
+    into first-class KB chunks: **1,091 → 9,602 chunks**, ~17 s, no network, no
+    extra dependency, and the chunks live in the same index (and integrity
+    receipt) as everything else rather than in a bolted-on fusion source.
+    Section-level chunking with `Page § Section` deep-link citations, internal
+    parameter names harvested into tags, inherited/boilerplate/experimental
+    duplicates dropped, POP + experimental pages version-stamped.
+    - Fixed `offline_import`, which appended post-build and thereby invalidated
+      `kb_receipt.json` — the retriever then rejected the entire KB as corrupted.
+      It now rebuilds through `build_kb`.
+    - Fixed the eval crediting one expectation more than once (a chunk and its
+      `corpus_` twin both counted), which reported nDCG > 1.0 and masked real
+      misses. Honest figures: **1.000** with the wiki KB, **0.991** curated-only.
 
 ---
 

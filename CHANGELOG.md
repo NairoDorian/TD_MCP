@@ -4,6 +4,163 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.11.0] — 2026-08-20 — Structured wiki KB (full official docs, offline)
+
+The knowledge base grows from 1,091 curated chunks to **9,602** by ingesting a
+complete local mirror of `docs.derivative.ca` — the tree TouchDesigner already
+ships as *OfflineHelp*, or any saved dump. No network, no API keys, ~17 s to
+parse 1,775 pages.
+
+### Added
+- **`td_mcp/kb/wiki_ingest.py`** — structured MediaWiki ingestion, standard
+  library only. Reads each page's `RLCONF` metadata block (`wgPageName`,
+  `wgTitle`, `wgCategories`), `og:url`, and `article:modified_time`, then walks
+  the body with a subtree-skipping `HTMLParser` that drops navigation chrome
+  (TOC, `mw-editsection`, `catlinks`, lingo tooltips) instead of flattening it
+  into the text. Produces **one chunk per section**, so a retrieval hit points
+  at *Blur TOP § Parameters - Blur Page*, not a whole page.
+  - **Deep-link citations.** Every chunk carries the section's MediaWiki anchor
+    as `url#anchor`, so a cited answer opens at the exact section.
+  - **Title-prefixed text.** Each chunk begins `"<Page> — <Section>"`; a bare
+    parameter description is meaningless without the operator it belongs to.
+  - **Parameter names harvested into tags.** `<code>` runs inside Parameters /
+    Members / Methods sections become chunk tags, so lexical retrieval matches
+    the *internal* name an agent must actually write (`size`, `horzandvert`) —
+    not just the human label.
+  - **Family + page type from wiki categories.** `TOPs` → TOP operator,
+    `TOP Classes` → TOP Python class, for all seven families incl. POP; falls
+    back to the title suffix, then `concept`.
+  - **Inherited class sections dropped.** Every `*_Class` page re-embeds the
+    full `OP Class` / `TOP Class` docs; those blocks are skipped in favour of
+    the canonical pages, and a class whose members are entirely inherited still
+    gets one resolvable chunk rather than vanishing.
+  - **Boilerplate deduplicated across pages.** "Parameters - Common Page" and
+    "Common Operator Info Channels" are byte-identical on ~150 operator pages;
+    they are emitted once (first page in sorted order wins) so the same 9 KB of
+    text cannot drown lexical ranking.
+  - **Experimental twins skipped.** `Experimental-X` is dropped when the
+    released `X` page exists in the same mirror, and POP/experimental pages are
+    stamped `min_version = 2023.10000` so version-filtered queries exclude them.
+  - **Deterministic.** Sorted walk and stable ids, so the build is reproducible
+    and the KB integrity receipt stays valid.
+- **`build_kb --wiki-root / --no-wiki / --wiki-limit`** — wiki ingestion is now
+  part of the deterministic KB build, auto-detecting `TD_MCP_WIKI_ROOT`, the TD
+  install's OfflineHelp tree, or a sibling `TD HELP` dump. A fresh clone with no
+  mirror builds exactly as before.
+- **Version reconciliation in `build_kb`** — curated seeds are the authority on
+  build gates (PBR MAT ≥ 2022.20000, POPs ≥ 2023.10000). Their `min_version` now
+  propagates onto imported corpus/wiki chunks of the same title, closing a leak
+  where a version-filtered query could still surface a gated operator through an
+  unstamped twin chunk.
+- **Exact-alias nickname boost** — a one- or two-word query that exactly matches
+  a curated chunk's alias (`"movie"` → Movie File In TOP) boosts that chunk,
+  which a 9,602-chunk lexical index would otherwise bury.
+- **`tests/test_wiki_ingest.py`** — 19 tests over hand-written MediaWiki-shaped
+  fixtures; no TouchDesigner install or docs mirror required.
+
+### Fixed
+- **Eval over-counted recall and reported nDCG above 1.0.** A retrieved chunk
+  was credited against the expectation set as a flat membership test, so one
+  expectation could be satisfied twice — `render_top` and its `corpus_render_top`
+  twin each counted — and a query missing a genuine expectation still scored
+  1.000. Each expectation is now credited to at most one retrieved chunk. This
+  **lowers the previously reported figure**: measured honestly, the curated-only
+  KB scores recall@5 **0.991**, and the wiki-backed KB **1.000**.
+- **`offline_import` bricked the KB it was meant to grow.** It appended
+  naively tag-stripped, 4,000-char-truncated pages to `chunks.jsonl` *after* the
+  build, which invalidated `kb_receipt.json` — and the retriever then refused the
+  whole KB as corrupted, degrading to zero documents. It is now a thin wrapper
+  that rebuilds through `build_kb`, so the receipt covers the wiki content.
+- **Strategy-count test asserted a magic number.** `test_six_strategies`
+  hardcoded 6, but the count is one per chunk category plus two; a KB built with
+  a wiki mirror legitimately has 7. It now asserts the composition.
+
+### Changed
+- `td_docs_search` renders `Page § Section` headings, `td_docs_read_page`
+  filters on the structured `section` field and cites its source URL, and
+  `td_docs_browse` lists sections rather than only page titles.
+- The eval set gains 7 wiki-coverage queries, marked `needs: "wiki"` and skipped
+  automatically when the KB was built without a mirror, so CI stays green.
+- Eval expectations accept OR-groups (a nested list) for queries where more than
+  one document is a correct canonical answer.
+
+---
+
+## [1.10.0] — 2026-08-19 — Ecosystem sweep (last-15-days commits)
+
+Absorbed from reference repos that moved between 2026-08-04 and 2026-08-19.
+All 28 repos under `github-mcp/` were re-pulled; 6 had new commits, and each
+item below traces to one. See `PICKED_FROM.md` for the full provenance table.
+
+### Security
+- **Code-bearing route guard** (Pantani/tdmcp #143, 2026-08-11). `TD_MCP_EXEC_MODE=off`
+  previously disabled `execute_python` and nothing else, while five other routes
+  still handed caller-supplied Python to TouchDesigner: parameter expressions
+  (`set_parameters` with `{"expr": ...}`), `bind_parameter_expression`, a DAT's
+  text (`set_dat_text`), executable operator types (`create_node` of a
+  Script/Execute/GLSL/Expression op), a DAT's `file` parameter, arbitrary
+  `exec_node_method` calls, and `import_recipe` blueprints carrying any of the
+  above. Exec-off now refuses **every** code route, naming which one it caught;
+  `exec_node_method` keeps an allowlist of recompute/reset methods that evaluate
+  no caller text. Detection is on the trailing identifier, so `scriptCHOP`,
+  `glslmultiTOP` and `textDAT` resolve without an operator-type table.
+
+### Added
+- **Worker-thread `run()` lint** (dylanroscover/Embody v6.0.251, 2026-08-17).
+  Derivative confirmed on 2026-08-17 that calling TD's global `run()` off the
+  main thread does **not** raise on current builds — it silently corrupts TD
+  state and crashes later, far from the call site. `execute_python` and
+  `set_dat_text` now statically lint submitted Python and ride a
+  `THREADING WARNING` back on the response at **write** time, since nothing
+  catches it at runtime. Advisory only: the write still lands. Bounded up
+  front (128 KB cap, `run(` prefilter before parsing, per-target dedupe,
+  64-finding cap), and unparseable source lints to nothing so a fragment is
+  never failed by its own lint.
+- **Bridge/server version handshake** (quentinR2/TouchDesignerMcp #8, 2026-08-18).
+  The bridge is installed by pasting a file into a `.toe`, so it goes stale
+  invisibly — the project keeps working until the server calls a tool added
+  after the paste, which fails as an unknown tool with no hint why. The bridge
+  now stamps `BRIDGE_VERSION`, returns it from `project_info`/`describe_td_tools`,
+  and `TDClient` resolves it once per client and attaches a warning naming both
+  versions and the fix. `scripts/check_bridge_stale.py` fails CI when the stamp
+  drifts from `pyproject.toml`, so the signal cannot silently rot.
+- **Snapshot provenance on doc lookups** (Pantani/tdmcp #150, 2026-08-11). The
+  corpus is an imported snapshot, not the running build, so a miss was being
+  read as proof an operator does not exist. `corpus.operator_lookup` now returns
+  `found` / `lookup_status` / `data_version`, and `td_docs_operator` prints an
+  explicit "not in the documentation snapshot — this does not prove it is absent
+  from your build" notice plus the nearest real operator names. Hits cite the
+  snapshot they came from.
+- **Close-match operator suggestions**: `corpus.nearest_operator_names` (difflib,
+  with a leading-word fallback so a wrong family suffix like "Blur COP" still
+  suggests "Blur TOP"), surfaced on every lookup miss.
+- **`tests/bridge_pure.py`**: execs the bridge's pure-helper block straight out
+  of the shipped source instead of re-typing it into the tests, so bridge tests
+  can no longer drift from the bridge.
+
+### Fixed
+- **`td_build` reported the legacy generation, not the release** (dcc-mcp #5,
+  2026-08-13). `project_info` returned `app.version`, which still reports `099`;
+  the public `year.build` identifier lives on `app.build`. Every version-compat
+  check compares against `2023.11000`-style corpus builds, so `td_build` was
+  unusable for the one job it had. Now derived from both, with the raw
+  generation kept as `td_version`.
+- **Warnings were invisible, or counted as errors** (Pantani/tdmcp #146,
+  2026-08-11). `get_errors` returned only `node.errors` as bare strings.
+  It now returns severity-tagged `diagnostics` plus `error_count` /
+  `warning_count` (and `warnings`), with `errors` unchanged for compatibility,
+  so a caller cannot mistake a warning for a failure.
+- **`version_mismatch_warning` froze the server version at import**: binding
+  `__version__` as a default argument ignored the installed package's real
+  version; it is now resolved at call time.
+
+### Changed
+- Version bumped to **1.10.0**; `BRIDGE_VERSION` tracks it, enforced by
+  `scripts/check_bridge_stale.py`.
+- Test suite: 288 → 367 passing.
+
+---
+
 ## [Unreleased]
 
 ### Fixed

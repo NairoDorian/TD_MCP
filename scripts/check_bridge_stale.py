@@ -19,6 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BRIDGE = ROOT / "bridge" / "td_mcp_bridge.py"
+PYPROJECT = ROOT / "pyproject.toml"
 
 
 def bridge_dispatch_keys() -> set[str]:
@@ -29,6 +30,16 @@ def bridge_dispatch_keys() -> set[str]:
     return set(re.findall(r'^\s*"([a-z0-9_]+)":\s*lambda', block, re.M))
 
 
+def bridge_version() -> str | None:
+    m = re.search(r'^BRIDGE_VERSION = "([^"]+)"', BRIDGE.read_text(encoding="utf-8"), re.M)
+    return m.group(1) if m else None
+
+
+def package_version() -> str | None:
+    m = re.search(r'^version = "([^"]+)"', PYPROJECT.read_text(encoding="utf-8"), re.M)
+    return m.group(1) if m else None
+
+
 def live_registry_keys() -> set[str]:
     sys.path.insert(0, str(ROOT))
     from td_mcp.server_live import TOOL_REGISTRY
@@ -36,6 +47,18 @@ def live_registry_keys() -> set[str]:
 
 
 def main() -> int:
+    # Version parity: the bridge stamps BRIDGE_VERSION so the live server can
+    # tell a stale in-TD paste apart from a genuine unknown tool. That signal
+    # is only worth anything if the stamp tracks the package version.
+    bv, pv = bridge_version(), package_version()
+    if bv is None:
+        print("[bridge-stale] BRIDGE_VERSION not found in bridge", file=sys.stderr)
+        return 1
+    if bv != pv:
+        print(f"[bridge-stale] version drift: BRIDGE_VERSION={bv} but "
+              f"pyproject version={pv}", file=sys.stderr)
+        return 1
+
     bridge = bridge_dispatch_keys()
     live = live_registry_keys()
     # `get_non_default_params` is a client-side convenience (no bridge handler).
@@ -50,7 +73,8 @@ def main() -> int:
         if extra:
             print(f"  extra in bridge _DISPATCH:      {sorted(extra)}", file=sys.stderr)
         return 1
-    print(f"[bridge-stale] ok: {len(bridge)} bridge handlers match live registry")
+    print(f"[bridge-stale] ok: {len(bridge)} bridge handlers match live registry "
+          f"(version {bv})")
     return 0
 
 
