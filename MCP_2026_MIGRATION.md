@@ -89,12 +89,27 @@ Project tooling: **uv** · Python **3.11.15**
 - `TOOL_REGISTRY`, `_TOOL_META`, `_http_tool_meta()` retained (used by tests,
   tool dispatch, and conformance validation).
 
-### 4. `streamable_http.py` — KEPT (not deleted)
-- Still imported by `bridge/td_mcp_bridge.py` (the TouchDesigner-side bridge).
-- The bridge falls back gracefully (`STREAMABLE_HTTP_AVAILABLE = False`)
-  if the module is absent.
-- NOT migrated to 2026-07-28 — it's a standalone implementation that doesn't
-  depend on the MCP SDK. Bridge-side migration is deferred.
+### 4. `streamable_http.py` — REMOVED in v1.12.0 (was: "KEPT")
+
+This section used to say the module was kept because the bridge imported it
+and "falls back gracefully" without it. Neither half was true, and the gap
+between them is why the bridge never worked inside TouchDesigner:
+
+- The import sat in a `try/except` that set `STREAMABLE_HTTP_AVAILABLE = False`
+  on failure — and the handler class then inherited from the missing name
+  unconditionally. Inside TouchDesigner, where `td_mcp` is never on `sys.path`,
+  every load ended in `NameError: name 'StreamableHTTPMixin' is not defined`.
+- The mixin contributed nothing in any case: the bridge's `_Handler` overrode
+  every method it defined, including `_handle_jsonrpc` — so the protocol
+  negotiation added to this module in Wave 12 never ran.
+- The bridge *did* call three session helpers (`_generate_session_id`,
+  `_touch_session`, `_get_session`) that were neither imported nor defined.
+
+The session store and version negotiation now live in the bridge itself, which
+imports nothing from `td_mcp` — enforced by `scripts/check_bridge_stale.py` and
+by the test double, which blocks `td_mcp` imports the way TouchDesigner does.
+The bridge's own transport still carries the `Mcp-Session-Id` layer; the
+stateless rewrite the SDK servers took is deferred, as before.
 
 ### 5. Embody ideas implemented (from v6.0.159)
 - **Tool-schema conformance test** (`tests/test_tool_schema_conformance.py`):
@@ -103,8 +118,9 @@ Project tooling: **uv** · Python **3.11.15**
 
 ## Do NOT do yet
 
-- Migrate the TouchDesigner bridge (`streamable_http.py`) to 2026-07-28 —
-  it's a standalone implementation, not SDK-based. Defer.
+- Drop the session layer from the bridge's own transport (it negotiates
+  2026-07-28 correctly now, but still issues `Mcp-Session-Id`). It is a
+  standalone implementation inside a Text DAT, not SDK-based. Defer.
 - Implement full MCP Tasks extension (MCP 2026-07-28 makes Tasks an extension,
   aligned with Embody v6.0.166 task ledger) — future work.
 

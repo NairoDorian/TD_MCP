@@ -661,7 +661,7 @@ def _register_offline():
                td_scaffold_show, td_gotcha_template, td_source_registry,
                td_show_readiness, td_activity_log, td_history_recall,
                td_docs_version_compat, td_kb_stats,
-               td_docs_experimental, td_tool_batch,
+               td_docs_experimental, td_tool_batch, td_validate_live,
                td_showcontrol_plan, td_led_map,
                td_build_feedback, td_build_audio_reactive,
                td_build_particle, td_build_glsl_shader,
@@ -791,28 +791,45 @@ def td_validate_build(spec):
     return _json_dumps(heal_mod.assess_build(data))
 
 
-def td_validate_live(spec, viewport_verdict=None):
-    """Validate + score a *live* network snapshot, optionally fed by a
-    ``capture_viewport`` verdict (is_black / is_flat / fully_transparent).
+def td_validate_live(spec, viewport_verdict=None, live_diagnostics=None):
+    """Validate + score a *live* network snapshot.
 
-    This is the bridge-facing companion to ``td_validate_build``: it attaches
-    the viewport verdict to the network description before scoring so a flat
-    or black render drags the score down and ``td_self_heal`` has the signal
-    it needs to auto-repair.
+    Two signals come back from the running project and neither is derivable
+    from the description:
+
+    * ``viewport_verdict`` -- ``capture_viewport``'s is_black / is_flat /
+      fully_transparent judgment, so a network that renders nothing is marked
+      down however clean its structure.
+    * ``live_diagnostics`` -- ``get_errors``'s payload (or a list of them, one
+      per operator). Cook errors, script tracebacks and GLSL compile failures
+      are invisible to structural validation: a DAT whose ``onCook`` raises is
+      a perfectly well-formed description. Feeding them in is what lets
+      ``td_self_heal`` act on a network that is red rather than merely
+      mis-shaped.
+
+    This is the bridge-facing companion to ``td_validate_build``.
     """
     import json as _json
     data = _parse_build_spec(spec)
     if isinstance(data, str):
         return data
-    vv = viewport_verdict
-    if isinstance(vv, str):
-        try:
-            vv = _json.loads(vv)
-        except Exception:
-            vv = None
-    if isinstance(vv, dict):
+
+    def _maybe_json(value):
+        if isinstance(value, str):
+            try:
+                return _json.loads(value)
+            except Exception:  # noqa: BLE001
+                return None
+        return value
+
+    vv = _maybe_json(viewport_verdict)
+    diags = _maybe_json(live_diagnostics)
+    if isinstance(vv, dict) or diags:
         data = dict(data)
-        data["viewport_verdict"] = vv
+        if isinstance(vv, dict):
+            data["viewport_verdict"] = vv
+        if diags:
+            data["live_diagnostics"] = diags
     return _json_dumps(heal_mod.assess_build(data))
 
 
@@ -958,14 +975,44 @@ def td_scaffold_recipe(spec):
 # MCP server (MCP SDK 2.0 — on_* constructor kwargs, stateless transports)
 # ============================================================
 
+def _input_schema(schema):
+    """A JSON Schema *object* from a bare property map.
+
+    MCP requires ``inputSchema`` to be ``{"type": "object", "properties":
+    {...}}``. Every offline tool declared a bare ``{"param": {"type": ...}}``
+    map, which the SDK's result validation rejects -- so ``tools/list``
+    answered *"Handler returned an invalid result"* to every MCP client since
+    the v2 migration, and **no client ever saw the offline tools**. The
+    in-process tests never re-validated the result the way the wire does.
+
+    The non-standard ``"optional": True`` marker becomes ``required``.
+    """
+    schema = dict(schema or {})
+    if schema.get("type") == "object" and "properties" in schema:
+        return schema
+    props, required = {}, []
+    for pname, pspec in schema.items():
+        pspec = dict(pspec) if isinstance(pspec, dict) else {"type": "string"}
+        optional = pspec.pop("optional", False)
+        props[pname] = pspec
+        if not optional:
+            required.append(pname)
+    out = {"type": "object", "properties": props}
+    if required:
+        out["required"] = required
+    return out
+
+
 def _tool(name, description, schema, annotations=None):
     """Create a Tool with v2-compatible keyword Args.
 
     MCP SDK 2.0 made every Tool field except ``name`` keyword-only, so the
     positional pattern ``Tool(name, desc, schema)`` from 1.x no longer works.
-    This helper bridges the two call sites.
+    This helper bridges the two call sites, and wraps the schema into the
+    object form MCP requires (see ``_input_schema``).
     """
-    kwargs = {"name": name, "description": description, "inputSchema": schema}
+    kwargs = {"name": name, "description": description,
+              "inputSchema": _input_schema(schema)}
     if annotations is not None:
         kwargs["annotations"] = annotations
     return types.Tool(**kwargs)
@@ -1116,6 +1163,13 @@ async def _offline_list_tools(ctx, params):
             _tool("td_validate_build", "Validate + score a network description and attach recovery hints for each finding (pure, no running TD).",
                     {"spec": {"type": "string"}},
                     annotations=read_only),
+            _tool("td_validate_live", "The live<->offline loop: validate + score a network description WITH the signals only a running "
+                    "TouchDesigner has -- a capture_viewport verdict (is_black/is_flat/is_static) and a get_errors payload "
+                    "(cook, script and shader errors). Pass both as JSON strings; the score then reflects what the network "
+                    "actually does, not just its shape.",
+                    {"spec": {"type": "string"}, "viewport_verdict": {"type": "string", "optional": True},
+                     "live_diagnostics": {"type": "string", "optional": True}},
+                    annotations=read_only),
             _tool("td_analyze_build", "Liveness/dead-weight analysis of a network description: isolated nodes, only-fed nodes, empty COMPs, broken file paths (pure, no running TD).",
                     {"spec": {"type": "string"}},
                     annotations=read_only),
@@ -1175,6 +1229,9 @@ async def _offline_call_tool(ctx, params):
                          a.get("query", ""), max_chars=_max), "")
             elif name == "td_docs_operator":
                 out = (td_docs_operator(a.get("name", ""), a.get("k", 3)), "")
+            elif name == "td_validate_live":
+                out = (td_validate_live(a.get("spec", ""), a.get("viewport_verdict"),
+                                        a.get("live_diagnostics")), "")
             elif name == "td_docs_python":
                 out = (td_docs_python(a.get("name", ""), a.get("k", 3)), "")
             elif name == "td_docs_glsl":
@@ -1423,6 +1480,9 @@ def _main_cli():
 
 
 def main():
+    # See td_mcp.util.stdio: pinned in main(), never at import.
+    from td_mcp.util.stdio import pin_stdio_utf8
+    pin_stdio_utf8()
     if os.environ.get("TD_MCP_MODE") == "mcp" or "--mcp" in sys.argv:
         sys.argv = [a for a in sys.argv if a != "--mcp"]
         _main_mcp()

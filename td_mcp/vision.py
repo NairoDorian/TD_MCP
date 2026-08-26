@@ -120,6 +120,75 @@ def viewport_verdict(pixels: bytes, width: int, height: int,
     return verdict
 
 
+def frame_signature(pixels: bytes, width: int, height: int,
+                    grid: int = 8) -> List[float]:
+    """A small luminance fingerprint of one frame, for comparing frames.
+
+    A ``grid x grid`` mean-luma tiling. Comparing whole frames is expensive and
+    comparing scalar means is useless -- a pattern that scrolls across the
+    canvas holds its mean exactly constant while every pixel changes. A coarse
+    spatial grid catches that at negligible cost.
+    """
+    n = width * height
+    if n == 0 or len(pixels) < n * 4:
+        return []
+    tiles = [0.0] * (grid * grid)
+    counts = [0] * (grid * grid)
+    step = max(1, n // 4000)
+    for i in range(0, n, step):
+        x, y = i % width, i // width
+        tx = min(grid - 1, x * grid // width)
+        ty = min(grid - 1, y * grid // height)
+        o = i * 4
+        luma = 0.2126 * pixels[o] + 0.7152 * pixels[o + 1] + 0.0722 * pixels[o + 2]
+        idx = ty * grid + tx
+        tiles[idx] += luma
+        counts[idx] += 1
+    return [round(tiles[i] / counts[i], 3) if counts[i] else 0.0
+            for i in range(grid * grid)]
+
+
+#: Mean per-tile luminance change below which consecutive frames are "the same
+#: picture". Comfortably above sampling jitter, well below any real animation.
+STATIC_THRESHOLD = 1.0
+
+
+def motion_verdict(signatures: List[List[float]],
+                   threshold: float = STATIC_THRESHOLD) -> Dict[str, Any]:
+    """Whether a sequence of frame signatures shows any movement.
+
+    A single-frame verdict cannot tell "renders correctly" from "renders
+    correctly and is frozen", which is the most common silent failure in a
+    feedback or audio-reactive network: the structure is right, the picture is
+    right, and nothing moves. Fewer than two usable frames yields
+    ``is_static: None`` -- unknown, not false, because claiming a network
+    animates on the strength of one frame is exactly the error being fixed.
+    """
+    usable = [s for s in signatures or [] if s]
+    if len(usable) < 2:
+        return {"frames": len(usable), "is_static": None,
+                "max_delta": None, "mean_delta": None,
+                "caption": "not enough frames to judge motion"}
+    width = min(len(s) for s in usable)
+    deltas = []
+    for a, b in zip(usable, usable[1:]):
+        deltas.append(sum(abs(a[i] - b[i]) for i in range(width)) / width)
+    max_delta = max(deltas)
+    mean_delta = sum(deltas) / len(deltas)
+    is_static = max_delta < threshold
+    return {
+        "frames": len(usable),
+        "is_static": is_static,
+        "max_delta": round(max_delta, 4),
+        "mean_delta": round(mean_delta, 4),
+        "caption": ("Viewport is static across "
+                    f"{len(usable)} frames - the render is frozen (max tile "
+                    f"delta {max_delta:.3f})." if is_static else
+                    f"Viewport is animating across {len(usable)} frames "
+                    f"(max tile delta {max_delta:.3f})."),
+    }
+
+
 def make_test_image(kind: str, w: int = 16, h: int = 16) -> Tuple[bytes, int, int]:
     """Synthetic RGBA image generator for tests/benchmarks."""
     buf = bytearray()

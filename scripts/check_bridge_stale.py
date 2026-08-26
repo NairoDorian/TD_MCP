@@ -13,6 +13,7 @@ Run:
 
 from __future__ import annotations
 
+import ast
 import re
 import sys
 from pathlib import Path
@@ -33,6 +34,63 @@ def bridge_dispatch_keys() -> set[str]:
 def bridge_version() -> str | None:
     m = re.search(r'^BRIDGE_VERSION = "([^"]+)"', BRIDGE.read_text(encoding="utf-8"), re.M)
     return m.group(1) if m else None
+
+
+def bridge_td_mcp_imports() -> list[str]:
+    """Imports of `td_mcp` under bridge/.
+
+    Forbidden outright in the bridge and the builder; tolerated elsewhere only
+    inside a try/except that carries a fallback. The bridge runs inside
+    TouchDesigner as a Text DAT, where td_mcp is not on sys.path.
+    `from td_mcp.streamable_http import StreamableHTTPMixin` sat at the top of
+    td_mcp_bridge.py inside a try/except that set a flag -- and the handler
+    class then inherited from the missing name regardless. The bridge had
+    never compiled in TouchDesigner; pytest never noticed because it runs with
+    td_mcp importable.
+    """
+    strict = {"td_mcp_bridge.py", "bootstrap.py"}
+    out: list[str] = []
+    for path in sorted((ROOT / "bridge").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        guarded: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Try):
+                for stmt in node.body:
+                    for inner in ast.walk(stmt):
+                        guarded.add(id(inner))
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            elif isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            hits = [n for n in names if n.split(".")[0] == "td_mcp"]
+            if not hits:
+                continue
+            if path.name in strict or id(node) not in guarded:
+                out.append(f"{path.name}:{node.lineno}: imports {', '.join(hits)}")
+    return out
+
+
+def forked_bridge_copies() -> list[tuple[str, str]]:
+    """Files under bridge/ that have started carrying bridge logic of their own.
+
+    `bootstrap.py` used to be a full second copy of the bridge. It drifted to
+    39 tools against the bridge's 46 and carried three reversed `COMP.create`
+    calls, and nothing noticed because this guard only ever compared
+    `td_mcp_bridge.py` to the live registry. A tool table or a `_do_*` handler
+    anywhere other than the bridge itself means the fork is back.
+    """
+    out: list[tuple[str, str]] = []
+    for path in sorted((ROOT / "bridge").glob("*.py")):
+        if path.name == BRIDGE.name:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "_DISPATCH = {" in text:
+            out.append((path.name, "declares its own _DISPATCH table"))
+        elif re.search(r"^def _do_", text, re.M):
+            out.append((path.name, "declares its own _do_* handlers"))
+    return out
 
 
 def package_version() -> str | None:
@@ -73,8 +131,28 @@ def main() -> int:
         if extra:
             print(f"  extra in bridge _DISPATCH:      {sorted(extra)}", file=sys.stderr)
         return 1
+    td_mcp_imports = bridge_td_mcp_imports()
+    if td_mcp_imports:
+        print("[bridge-stale] bridge code imports td_mcp, which is not importable "
+              "inside TouchDesigner (the bridge runs in a Text DAT):",
+              file=sys.stderr)
+        for entry in td_mcp_imports:
+            print(f"  {entry}", file=sys.stderr)
+        return 1
+
+    forked = forked_bridge_copies()
+    if forked:
+        print("[bridge-stale] a second copy of the bridge exists:", file=sys.stderr)
+        for path, why in forked:
+            print(f"  {path}: {why}", file=sys.stderr)
+        print("  The bridge must have exactly one implementation. bootstrap.py "
+              "held a fork until v1.12.0 and it drifted to 39 tools with three "
+              "reversed create() calls; nothing compared the two copies.",
+              file=sys.stderr)
+        return 1
+
     print(f"[bridge-stale] ok: {len(bridge)} bridge handlers match live registry "
-          f"(version {bv})")
+          f"(version {bv}); no forked copies")
     return 0
 
 

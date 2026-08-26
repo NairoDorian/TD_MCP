@@ -80,6 +80,8 @@ def main():
     ap = argparse.ArgumentParser(description="One-command td-mcp install.")
     ap.add_argument("--skip-build-kb", action="store_true",
                     help="skip the chunks.jsonl build step")
+    ap.add_argument("--json", action="store_true",
+                    help="emit the Install SOP report instead of prose")
     args = ap.parse_args()
 
     install_package()
@@ -87,8 +89,22 @@ def main():
         build_kb()
     write_client_configs()
     print_registration_json()
-    print("\nDone. td-mcp-offline + td-mcp-live are ready.")
-    return 0
+
+    # Hand off to the Install SOP for the part that has to be honest about
+    # what a CLI cannot do: stage the bridge, write a receipt, and name the
+    # step that must happen inside TouchDesigner. `install_all` used to end
+    # with "Done. td-mcp-offline + td-mcp-live are ready." -- true of the
+    # servers, and quietly untrue of the bridge, which no external process can
+    # install into a .toe.
+    from td_mcp import install as sop
+
+    argv = ["install", "--yes"] + (["--json"] if args.json else [])
+    code = sop.main(argv)
+    if code == sop.EXIT_REQUIRES_RESTART:
+        print("\nServers are ready. The bridge is staged and needs the "
+              "TouchDesigner step above; then run `td-mcp-install verify`.")
+        return 0
+    return code
 
 
 if __name__ == "__main__":

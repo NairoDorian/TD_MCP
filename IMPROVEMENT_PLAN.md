@@ -291,6 +291,87 @@ Claude Desktop / Cursor / Codex config in one shot (the manual parts already exi
     - Fixed the eval crediting one expectation more than once (a chunk and its
       `corpus_` twin both counted), which reported nDCG > 1.0 and masked real
       misses. Honest figures: **1.000** with the wiki KB, **0.991** curated-only.
+27. [x] **Wave 12 — 2026-08-26 upstream sync.** Full details, with file:line
+    evidence, in [`UPSTREAM_SYNC_2026-08-26.md`](UPSTREAM_SYNC_2026-08-26.md).
+    27 repos fetched; only **Embody** (v6.0.252 → v6.0.280, 42 commits) and
+    **dcc-mcp-touchdesigner** (0.1.1 → 0.1.2) had moved. Four missing repos were
+    cloned (`johnsabath`, `superdwayne`, `mahsan07/hermes-skill`, `froussio`).
+    Three findings invalidate assumptions this plan was resting on:
+    - **`get_errors` has never worked in real TouchDesigner.** `errors()`,
+      `warnings()` and `scriptErrors()` are *methods returning strings*
+      (`OP_Class.htm`), but the bridge reads `node.errors` as an iterable
+      attribute at six sites. `get_errors` raises; `scan_network`, `get_node`,
+      `validate_network` and `bind_parameter_expression` swallow it and report
+      **zero errors, always**. §3 (live↔offline loop) and roadmap items 6/10
+      were therefore validated against an empty error list. Add TD's third
+      error surface (`scriptErrors`) and GLSL compile text (auto-docked Info
+      DAT, `dat.type == 'info'`) at the same time — Embody v6.0.264/265.
+    - **The in-TD half of the bridge has no test coverage.** `bridge_pure.py`
+      execs only lines 400–486 of a 2,191-line file, so every `_do_*` handler is
+      untested. dcc-mcp's TD API double — listed in §1 as an idea to steal but
+      never scheduled — is what would have caught the above.
+    - **TDN drops authored code, expressions and rewiring.**
+      `td_mcp/tdn/__init__.py` has no DAT-text field at all, `diff_tdn` ignores
+      `inputs` (a rewire diffs as `is_equal: True`), and `_index_ops` keys by
+      bare name. Embody's `docs/reports/tdn-exporter-fidelity-moonshine.md`
+      documents four more traps to avoid before extending it.
+
+    Also newly evidenced: the `.mcpb` bundle writes `server.json` instead of a
+    spec-shaped `manifest.json` (item 17 is further from done than it reads);
+    `streamable_http.py:169` still advertises `2024-11-05` under `mcp>=2.0`;
+    dcc-mcp 0.1.2's **Install SOP v1** is a ready-made contract for item 12.
+
+28. [x] **Wave 12 implemented — v1.12.0.** Everything above, built. Tests
+    **389 → 593 passing** (599 collected, 6 skipped). Changelog:
+    [`CHANGELOG.md#1120`](CHANGELOG.md).
+
+    **The blind-bridge repair (items 1–3).** All six `node.errors` sites call
+    the accessors as methods and split the returned string; `scriptErrors()`
+    and GLSL compile text (docked Info DAT, found by `dat.type == 'info'`) join
+    the picture, a traceback counts as one error, and `clear_script_errors` is
+    exposed as a recovery action. Two further bugs surfaced once the handlers
+    were actually executed: `COMP.create(opType, name)` was called with its
+    arguments reversed at **both** call sites, so `create_node` could not have
+    worked against a real TouchDesigner; and `export_recipe` wrote source
+    *paths* into `inputs` while `import_recipe` looked them up by *name*, so no
+    recipe ever reconnected a wire. Both fixed, both regression-tested.
+
+    **`tests/td_double.py` (item 2)** is the structural fix: a deterministic TD
+    API double plus a loader that execs the *whole* bridge, replacing a test
+    tier that covered ~90 of 2,191 lines. It models the API as TD documents it,
+    which is the entire point — a permissive double would have accepted every
+    bug listed above. It has already caught two gaps in itself (`par.mode` must
+    be a real enum for `type(par.mode).EXPRESSION` to resolve; `Connector.connect`
+    accepts an OP *or* a connector).
+
+    **Also landed:** TDN fidelity (item 4 — DAT text with "any doubt embeds",
+    expressions on every export path, `diff_tdn` comparing nine fields,
+    path-qualified indices, `tdn_exclude:<par>`, project-anchored output paths);
+    reader reductions + `read_pop`/`diff_chop` (item 5); `observe` with an
+    `is_static` verdict wired into scoring (item 6); **Install SOP v1** with
+    receipts, per-stage exit codes and honest `next_steps` (item 7, closing
+    §7.3 and roadmap item 12); a `.mcpb` manifest a host can actually install
+    (item 8); UTF-8 stdio pinning from `main()` (item 9); protocol negotiation
+    for the in-TD transport (item 11); and explicit risk classes for every
+    advertised tool, with `set_dat_text` and `bind_parameter_expression`
+    reclassified DESTRUCTIVE alongside `execute_python`.
+
+    **Corrected from the sync report.** §3.6 overstated the protocol gap: the
+    SDK servers migrated to 2026-07-28 in Phase 2 and only the standalone in-TD
+    transport was stale, which `MCP_2026_MIGRATION.md` §4 had deliberately
+    deferred. What was *not* deliberate was hard-coding one version into every
+    reply; that is fixed, the deferred session-layer removal still stands.
+
+    **Verified rather than changed.** Item 10: `findChildren` is not used in
+    `td-mcp` code, and its own walkers use "up to N" semantics correctly — the
+    double models TD's exact-depth behaviour so a future use fails loudly.
+    Item 12: no per-write project-wide sweep exists; the shader pass added here
+    is scoped to the operator a write touched and `observe` caps its frames.
+
+    **Still open:** item 13 (thin verb façade over the 47 live tools), item 15
+    (PyEnv-style dependency story for the `[rag]` extra inside TouchDesigner),
+    and the PyPI publish half of item 17 — the bundle is now correct, but
+    nothing has been published.
 
 ---
 

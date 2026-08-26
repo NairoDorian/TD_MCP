@@ -152,7 +152,6 @@ td-mcp/
 ├── td_mcp/
 │   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (45 tools)
 │   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server (39 tools)
-│   ├── streamable_http.py    # Streamable-HTTP transport mixin
 │   ├── heal.py / validation.py / scoring.py   # self-healing build pipeline
 │   ├── generators.py         # artist network generators
 │   ├── eval.py / compat.py / perf.py / progress.py / bundle.py / macro.py

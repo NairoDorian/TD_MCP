@@ -37,8 +37,46 @@ RISK_CLASS = {
     "td_expert_prompt":      "READ_ONLY",
     "td_compat_check":       "READ_ONLY",
     "td_score_build":        "READ_ONLY",
+    "td_validate_live":      "READ_ONLY",
     "td_mediaserver":        "READ_ONLY",
     "td_analyze_performance":"READ_ONLY",
+
+    # Offline authoring, analysis and scaffolding — READ_ONLY.
+    # Every one of these is a pure function over a *description*: they emit
+    # YAML/JSON for a caller to act on and never touch a running TouchDesigner.
+    # They were relying on the WRITE_ADDITIVE fallback, so a client running a
+    # read-only policy refused plain documentation lookups.
+    "td_docs_browse":        "READ_ONLY",
+    "td_docs_read_page":     "READ_ONLY",
+    "td_docs_combos":        "READ_ONLY",
+    "td_docs_experimental":  "READ_ONLY",
+    "td_docs_version_compat": "READ_ONLY",
+    "td_kb_stats":           "READ_ONLY",
+    "td_build_feedback":     "READ_ONLY",
+    "td_build_audio_reactive": "READ_ONLY",
+    "td_build_particle":     "READ_ONLY",
+    "td_build_3d_scene":     "READ_ONLY",
+    "td_build_glsl_shader":  "READ_ONLY",
+    "td_build_led_wall":     "READ_ONLY",
+    "td_build_dmx_fixture":  "READ_ONLY",
+    "td_build_video_pipeline": "READ_ONLY",
+    "td_build_midi_rig":     "READ_ONLY",
+    "td_build_kinect_skeleton": "READ_ONLY",
+    "td_validate_build":     "READ_ONLY",
+    "td_analyze_build":      "READ_ONLY",
+    "td_diff_networks":      "READ_ONLY",
+    "td_optimize_layout":    "READ_ONLY",
+    "td_resolve_params":     "READ_ONLY",
+    "td_self_heal":          "READ_ONLY",
+    "td_scaffold_show":      "READ_ONLY",
+    "td_gotcha_template":    "READ_ONLY",
+    "td_source_registry":    "READ_ONLY",
+    "td_show_readiness":     "READ_ONLY",
+    "td_activity_log":       "READ_ONLY",
+    "td_history_recall":     "READ_ONLY",
+    # A batch is only as safe as what it dispatches, so it keeps the
+    # conservative class rather than inheriting its children's.
+    "td_tool_batch":         "WRITE_ADDITIVE",
 
     # Session memory + discovery + recipe scaffolding — READ_ONLY (local only)
     "td_discover":           "READ_ONLY",
@@ -48,13 +86,21 @@ RISK_CLASS = {
 
     # Live bridge tools — read-only inspectors
     "get_parameters":        "READ_ONLY",
+    "get_parameter_info":    "READ_ONLY",
+    "get_non_default_params":"READ_ONLY",
     "get_errors":            "READ_ONLY",
     "list_nodes":            "READ_ONLY",
     "project_info":          "READ_ONLY",
     "capture_viewport":      "READ_ONLY",
+    # `observe` force-cooks a few frames to judge motion. It mutates nothing,
+    # but it is not free -- classified read-only, deliberately, with the cost
+    # bounded by _MOTION_MAX_FRAMES in the bridge.
+    "observe":               "READ_ONLY",
     "get_resource":          "READ_ONLY",
     "describe_td_tools":     "READ_ONLY",
     "read_chop":             "READ_ONLY",
+    "diff_chop":             "READ_ONLY",
+    "read_pop":              "READ_ONLY",
     "read_top":              "READ_ONLY",
     "read_dat":              "READ_ONLY",
     "scan_network":          "READ_ONLY",
@@ -87,9 +133,20 @@ RISK_CLASS = {
     "save_tox":              "WRITE_ADDITIVE",
     "timeline":              "WRITE_ADDITIVE",
 
+    # Live bridge tools — mutating but idempotent
+    # Clearing a stale script-error badge changes no content and re-running it
+    # is a no-op, so it is a checkpoint-class write rather than an additive one.
+    "clear_script_errors":   "WRITE_CHECKPOINT",
+
     # Live bridge tools — destructive
     "delete_node":           "DESTRUCTIVE",
     "execute_python":        "DESTRUCTIVE",  # arbitrary code
+    # Both of these hand TouchDesigner caller-supplied Python by another name:
+    # a parameter expression is evaluated, and a DAT's text IS the program for
+    # an Execute/Script DAT. set_dat_text also overwrites the whole DAT. They
+    # are gated by TD_MCP_ALLOW_EXEC for the same reason.
+    "bind_parameter_expression": "DESTRUCTIVE",
+    "set_dat_text":          "DESTRUCTIVE",
 }
 
 
@@ -103,6 +160,15 @@ ANNOTATIONS = {
 
 
 def risk_class(tool_name):
+    """Risk class for a tool.
+
+    The fallback is deliberately the *middle* of the range, not the bottom:
+    an unclassified tool must never read as read-only. It is still a fallback,
+    though -- ``tests/test_parity.py`` requires every advertised tool to carry
+    an explicit entry, because a new tool arriving with a permissive default is
+    exactly how an unreviewed capability ships (Embody v6.0.264, where two new
+    tools landed without a registry entry and the drift guard refused them).
+    """
     return RISK_CLASS.get(tool_name, "WRITE_ADDITIVE")
 
 

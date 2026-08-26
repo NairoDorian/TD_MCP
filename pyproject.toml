@@ -1,6 +1,6 @@
 [project]
 name = "td-mcp"
-version = "1.11.0"
+version = "1.12.0"
 description = "Local-first TouchDesigner MCP: offline doc/RAG server + live bridge client + TD-side bridge."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -11,15 +11,16 @@ dependencies = ["pyyaml", "mcp>=2.0,<3", "anyio", "uvicorn>=0.29"]
 mcp = ["mcp>=2.0,<3", "anyio", "uvicorn>=0.29"]
 rag = ["sentence-transformers", "networkx"]   # dense vectors + CrossEncoder reranker + knowledge graph
 scrape = ["requests", "beautifulsoup4"]
-test = ["pytest", "pytest-cov", "networkx"]  # enough to run the suite (rag minus sentence-transformers/torch)
+test = ["pytest", "pytest-cov", "networkx", "numpy"]  # enough to run the suite (rag minus sentence-transformers/torch); numpy = what TouchDesigner supplies to capture_viewport
 # faiss-cpu is an optional speed upgrade for the dense scorer (numpy fallback works)
 
 [dependency-groups]
-dev = ["pytest", "pytest-cov", "networkx"]
+dev = ["pytest", "pytest-cov", "networkx", "numpy"]
 
 [project.scripts]
 td-mcp-offline = "td_mcp.server_offline:main"
 td-mcp-live = "td_mcp.server_live:main"
+td-mcp-install = "td_mcp.install:main"
 
 [build-system]
 requires = ["setuptools>=61"]

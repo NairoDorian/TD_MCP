@@ -80,3 +80,53 @@ def test_tool_meta_schemas_have_real_types():
             assert isinstance(pspec, dict), (name, pname)
             assert pspec.get("type") in ("string", "integer", "number", "object", "array", "boolean"), \
                 (name, pname, pspec)
+
+
+def test_every_live_tool_has_an_explicit_risk_class():
+    """A new tool must arrive with a reviewed classification, never a default.
+
+    ``risk_class`` falls back to WRITE_ADDITIVE so an unclassified tool can
+    never read as read-only, but the fallback is a safety net, not a policy: a
+    capability that reaches the model without anyone deciding what it may do is
+    exactly the drift Embody's host-app guard refuses (v6.0.264).
+    """
+    from td_mcp.tools.risk import RISK_CLASS
+
+    missing = sorted(set(TOOL_REGISTRY) - set(RISK_CLASS))
+    assert not missing, f"tools with no explicit risk class: {missing}"
+
+
+def test_every_offline_tool_has_an_explicit_risk_class():
+    """Offline tools are pure functions over a description and must say so.
+
+    They were relying on the WRITE_ADDITIVE fallback, so a client running a
+    read-only policy refused plain documentation lookups.
+    """
+    from td_mcp.server_offline import _OFFLINE_DISPATCH
+    from td_mcp.tools.risk import RISK_CLASS
+
+    missing = sorted(set(_OFFLINE_DISPATCH) - set(RISK_CLASS))
+    assert not missing, f"offline tools with no explicit risk class: {missing}"
+
+
+def test_doc_tools_are_read_only():
+    """A documentation lookup must survive TD_BUILDER_LIVE_READONLY=1."""
+    from td_mcp.server_offline import _OFFLINE_DISPATCH
+    from td_mcp.tools.risk import risk_class
+
+    for name in _OFFLINE_DISPATCH:
+        if name.startswith("td_docs_"):
+            assert risk_class(name) == "READ_ONLY", name
+
+
+def test_code_bearing_tools_are_classified_destructive():
+    """Everything that hands TouchDesigner caller-supplied Python is DESTRUCTIVE.
+
+    A parameter expression is evaluated; a DAT's text *is* the program for an
+    Execute/Script DAT. Classifying either below `execute_python` would let a
+    max-risk policy admit code it meant to block.
+    """
+    from td_mcp.tools.risk import risk_class
+
+    for tool in ("execute_python", "bind_parameter_expression", "set_dat_text"):
+        assert risk_class(tool) == "DESTRUCTIVE", tool

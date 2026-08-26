@@ -10,10 +10,27 @@ best ideas of the public TD‑MCP ecosystem into one cohesive package:
 
 - **Offline doc / RAG server** — version‑aware retrieval over a merged MIT corpus **plus the complete official documentation** (no TouchDesigner required, no network, no API keys). Several lexical + semantic backends run **in parallel** and fuse via Reciprocal Rank Fusion, with an optional CrossEncoder reranker and optional external RAG fusion.
 - **Eval harness** — recall@k / MRR / nDCG over a labelled query set, so retrieval quality is provable and regressions are caught. **k=5 recall 1.000** with the wiki KB (**0.991** curated‑only), zero version‑gating violations.
-- **Live bridge + MCP server** — control a running TouchDesigner session (create / wire / inspect / verify) over **Streamable HTTP + SSE**, WebSocket, or stdio. Exposes **39 live tools**; every mutation is wrapped in `ui.undo` so one Ctrl+Z reverts a whole agent batch.
+- **Live bridge + MCP server** — control a running TouchDesigner session (create / wire / inspect / verify) over **Streamable HTTP + SSE**, WebSocket, or stdio. Exposes **47 live tools**; every mutation is wrapped in `ui.undo` so one Ctrl+Z reverts a whole agent batch.
+- **All four of TouchDesigner's error surfaces** — cook errors, warnings, **script tracebacks** and **GLSL compile errors** (which appear on none of the API's error accessors). Most tooling reads one of the four and calls a visibly broken network clean. See **[docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md)**.
 - **Natively embedded chat UI** and a **zero‑dependency autonomous agent** that run *inside* TouchDesigner Text DATs.
 
 > Everything in `td_mcp/` is pure Python (standard library + optional `mcp` / `networkx` / `sentence-transformers`) and is fully unit‑testable without a running TouchDesigner.
+
+---
+
+## 📚 Documentation
+
+Full docs live in **[`docs/`](docs/README.md)**.
+
+| | |
+|---|---|
+| **[What goes into TouchDesigner](docs/TOUCHDESIGNER_COMPONENT.md)** | The `/td_mcp` component, drag-and-drop `.tox`, and how the other 30 projects do it |
+| **[Install](docs/INSTALL.md)** | Both halves, the lifecycle, environment variables |
+| **[Tools](docs/TOOLS.md)** | All 105 tools with risk classes |
+| **[Diagnostics](docs/DIAGNOSTICS.md)** | The four error surfaces — read this one |
+| **[Agent guide](docs/AGENT_GUIDE.md)** | How to sequence the tools |
+| **[Troubleshooting](docs/TROUBLESHOOTING.md)** | Symptom-first |
+| **[Retrieval](docs/RAG.md)** · **[TDN format](docs/TDN_FORMAT.md)** · **[Testing](docs/TESTING.md)** · **[Security](docs/SECURITY.md)** · **[Ecosystem](docs/ECOSYSTEM.md)** | |
 
 ---
 
@@ -107,6 +124,30 @@ uv pip install -e ".[rag]"           # sentence-transformers + networkx (dense /
 uv pip install -e ".[scrape]"        # requests + beautifulsoup4 (doc crawler)
 ```
 
+### Install lifecycle (Install SOP v1)
+
+`td-mcp-install` is the agent-facing installer. Every verb accepts `--json`,
+mutating verbs require `--yes`, and `--dry-run` never writes:
+
+```bash
+td-mcp-install install --dry-run --json   # the full plan, nothing written
+td-mcp-install install --yes              # stage the bridge + client configs
+td-mcp-install verify --json              # is this actually usable?
+td-mcp-install status --json              # installed / drifted / outdated / absent
+```
+
+A successful first install exits **50** (`requires_restart`), not 0, and returns
+one machine-executable `next_steps` entry. That is deliberate: the bridge runs
+inside TouchDesigner as a Text DAT, and no external process can create an
+operator in a running project or restart it. `verify` reports
+`directly_usable: true` only once the staged artifacts still match their
+recorded SHA-256, the knowledge base is built, and a real read-only probe
+answers — so "installed" never means "the files copied".
+
+Exit codes are per stage — `10` preflight, `20` acquire, `30` install, `40`
+verify, `50` requires_restart — so a caller can tell *which* thing went wrong
+without parsing prose.
+
 ---
 
 ## Run as MCP servers
@@ -140,9 +181,30 @@ A ready‑made config can be generated for you (no hand‑editing) with
 
 ## Control a live TouchDesigner
 
-1. In TD, create a **Text DAT**, paste [`bridge/td_mcp_bridge.py`](bridge/td_mcp_bridge.py), and run:
-   `op('text1').module.start()` — it listens on `127.0.0.1:9980` and prints the auth token.
-2. From the shell (CLI mode):
+**1. Put the bridge into TouchDesigner.** Open the Textport (**Alt+T**) and run:
+
+```python
+TD_MCP_REPO = r'C:/path/to/td-mcp'
+exec(open(TD_MCP_REPO + '/bridge/bootstrap.py').read())
+```
+
+That builds a `/td_mcp` Base COMP — a Text DAT carrying the bridge, an Execute
+DAT that starts it on **Start** *and* **Create**, and a Parameter Execute DAT so
+the component is operable from its parameter panel. It prints the port and the
+auth token. Re-running is safe.
+
+Add `TD_MCP_SAVE_TOX = 1` before the `exec(...)` and it also writes
+`td_mcp.tox` — the drag-and-drop file for everyone else. A `.tox` is opaque
+compressed binary that only TouchDesigner can author, so this repository treats
+the **script as the source and the `.tox` as a build artifact**. Full rationale,
+plus how the other 30 projects package themselves, in
+**[docs/TOUCHDESIGNER_COMPONENT.md](docs/TOUCHDESIGNER_COMPONENT.md)**.
+
+> Prefer to do it by hand? Create a Text DAT, point its **File** parameter at
+> `bridge/td_mcp_bridge.py` with **Sync to File** on (or paste the contents),
+> then `op('text1').module.start()`.
+
+**2. From the shell (CLI mode):**
 
 ```bash
 $env:TD_MCP_AUTH_TOKEN="YOUR_AUTO_GENERATED_TOKEN"
@@ -154,8 +216,8 @@ uv run td-mcp-live exec "print([c.name for c in op('/project1').children])"
 
 ### Streamable HTTP mode
 
-`td-mcp-live` can also run as a Streamable‑HTTP MCP server (`POST /` JSON‑RPC + `GET /` SSE,
-multi‑session via `Mcp-Session-Id`, DNS‑rebind guard) on `127.0.0.1:8765`:
+`td-mcp-live` can also run as a **stateless** Streamable‑HTTP MCP server (MCP SDK v2,
+no `Mcp-Session-Id`, DNS‑rebind guard) on `127.0.0.1:8765`:
 
 ```bash
 uv run td-mcp-live --http
@@ -276,8 +338,7 @@ td-mcp/
 │   └── generate_summary.py   # generates SUMMARY.md (code-free file/architecture overview)
 ├── td_mcp/
 │   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (45 tools)
-│   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server for the bridge (39 tools)
-│   ├── streamable_http.py    # Streamable-HTTP transport mixin (SSE, sessions, DNS-rebind guard)
+│   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server for the bridge (47 tools)
 │   ├── heal.py                # self-healing orchestrator: validate → score → auto-repair → hints
 │   ├── validation.py          # 5-stage build validation + auto-repair (pure, TD-free)
 │   ├── scoring.py             # score_build (0..100 A–F) + repair_network
@@ -310,7 +371,7 @@ td-mcp/
 │   ├── td_mcp_bridge.py       # paste into a Text DAT in TD (JSON-RPC/WS/SSE/chat UI server)
 │   ├── td_mcp_agent.py        # paste into a Text DAT (autonomous builder agent)
 │   ├── chat_ui.html           # glassmorphic chat panel served at GET /
-│   └── bootstrap.py           # one-click bootstrap helper
+│   └── bootstrap.py           # builds the /td_mcp COMP inside TD; can emit td_mcp.tox
 ├── skills/
 │   └── td-building/           # Claude Code / agent skill (SKILL.md)
 └── tests/                     # pytest suite (RAG fusion, validation, scoring, heal, bridge, etc.)
@@ -332,14 +393,35 @@ td-mcp/
 `td_scaffold_recipe`, `td_analyze_build`, `td_diff_networks`, `td_optimize_layout`,
 `td_resolve_params`, `td_docs_combos`.
 
-**Live server (39 tools)** — `create_node`, `delete_node`, `set_parameters`, `get_parameters`,
-`get_errors`, `execute_python`, `list_nodes`, `project_info`, `capture_viewport`, `get_resource`,
-`describe_td_tools`, `batch`, `read_chop`, `read_top`, `read_dat`, `scan_network`,
-`build_and_verify`, `connect_nodes`, `rename_node`, `copy_node`, `auto_layout`, `get_node`,
-`set_node_color`, `set_node_comment`, `map_network`, `disconnect_nodes`, `get_connections`,
-`exec_node_method`, `snapshot_network`, `restore_network`, `get_performance`, `validate_network`,
-`set_flags`, `find_nodes`, `set_node_position`, `timeline`, `export_recipe`, `import_recipe`,
-`save_tox`.
+**Live server (47 tools)** — `create_node`, `delete_node`, `set_parameters`, `get_parameters`,
+`get_parameter_info`, `get_non_default_params`, `bind_parameter_expression`, `get_errors`,
+`clear_script_errors`, `execute_python`, `list_nodes`, `project_info`, `capture_viewport`,
+`observe`, `get_resource`, `describe_td_tools`, `batch`, `read_chop`, `diff_chop`, `read_pop`,
+`read_top`, `read_dat`, `set_dat_text`, `scan_network`, `build_and_verify`, `connect_nodes`,
+`rename_node`, `copy_node`, `auto_layout`, `get_node`, `set_node_color`, `set_node_comment`,
+`map_network`, `disconnect_nodes`, `get_connections`, `exec_node_method`, `snapshot_network`,
+`restore_network`, `get_performance`, `validate_network`, `set_flags`, `find_nodes`,
+`set_node_position`, `timeline`, `export_recipe`, `import_recipe`, `save_tox`.
+
+**Diagnostics (v1.12.0).** `get_errors` reads all four of TouchDesigner's
+diagnostic surfaces — cook errors, warnings, **script tracebacks**
+(`scriptErrors`) and **GLSL compile errors** from the auto-docked Info DAT —
+tagged by `kind`, with `errorCount`/`hasErrors` meaning *what the network shows
+red*. Before v1.12.0 the bridge read `node.errors` as an attribute rather than
+calling the method TouchDesigner documents, so `get_errors` always failed and
+every scanner reported a clean network; see
+[`UPSTREAM_SYNC_2026-08-26.md`](UPSTREAM_SYNC_2026-08-26.md) §3.1.
+
+**Motion.** `observe` captures a still *and* judges whether the render is
+moving. A feedback or audio-reactive network that renders one correct frame and
+then freezes is structurally valid, visually plausible and completely broken,
+and no single-frame verdict can see it. `is_static` is `None` when there were
+too few frames to judge — unknown, not false.
+
+**Reads reduce by default.** `read_chop` returns per-channel
+count/min/max/mean/std, `read_dat` per-column stats plus edge rows, `read_pop`
+attribute metadata free with value readback gated on point count. Pass
+`format="values"` / `format="rows"` for the raw forms.
 
 ---
 
@@ -363,13 +445,24 @@ td-mcp/
 ## Tests
 
 ```bash
-uv run pytest                       # full suite
+uv run pytest                       # full suite — 803 passing
 uv run python -m tests.test_rag     # retrieval fusion + version/per-source
 uv run python -m tests.test_mcp_server
 ```
 
 `tests/fake_remote_mcp.py` is a tiny stdio MCP server the fusion test uses to exercise the
 multi‑process path without a real external install.
+
+**`tests/td_double.py` is a deterministic TouchDesigner API double**, plus a
+loader that execs the *entire* shipped bridge against it — so the ~1,200 lines
+of `_do_*` handlers are covered, not just the pure-helper block. It models the
+API as TouchDesigner documents it, which is the point: the error accessors are
+methods returning strings, `COMP.create` refuses an unknown opType and takes
+the type first, `findChildren(depth=N)` matches an *exact* depth, and
+`POP.points()` accepts slicing arguments and ignores them. A handler that
+mistakes any of those fails here instead of in a live session. When a handler
+needs a new corner of the TD API, model that corner rather than loosening the
+test.
 
 ---
 

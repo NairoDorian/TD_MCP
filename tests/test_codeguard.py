@@ -369,3 +369,80 @@ def test_diagnostics_stringify_non_string_entries():
 
     split = split_diagnostics([Err()], [])
     assert split["diagnostics"][0]["message"] == "cook error"
+
+
+class TestForbiddenBuiltinsAreNamesNotSubstrings:
+    """`execute_python` refused most legitimate TouchDesigner Python.
+
+    The check was `if name in code` over the raw source, and `par.eval()` --
+    the commonest call in TD Python -- contains "eval". Reading any parameter
+    was refused. It cost two silent probe failures in one live session before
+    the error text was read. Substring matching was never a defence either:
+    `getattr(__builtins__, 'ev' + 'al')` walks straight past it.
+    """
+
+    def _f(self):
+        from tests.bridge_pure import load
+        return load()["forbidden_builtins"]
+
+    def test_par_eval_is_allowed(self):
+        assert self._f()('x = op("/a").par.file.eval()') == []
+
+    def test_every_attribute_form_is_allowed(self):
+        f = self._f()
+        for code in ("me.par.Tx.eval()", "d.par.file.eval()",
+                     "result = n.par.w.eval() + n.par.h.eval()"):
+            assert f(code) == [], code
+
+    def test_a_bare_builtin_call_is_caught(self):
+        assert self._f()('eval("1+1")') == ["eval"]
+
+    def test_an_alias_is_caught(self):
+        """`f = eval` then `f(...)` -- the name is what matters, not the call."""
+        assert self._f()("f = eval\nf('1')") == ["eval"]
+
+    def test_a_mention_in_a_string_is_not_code(self):
+        assert self._f()('result = "eval and open and exec"') == []
+
+    def test_a_variable_that_merely_contains_the_word_is_allowed(self):
+        f = self._f()
+        assert f("retrieval = 1") == []
+        assert f("opened = True") == []
+        assert f("compiled_shader = 2") == []
+
+    def test_each_forbidden_builtin_is_still_caught(self):
+        f = self._f()
+        from tests.bridge_pure import load
+        for name in load()["FORBIDDEN_BUILTINS"]:
+            assert f(f"x = {name}") == [name], name
+
+    def test_several_are_reported_together(self):
+        assert self._f()("a = open\nb = compile") == ["compile", "open"]
+
+    def test_unparseable_code_raises_rather_than_running(self):
+        import pytest as _pytest
+        with _pytest.raises(SyntaxError):
+            self._f()("def (:")
+
+
+class TestExecutePythonGuard:
+    def test_a_parameter_read_is_no_longer_refused(self):
+        from tests.td_double import build_bridge
+        br, td = build_bridge()
+        node = td.make("n1", "noiseTOP", params={"period": 4.0})
+        out = br["_do_execute_python"]("result = op('/project1/n1').par.period.eval()")
+        assert out["ok"] is True and out["result"] == 4.0
+
+    def test_a_real_builtin_is_refused_with_a_useful_message(self):
+        from tests.td_double import build_bridge
+        br, _ = build_bridge()
+        out = br["_do_execute_python"]("eval('1')")
+        assert out["ok"] is False
+        assert out["forbidden"] == ["eval"]
+        assert "par.eval()" in out["error"], "must say what is still allowed"
+
+    def test_a_syntax_error_is_reported_not_executed(self):
+        from tests.td_double import build_bridge
+        br, _ = build_bridge()
+        out = br["_do_execute_python"]("def (:")
+        assert out["ok"] is False and "could not parse" in out["error"]

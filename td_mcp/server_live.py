@@ -212,9 +212,16 @@ class TDClient:
         return self._call("bind_parameter_expression",
                           {"path": path, "param": param, "expression": expression})
 
-    def get_errors(self, path, include_warnings=True):
+    def get_errors(self, path, include_warnings=True, include_shader=True,
+                   recurse=False):
         return self._call("get_errors", {"path": path,
-                                         "include_warnings": include_warnings})
+                                         "include_warnings": include_warnings,
+                                         "include_shader": include_shader,
+                                         "recurse": recurse})
+
+    def clear_script_errors(self, path, recurse=False):
+        return self._call("clear_script_errors", {"path": path,
+                                                  "recurse": recurse})
 
     def execute_python(self, code):
         return self._call("execute_python", {"code": code})
@@ -254,14 +261,29 @@ class TDClient:
     def batch(self, ops):
         return self._call("batch", {"ops": ops})
 
-    def read_chop(self, path, channel=None, samples=10):
-        return self._call("read_chop", {"path": path, "channel": channel, "samples": samples})
+    def observe(self, path, frames=3, detail="normal"):
+        return self._call("observe", {"path": path, "frames": frames,
+                                      "detailLevel": detail})
+
+    def read_chop(self, path, channel=None, samples=10, format="stats"):
+        return self._call("read_chop", {"path": path, "channel": channel,
+                                        "samples": samples, "format": format})
+
+    def diff_chop(self, path, other_path, channel=None):
+        return self._call("diff_chop", {"path": path, "other_path": other_path,
+                                        "channel": channel})
+
+    def read_pop(self, path, attribute=None, format="stats", max_points=None):
+        return self._call("read_pop", {"path": path, "attribute": attribute,
+                                       "format": format,
+                                       "max_points": max_points})
 
     def read_top(self, path, detail="brief"):
         return self._call("read_top", {"path": path, "detailLevel": detail})
 
-    def read_dat(self, path, rows=10):
-        return self._call("read_dat", {"path": path, "rows": rows})
+    def read_dat(self, path, rows=10, format="stats"):
+        return self._call("read_dat", {"path": path, "rows": rows,
+                                       "format": format})
 
     def set_dat_text(self, path, text, expected_sha256=None):
         return self._call("set_dat_text", {"path": path, "text": text,
@@ -270,23 +292,30 @@ class TDClient:
     def scan_network(self, path, depth=3):
         return self._call("scan_network", {"path": path, "depth": depth})
 
-    def build_and_verify(self, path, op_type, params=None):
+    def build_and_verify(self, path, op_type, params=None, name=None):
         """Create → set parameters → errors → viewport verdict → offline heal.
 
         The last hop is the offline↔live integration point (§3.1): after
         capturing the viewport, the client asks the offline orchestrator to
-        validate/score the *created network* with the viewport verdict folded
-        in — so a flat render triggers a low score and self-heal candidates
-        instead of being silently accepted.
+        validate/score the *created network* with both live signals folded in
+        — so a flat render or a script traceback drags the score down and
+        produces self-heal candidates instead of being silently accepted.
+
+        Both signals used to be dropped on the floor. ``errs`` was captured and
+        returned to the caller but never passed to the scorer, and the whole
+        ``capture_viewport`` envelope was passed where its inner ``verdict``
+        was expected, so ``is_black``/``is_flat`` read as absent and no
+        viewport penalty could ever fire.
         """
-        created = self.create_node(path, op_type)
+        created = self.create_node(path, op_type, name)
         if not created.get("ok"):
             return created
         node_path = created.get("path")
         if params:
             self.set_parameters(node_path, params)
         errs = self.get_errors(node_path)
-        verdict = self.capture_viewport(node_path)
+        preview = self.capture_viewport(node_path)
+        verdict = preview.get("verdict") if isinstance(preview, dict) else None
         offline = None
         try:
             from td_mcp.server_offline import td_validate_live
@@ -298,10 +327,11 @@ class TDClient:
                     parameters=params or {})])
             offline = td_validate_live(
                 tdn_mod.export_network(snapshot),
-                viewport_verdict=verdict)
+                viewport_verdict=verdict,
+                live_diagnostics=errs)
         except Exception:  # noqa: BLE001
             offline = None
-        out = {"created": created, "errors": errs, "preview": verdict}
+        out = {"created": created, "errors": errs, "preview": preview}
         if offline:
             out["offline_validation"] = offline
         return out
@@ -372,8 +402,9 @@ class TDClient:
     def set_node_position(self, path, x, y):
         return self._call("set_node_position", {"path": path, "x": x, "y": y})
 
-    def timeline(self, action, value=None):
-        return self._call("timeline", {"action": action, "value": value})
+    def timeline(self, action, value=None, force=False):
+        return self._call("timeline", {"action": action, "value": value,
+                                       "force": force})
 
     def export_recipe(self, path, depth=3):
         return self._call("export_recipe", {"path": path, "depth": depth})
@@ -412,7 +443,10 @@ TOOL_REGISTRY = {
     "get_parameter_info": _wrap_tool(lambda c, a: c.get_parameter_info(a.get("path"), a.get("names"))),
     "bind_parameter_expression": _wrap_tool(lambda c, a: c.bind_parameter_expression(a.get("path"), a.get("param"), a.get("expression"))),
     "get_errors": _wrap_tool(lambda c, a: c.get_errors(
-        a.get("path"), a.get("include_warnings", True))),
+        a.get("path"), a.get("include_warnings", True),
+        a.get("include_shader", True), a.get("recurse", False))),
+    "clear_script_errors": _wrap_tool(lambda c, a: c.clear_script_errors(
+        a.get("path"), a.get("recurse", False))),
     "execute_python": _wrap_tool(lambda c, a: c.execute_python(a.get("code"))),
     "list_nodes": _wrap_tool(lambda c, a: c.list_nodes(a.get("path"))),
     "project_info": _wrap_tool(lambda c, a: c.project_info()),
@@ -420,12 +454,26 @@ TOOL_REGISTRY = {
     "get_resource": _wrap_tool(lambda c, a: c.get_resource(a.get("uri"))),
     "describe_td_tools": _wrap_tool(lambda c, a: c.describe_td_tools()),
     "batch": _wrap_tool(lambda c, a: c.batch(a.get("ops", []))),
-    "read_chop": _wrap_tool(lambda c, a: c.read_chop(a.get("path"), a.get("channel"), a.get("samples", 10))),
+    "observe": _wrap_tool(lambda c, a: c.observe(a.get("path"), a.get("frames", 3),
+                                                 a.get("detail", "normal"))),
+    "read_chop": _wrap_tool(lambda c, a: c.read_chop(a.get("path"), a.get("channel"),
+                                                     a.get("samples", 10),
+                                                     a.get("format", "stats"))),
     "read_top": _wrap_tool(lambda c, a: c.read_top(a.get("path"), a.get("detail", "brief"))),
-    "read_dat": _wrap_tool(lambda c, a: c.read_dat(a.get("path"), a.get("rows", 10))),
+    "read_dat": _wrap_tool(lambda c, a: c.read_dat(a.get("path"), a.get("rows", 10),
+                                                   a.get("format", "stats"))),
+    "diff_chop": _wrap_tool(lambda c, a: c.diff_chop(a.get("path"), a.get("other_path"),
+                                                     a.get("channel"))),
+    "read_pop": _wrap_tool(lambda c, a: c.read_pop(a.get("path"), a.get("attribute"),
+                                                   a.get("format", "stats"),
+                                                   a.get("max_points"))),
     "set_dat_text": _wrap_tool(lambda c, a: c.set_dat_text(a.get("path"), a.get("text", ""), a.get("expected_sha256"))),
     "scan_network": _wrap_tool(lambda c, a: c.scan_network(a.get("path"), a.get("depth", 3))),
-    "build_and_verify": _wrap_tool(lambda c, a: c.build_and_verify(a.get("path"), a.get("op_type"), a.get("params"))),
+    # `type` for consistency with create_node (and with the bridge's own
+    # handler); `op_type` still accepted for clients written against the old
+    # schema. A test pins that the schema and this lambda name the same keys.
+    "build_and_verify": _wrap_tool(lambda c, a: c.build_and_verify(
+        a.get("path"), a.get("type") or a.get("op_type"), a.get("params"), a.get("name"))),
     "connect_nodes": _wrap_tool(lambda c, a: c.connect_nodes(a.get("from_path"), a.get("to_path"),
                                                               a.get("from_output", 0), a.get("to_input", 0))),
     "rename_node": _wrap_tool(lambda c, a: c.rename_node(a.get("path"), a.get("new_name"))),
@@ -447,7 +495,8 @@ TOOL_REGISTRY = {
     "set_flags": _wrap_tool(lambda c, a: c.set_flags(a.get("path"), a.get("flags", {}))),
     "find_nodes": _wrap_tool(lambda c, a: c.find_nodes(a.get("path"), a.get("query"), a.get("type"), a.get("depth", 4))),
     "set_node_position": _wrap_tool(lambda c, a: c.set_node_position(a.get("path"), a.get("x"), a.get("y"))),
-    "timeline": _wrap_tool(lambda c, a: c.timeline(a.get("action"), a.get("value"))),
+    "timeline": _wrap_tool(lambda c, a: c.timeline(a.get("action"), a.get("value"),
+                                                   a.get("force", False))),
     "export_recipe": _wrap_tool(lambda c, a: c.export_recipe(a.get("path"), a.get("depth", 3))),
     "import_recipe": _wrap_tool(lambda c, a: c.import_recipe(a.get("recipe"), a.get("target_parent", "*here"))),
     "save_tox": _wrap_tool(lambda c, a: c.save_tox(a.get("path"), a.get("file_path"))),
@@ -467,10 +516,18 @@ _TOOL_META = [
     ("get_parameters", "Get parameters.", {"path": {"type": "string"}}),
     ("get_parameter_info", "Full per-parameter schema: label/value/mode/default/page/style/bounds/menu.", {"path": {"type": "string"}, "names": {"type": "string"}}),
     ("bind_parameter_expression", "Bind a parameter expression with eval-error reporting.", {"path": {"type": "string"}, "param": {"type": "string"}, "expression": {"type": "string"}}),
-    ("get_errors", "Get errors and warnings under a node, split by severity "
-     "(error_count / warning_count); a warning is not a failure.",
+    ("get_errors", "All four TouchDesigner diagnostic surfaces for a node: cook "
+     "errors, warnings, script tracebacks (scriptErrors) and GLSL compile "
+     "errors (from the docked Info DAT). Tagged by kind and severity; "
+     "errorCount/hasErrors mean what the network shows red.",
      {"path": {"type": "string"},
-      "include_warnings": {"type": "boolean"}}),
+      "include_warnings": {"type": "boolean"},
+      "include_shader": {"type": "boolean"},
+      "recurse": {"type": "boolean"}}),
+    ("clear_script_errors", "Clear a node's script errors. They persist until "
+     "cleared, so a transient failure keeps badging an operator whose code is "
+     "already correct -- call this after fixing one, before re-verifying.",
+     {"path": {"type": "string"}, "recurse": {"type": "boolean"}}),
     ("execute_python", "Execute Python in TD.", {"code": {"type": "string"}}),
     ("list_nodes", "List child nodes.", {"path": {"type": "string"}}),
     ("project_info", "Project info.", {}),
@@ -478,12 +535,39 @@ _TOOL_META = [
     ("get_resource", "Read td:// resource.", {"uri": {"type": "string"}}),
     ("describe_td_tools", "List bridge capabilities.", {}),
     ("batch", "Batch multiple ops.", {"ops": {"type": "array"}}),
-    ("read_chop", "Read CHOP channels.", {"path": {"type": "string"}, "channel": {"type": "string"}, "samples": {"type": "integer"}}),
+    ("observe", "Capture a still AND judge whether the render is moving. "
+     "A network that renders a correct single frame and never changes is "
+     "structurally valid, visually plausible and broken; no single-frame "
+     "verdict can see it. Returns is_static (None when undecidable).",
+     {"path": {"type": "string"}, "frames": {"type": "integer"},
+      "detail": {"type": "string"}}),
+    ("read_chop", "Read a CHOP. format='stats' (default) reduces each channel to "
+     "count/min/max/mean/std -- what the chain did to the data, in four numbers. "
+     "format='values' returns raw samples.",
+     {"path": {"type": "string"}, "channel": {"type": "string"},
+      "samples": {"type": "integer"}, "format": {"type": "string"}}),
+    ("diff_chop", "Compare two CHOPs channel by channel and report min/max/mean/std "
+     "deltas -- the read to make after inserting a filter.",
+     {"path": {"type": "string"}, "other_path": {"type": "string"},
+      "channel": {"type": "string"}}),
+    ("read_pop", "Read a POP. Attribute metadata is always free; values are read "
+     "only under a point-count ceiling, because POP.points() accepts start/count "
+     "and ignores them -- there is no cheap partial read.",
+     {"path": {"type": "string"}, "attribute": {"type": "string"},
+      "format": {"type": "string"}, "max_points": {"type": "integer"}}),
     ("read_top", "Read TOP metadata.", {"path": {"type": "string"}, "detail": {"type": "string"}}),
-    ("read_dat", "Read DAT rows.", {"path": {"type": "string"}, "rows": {"type": "integer"}}),
+    ("read_dat", "Read a DAT table. format='stats' (default) returns per-column "
+     "stats plus the first and last rows, ~17x smaller than a dump; "
+     "format='rows' returns the rows verbatim.",
+     {"path": {"type": "string"}, "rows": {"type": "integer"},
+      "format": {"type": "string"}}),
     ("set_dat_text", "Set a DAT's text with optional SHA-256 optimistic concurrency guard.", {"path": {"type": "string"}, "text": {"type": "string"}, "expected_sha256": {"type": "string"}}),
     ("scan_network", "Scan network topology.", {"path": {"type": "string"}, "depth": {"type": "integer"}}),
-    ("build_and_verify", "Create->verify->preview loop.", {"path": {"type": "string"}, "op_type": {"type": "string"}, "params": {"type": "object"}}),
+    ("build_and_verify", "Create -> set -> all four error surfaces -> viewport verdict "
+     "-> offline validate/score/heal, in one call. `type` as in create_node "
+     "(`op_type` still accepted).",
+     {"path": {"type": "string"}, "type": {"type": "string"}, "op_type": {"type": "string"},
+      "name": {"type": "string"}, "params": {"type": "object"}}),
     ("connect_nodes", "Wire nodes.", {"from_path": {"type": "string"}, "to_path": {"type": "string"}, "from_output": {"type": "integer"}, "to_input": {"type": "integer"}}),
     ("rename_node", "Rename node.", {"path": {"type": "string"}, "new_name": {"type": "string"}}),
     ("copy_node", "Copy node.", {"path": {"type": "string"}, "new_parent": {"type": "string"}, "new_name": {"type": "string"}}),
@@ -501,9 +585,17 @@ _TOOL_META = [
     ("get_performance", "Profile cook times.", {"path": {"type": "string"}}),
     ("validate_network", "Scene contract check.", {"path": {"type": "string"}, "depth": {"type": "integer"}}),
     ("set_flags", "Toggle node flags.", {"path": {"type": "string"}, "flags": {"type": "object"}}),
-    ("find_nodes", "Search by name/type.", {"path": {"type": "string"}, "query": {"type": "string"}, "type": {"type": "string"}, "depth": {"type": "integer"}}),
+    ("find_nodes", "Search descendants. `query` is a substring, or a glob when it contains * ? [ (e.g. 'noise*'); "
+     "`type` matches the short type ('noise') or the OPType ('noiseTOP').",
+     {"path": {"type": "string"}, "query": {"type": "string"}, "type": {"type": "string"}, "depth": {"type": "integer"}}),
     ("set_node_position", "Move node to (x,y).", {"path": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"}}),
-    ("timeline", "Control global timeline.", {"action": {"type": "string"}, "value": {"type": "number"}}),
+    ("timeline", "Global timeline: status | play | pause | frame | seek | rate. "
+     "PAUSING IS REFUSED by default -- the bridge's main-thread pump runs on "
+     "Frame Start, so a pause stops this server answering at all, including "
+     "the call that would resume it. Pass force=true only if a human is at the "
+     "TouchDesigner keyboard.",
+     {"action": {"type": "string"}, "value": {"type": "number"},
+      "force": {"type": "boolean"}}),
     ("export_recipe", "Export recipe JSON.", {"path": {"type": "string"}, "depth": {"type": "integer"}}),
     ("import_recipe", "Import recipe JSON.", {"recipe": {"type": "object"}, "target_parent": {"type": "string"}}),
     ("save_tox", "Save COMP as .tox.", {"path": {"type": "string"}, "file_path": {"type": "string"}}),
@@ -541,6 +633,25 @@ async def _live_list_tools(ctx, params):
     )
 
 
+def _find_image(result):
+    """``(holder_key, image_dict)`` for a result carrying a base64 image.
+
+    ``capture_viewport`` puts it at the top level; ``build_and_verify`` nests
+    it under ``preview``. ``holder_key`` is None for the top level.
+    """
+    if not isinstance(result, dict):
+        return None
+    image = result.get("image")
+    if isinstance(image, dict) and image.get("data"):
+        return None, image
+    preview = result.get("preview")
+    if isinstance(preview, dict):
+        image = preview.get("image")
+        if isinstance(image, dict) and image.get("data"):
+            return "preview", image
+    return None
+
+
 async def _live_call_tool(ctx, params):
     """Dispatch a tool call to the bridge. Errors are returned as
     CallToolResult(isError=True) — never raised into the transport."""
@@ -553,10 +664,23 @@ async def _live_call_tool(ctx, params):
                 is_error=True,
             )
         result = fn(a)
-        return types.CallToolResult(
-            content=[types.TextContent(type="text", text=json.dumps(_json_safe(result), indent=2, default=_json_safe))],
-            result_type="complete",
-        )
+        content, text_result = [], result
+        image = _find_image(result)
+        if image is not None:
+            # Emit the PNG as an MCP image block so a client can *render* it,
+            # and keep the base64 out of the text block: kilobytes of it are
+            # useless to a model as prose, and the first MCP client to look
+            # for the image found only text.
+            holder, payload = image
+            text_result = json.loads(json.dumps(_json_safe(result), default=_json_safe))
+            slot = text_result if holder is None else text_result.get(holder, {})
+            slot["image"] = {k: v for k, v in payload.items() if k != "data"}
+            slot["image"]["bytes"] = len(payload["data"]) * 3 // 4
+            content.append(types.ImageContent(type="image", data=payload["data"],
+                                              mimeType=payload.get("mime_type", "image/png")))
+        content.insert(0, types.TextContent(
+            type="text", text=json.dumps(_json_safe(text_result), indent=2, default=_json_safe)))
+        return types.CallToolResult(content=content, result_type="complete")
     except Exception as e:
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=f"error: {e}")],
@@ -755,6 +879,12 @@ def _main_legacy():
 
 
 def main():
+    # UTF-8 is pinned here, in main(), and never at import: rebinding the
+    # process's standard streams is a global side effect, and this package is
+    # exec'd inside TouchDesigner by the in-TD tests, where an import-time pin
+    # would mutate TD's own Textport streams.
+    from td_mcp.util.stdio import pin_stdio_utf8
+    pin_stdio_utf8()
     if "--http" in sys.argv:
         sys.argv.remove("--http")
         ap = argparse.ArgumentParser(description="td-mcp-live Streamable HTTP server")

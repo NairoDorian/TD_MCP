@@ -46,7 +46,6 @@ td-mcp/
 ├── td_mcp/
 │   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (45 tools)
 │   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server for the bridge (39 tools)
-│   ├── streamable_http.py    # Streamable-HTTP transport mixin (SSE, sessions, DNS-rebind guard)
 │   ├── heal.py               # self-healing orchestrator: validate → score → auto-repair → hints
 │   ├── validation.py          # 5-stage build validation + auto-repair (pure, TD-free)
 │   ├── scoring.py             # score_build (0..100 A–F) + repair_network
@@ -75,7 +74,7 @@ td-mcp/
 │   ├── td_mcp_bridge.py      # TD-side bridge server (JSON-RPC/WS/SSE/chat UI)
 │   ├── td_mcp_agent.py       # TD-side autonomous builder agent
 │   ├── chat_ui.html          # glassmorphic chat panel served at GET /
-│   └── bootstrap.py          # one-click bootstrap helper
+│   └── bootstrap.py          # builds the /td_mcp COMP inside TD; can emit td_mcp.tox
 ├── skills/
 │   └── td-building/          # agent skill (SKILL.md)
 └── tests/                    # pytest suite (RAG fusion, validation, scoring, heal, bridge, etc.)
@@ -120,15 +119,38 @@ without ever touching a live TD.
 ```
 agent/LLM
   → MCP client
-    → server_live (Streamable HTTP / SSE / stdio)
-      → _auth_ok (Bearer hmac)  ← requires `import hmac` (added in review)
-      → _handle_jsonrpc_post / _dispatch
-        → bridge _DISPATCH table  (create_node, set_parameters, …)
-          → runs INSIDE TD, wrapped in ui.undo (one Ctrl+Z reverts a batch)
+    → server_live (stateless Streamable HTTP / SSE / stdio, MCP SDK v2)
+      → Bearer auth (hmac.compare_digest) + Host/Origin pinning
+      → TOOL_REGISTRY → TDClient._call → HTTP POST /mcp
+        → bridge HTTP thread: _invoke(tool) → job queue → wait
+          → Execute DAT onFrameStart → pump() on TD's MAIN thread
+            → _run_tool: undo block + _DISPATCH handler (create_node, …)
+              → result back to the HTTP thread → response
 ```
 
 `execute_python` is gated by `TD_MCP_ALLOW_EXEC` (default on) **and** Bearer
-auth — it is the single highest-risk surface and must stay gated.
+auth. The gate covers every *other* code-bearing route too — parameter
+expressions, DAT text, a DAT's `file` parameter, Script/Execute/GLSL operator
+creation, `exec_node_method`, `import_recipe` blueprints — because disabling
+`execute_python` alone was never a claim the bridge could honour. See
+[docs/SECURITY.md](docs/SECURITY.md).
+
+### 3d. The component inside TouchDesigner
+
+```
+/project1/td_mcp                Base COMP, custom page "TD MCP"
+├── bridge      Text DAT        td_mcp_bridge.py — linked (Sync to File) or embedded
+├── startup     Execute DAT     Start + Create + Exit + Frame Start → starts/stops, pumps the queue
+└── control     Parameter Exec  Active / Port / Token / Allowexec → restart
+```
+
+Built by `bridge/bootstrap.py`, run once inside TouchDesigner; it can also save
+the COMP as `td_mcp.tox` for drag-and-drop. The `.tox` is a **build artifact** —
+only TouchDesigner can author one, so the script is the source of truth. See
+[docs/TOUCHDESIGNER_COMPONENT.md](docs/TOUCHDESIGNER_COMPONENT.md).
+
+`Create` matters as much as `Start`: a dragged-in `.tox` never fires `Start`, so
+without it a drop-in install looks inert until the next restart.
 
 ---
 
@@ -189,15 +211,31 @@ TD_MCP_RERANK=1  uv run td-mcp-offline "blur top"
 
 ## 6. Known limitations / next frontiers
 
-- The live `build_and_verify` (in `server_live`) does create → set_parameters →
-  get_errors → capture_viewport but does **not** yet call `validation`/`scoring`/
-  `heal` (those run on the offline side). Wiring the live loop to the offline
-  orchestrator is the main remaining integration step.
-- `bridge/td_mcp_agent.py` previously carried dead scaffolding
-  (`TaskPlanner`, `InteractiveClarifier`); this was removed — `chat` uses the
-  lighter `_plan_task` / `_ask_user` helpers instead.
+*(Closed in v1.12.0: the live `build_and_verify` now feeds both live signals —
+all four error surfaces and the viewport verdict — into the offline
+`validate → score → heal` pipeline. Both edges of that loop were previously
+cut; see [`UPSTREAM_SYNC_2026-08-26.md`](UPSTREAM_SYNC_2026-08-26.md).)*
+
+- **Smoke-tested against a live TouchDesigner 2025.33070 on 2026-08-26**:
+  37 of 37 bridge calls, and a real MCP client through `td-mcp-live` end to
+  end (see `CHANGELOG.md`). It took four passes. Each pass found bugs of the
+  same shape — API details the test double had modelled *from the bridge*
+  rather than from Derivative's docs (`errors()` is a method, `root` is an OP,
+  `ui.undo` is not a context manager, `numpyArray()` is 0..1, TD objects are
+  main-thread only). The double now models each of those as documented, and
+  `docs/TESTING.md` records the rule: model the awkward parts, never loosen the
+  test. What a smoke pass still cannot see: a *different* TouchDesigner build,
+  operators the smoke did not touch, and long-session behaviour.
+- The bridge's own HTTP transport still carries the `Mcp-Session-Id` session
+  layer. It negotiates protocol versions correctly now, but the stateless
+  rewrite the SDK servers already took is deliberately deferred
+  (`MCP_2026_MIGRATION.md` §4). `td_mcp/streamable_http.py` is gone: the
+  bridge could never import it inside TouchDesigner and overrode everything
+  it provided.
+- `td_mcp/tdn/` does not serialise parameter **sequences**. The traps to avoid
+  when it does are written up in [docs/TDN_FORMAT.md](docs/TDN_FORMAT.md).
 - `td_mcp/rag/strategies.py` `RemoteMCPStrategy` launches a subprocess per
   query (cached per identical query); a persistent session would remove the
   launch cost entirely.
-- Vision auto-heal loop, WebRTC transport, and live multi-instance client
-  targeting remain unimplemented (surveyed but not built).
+- WebRTC transport, live multi-instance client targeting, and a thin verb façade
+  over the 47 live tools remain surveyed but unbuilt.

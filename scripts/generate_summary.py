@@ -31,6 +31,7 @@ Optional: if the ``repomix`` CLI is installed (``npm i -g repomix`` or
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -161,15 +162,21 @@ dense / HyDE / rerank paths are lazy (enabled only with `[rag]` + env flags).
 # Helpers
 # --------------------------------------------------------------------------- #
 def module_docstring(path: Path) -> str:
-    """Return the first module-level docstring of a .py file (cleaned)."""
+    """Return the module-level docstring of a .py file (cleaned).
+
+    Parsed with ``ast``, not matched with a regex. The pattern this replaced
+    ran under ``re.DOTALL``, where ``.`` also matches a newline -- so the
+    comment-skipping prefix could swallow the entire file and backtrack onto
+    some *function's* docstring instead. Every module beginning with a shebang
+    got a wrong description in SUMMARY.md, silently and plausibly.
+    """
     text = path.read_text(encoding="utf-8", errors="replace")
-    m = re.match(r"\s*^\s*\"\"\"(.*?)\"\"\"", text, re.DOTALL)
-    if not m:
-        # docstring may start after a shebang / encoding line
-        m = re.match(r"^(?:#!.*\n)?(?:#.*\n)*\s*\"\"\"(.*?)\"\"\"", text, re.DOTALL)
-    if not m:
+    try:
+        body = (ast.get_docstring(ast.parse(text)) or "").strip()
+    except SyntaxError:
         return ""
-    body = m.group(1).strip()
+    if not body:
+        return ""
     # Collapse to the first meaningful paragraph.
     first = body.split("\n\n")[0].strip()
     first = re.sub(r"\s+", " ", first)

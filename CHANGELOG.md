@@ -4,6 +4,669 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.12.0] — 2026-08-26 — Wave 12: the bridge can see
+
+The live bridge could not read TouchDesigner's errors. Not "read them
+incompletely" — at all, at every call site, for the whole life of the project.
+Everything built on top of that signal was being validated against an empty
+list, so this release is mostly repair, and the repair is mostly about making
+the failure impossible to reintroduce.
+
+Found by pulling the reference library to upstream and reading what Embody
+fixed in v6.0.252 → v6.0.280. Full survey in
+[`UPSTREAM_SYNC_2026-08-26.md`](UPSTREAM_SYNC_2026-08-26.md).
+
+### Fixed — the bridge was blind
+
+- **`get_errors` never worked in a real TouchDesigner.** `OP_Class` documents
+  `errors(recurse=False) -> str`: a **method returning a string**. The bridge
+  read `node.errors` as an iterable *attribute* at six call sites. A bound
+  method is truthy, so the `or []` fallback never fired and `list(...)` raised
+  `TypeError: 'method' object is not iterable` — and the four sites wrapped in
+  `except: pass` swallowed it, so `scan_network`, `get_node` and
+  `validate_network` reported **zero errors for every network, always**.
+  `bind_parameter_expression`'s `op_errors` was structurally unable to be
+  non-empty, which made its entire "eval-error reporting" contract dead on
+  arrival. `build_and_verify` → `td_validate_live` → `score_build` →
+  `td_self_heal` all inherited it: the self-healing pipeline was healing
+  against nothing.
+- **TouchDesigner reports on three surfaces, and the bridge read two of them.**
+  `scriptErrors()` — a DAT whose `onCook` raises, a Script SOP/CHOP/TOP, a
+  Replicator callback — is the single most common failure in a TD project and
+  was invisible to the whole toolchain. GLSL compile errors appear on *none* of
+  the three: TD writes them to the auto-docked Info DAT. Both are now read.
+  Info-DAT discovery is by `dat.type == 'info'`, never by name, because TD
+  keeps the old dock name after a host rename. A traceback counts as one error,
+  not one per line. `clear_script_errors` is exposed as a recovery action —
+  script errors persist until cleared, so a transient failure keeps badging an
+  operator whose code is already correct.
+- **`COMP.create(opType, name)` takes the type first.** Both call sites passed
+  `(name, type)`, so every create asked TouchDesigner for an operator whose
+  *type* was the caller's chosen name; with no name given it asked for a type
+  of `"TOP"`, the last word of the display name. `create_node` and everything
+  built on it could not have worked. Added `normalize_op_type` so a display
+  name (`"GLSL Multi TOP"`) resolves to the opType `create` actually accepts
+  (`glslmultiTOP`).
+- **`import_recipe` never reconnected a single wire.** `export_recipe` wrote
+  the source operator's *path* into `inputs` while the importer looked sources
+  up by *name*, and the failed lookup was a silent `continue`. Both spellings
+  now resolve, and an unresolvable source is reported in `unwired` rather than
+  dropped.
+- **The live↔offline loop had both edges cut.** `build_and_verify` captured
+  `get_errors` and never passed it to the scorer, and passed the whole
+  `capture_viewport` envelope where its inner `verdict` was expected — so
+  `is_black`/`is_flat` read as absent and no viewport penalty could fire
+  either. Both signals now reach `score_build`.
+- **A stale editable install made the bridge look stale.** `__version__` came
+  from installed distribution metadata, which an editable install does not
+  refresh on a version bump; the live server compared it against the bridge's
+  stamp and told users to re-paste a correct bridge. In a checkout the source
+  is now the truth.
+
+### Fixed — TDN was lossy
+
+Guided by Embody's `docs/reports/tdn-exporter-fidelity-moonshine.md`.
+
+- **Code was silently dropped.** TDN had no field for a DAT's text at all, so
+  `checkpoint()` round-tripped a network while discarding every line of GLSL
+  and every callback. Adopted Embody's rule whole: the omission flag means
+  "skip what a file already holds", never "discard" — a file-backed DAT is
+  omitted, an unbacked one is *always* embedded. **Any doubt embeds.**
+- **Expressions were frozen into constants.** A parameter in EXPRESSION mode is
+  non-default, so a value-only exporter wrote down its current evaluation and
+  the rebuilt network was dead. `expressions` now travel separately, on every
+  export path, and are restored after constants so an expression always wins.
+- **A rewire diffed as equal.** `diff_tdn` compared parameters and type and
+  nothing else, in a format whose entire selling point is diffability. It now
+  compares `inputs`, `position`, `size`, `color`, `comment`, `tags`, `flags`,
+  `text` and `expressions`.
+- **Same-named children collided.** `_index_ops` keyed on the bare name, so two
+  operators called `noise1` under different parents were one entry. Keys are
+  path-qualified.
+- **Runtime state leaked into committed files.** Tag an operator
+  `tdn_exclude:<parname>` and that parameter's constant value is omitted — and
+  *recorded* in the file, because a silently omitted parameter is
+  indistinguishable from one sitting at its default. A typo'd name warns rather
+  than silently excluding nothing.
+- **A relative `output_file` escaped the project.** `resolve_output_path`
+  anchors to `project.folder`; `relative_to_project` returns `None` for a file
+  outside the project instead of raising into a broad `except`.
+
+### Added
+
+- **`tests/td_double.py` — a deterministic TouchDesigner API double**, and a
+  loader that execs the *entire* shipped bridge against it. Before this, the
+  only tested part of a 2,191-line file was the ~90-line "pure helpers" block;
+  every `_do_*` handler was unexecuted. That is the blind spot every bug above
+  lived in. The double models the API as TD documents it — error accessors are
+  methods returning strings, `create` refuses an unknown opType, `findChildren`
+  matches an *exact* depth, `POP.points()` ignores its slicing arguments — so a
+  handler that mistakes the contract fails here instead of in a live session.
+  It has already caught two of its own gaps (`par.mode` must be a real enum for
+  `type(par.mode).EXPRESSION` to resolve; `Connector.connect` accepts an OP *or*
+  a connector).
+- **`observe`** — captures a still *and* judges whether the render is moving.
+  A feedback or audio-reactive network that renders one correct frame and then
+  freezes is structurally valid, visually plausible and completely broken, and
+  no single-frame verdict can see it. Compares 8×8 luminance grids across
+  frames, because a pattern that scrolls holds its mean exactly constant while
+  every pixel changes. `is_static` is `None` when too few frames were captured
+  to judge — unknown, not false. Feeds `score_build`.
+- **Reader reductions** (Embody's "never a blind dump"). `read_chop` defaults
+  to per-channel `count/min/max/mean/std`; `read_dat` to per-column stats plus
+  edge rows; new `diff_chop` reports what a filter actually changed; new
+  `read_pop` returns attribute metadata free and gates value readback on point
+  count — because `POP.points(attr, start, count)` accepts both slicing
+  arguments and **ignores them**, so there is no cheap partial read to fall
+  back on. Raw forms remain available via `format`.
+- **`td_mcp/install.py` — Install SOP v1** (adapted from
+  dcc-mcp-touchdesigner 0.1.2), and a `td-mcp-install` entry point. Verbs
+  `install | status | verify | uninstall | upgrade`, all accepting `--json`;
+  mutating verbs require `--yes`; `--dry-run` never writes. A receipt at
+  `~/.td_mcp/receipts/touchdesigner.json` records a SHA-256 per staged
+  artifact, so drift is detectable. Distinct exit codes per stage (`10`
+  preflight, `20` acquire, `30` install, `40` verify, `50` requires_restart)
+  so a caller can tell "your Python is too old" from "the copy failed" without
+  parsing prose. The honest part: an external process cannot create a Text DAT
+  inside a running project, so `install` returns `requires_restart` plus one
+  machine-executable `next_steps` entry, and `verify` reports
+  `directly_usable` only after a real read-only probe succeeds.
+- **UTF-8 stdio pinning** (`td_mcp/util/stdio.py`), from `main()` and never at
+  import. MCP clients send UTF-8 JSON-RPC; Python binds the standard streams to
+  the locale codepage, which is CP1252 on Western Windows and US-ASCII on a
+  GUI-launched macOS process. Pinning at import would mutate TouchDesigner's own
+  Textport streams, since the in-TD tests exec this package inside TD.
+- **Protocol version negotiation** for the in-TD transport. It hard-coded
+  `2024-11-05` into every `initialize` reply regardless of what the client
+  asked for; it now echoes any version it can speak and says which it supports
+  when it cannot. `logging` is no longer advertised to 2026-07-28 clients,
+  where it is deprecated. (The SDK-based servers migrated in Phase 2; this
+  transport's session layer remains deliberately deferred.)
+
+### Changed
+
+- **`score_build` weighs live diagnostics.** A structurally perfect description
+  can still be red in TouchDesigner — a DAT whose `onCook` raises is a
+  perfectly well-formed description. Script and shader errors are weighted
+  above cook errors, because TD reports neither on `errors()` and both
+  routinely go unnoticed. A frozen render costs 15.
+- **Every advertised tool carries an explicit risk class**, enforced by a test.
+  Five were relying on the permissive default, including `set_dat_text` and
+  `bind_parameter_expression` — both of which hand TouchDesigner
+  caller-supplied Python by another name, and are now `DESTRUCTIVE` alongside
+  `execute_python`.
+- **`.mcpb` bundles are installable.** `bundle.py` wrote a member named
+  `server.json` carrying a schema of its own invention: a correctly-named zip
+  no MCP host could read. It now writes `manifest.json` with
+  `manifest_version`, a `server` block and `mcp_config`, validates before
+  writing, and refuses a manifest with an absolute path baked in at build time.
+- `install_all.py` hands off to the Install SOP instead of ending with
+  "Done. td-mcp-offline + td-mcp-live are ready." — true of the servers, and
+  quietly untrue of the bridge.
+
+### Verified, not changed
+
+- **`findChildren(depth=N)` matches an exact relative depth**, which made an
+  entire repair path in Embody a silent no-op. Audited: `td-mcp` does not use
+  `findChildren` in code, and its own walkers use "up to N" semantics
+  correctly. The double models the exact-depth behaviour so a future use fails
+  loudly.
+- **No per-write project-wide sweep exists.** Reading an Info DAT *cooks* it,
+  and Embody's project-wide shader pass took 3.36 s against a 0.25 s budget and
+  tripped a one-way disable latch. `td-mcp`'s write path performs no sweep;
+  the shader pass added here is scoped to the operator a write touched, and
+  `observe` caps its frame count.
+
+### Packaging — what actually goes into TouchDesigner
+
+- **`bridge/bootstrap.py` is now a builder, not a fork.** It contained a
+  *second, complete copy of the bridge* — 1,000+ lines pasted in and left
+  behind. By the time it was found it had drifted to 39 tools against the
+  bridge's 46, held `COMP.create` calls with reversed arguments at three sites,
+  and carried every blind `node.errors` read this release fixes. Anyone who ran
+  it installed a broken bridge. Nothing caught it, because
+  `check_bridge_stale.py` only ever compared `td_mcp_bridge.py`. It now also
+  fails if any other file under `bridge/` declares a `_DISPATCH` table or
+  `_do_*` handlers, and `test_bootstrap.py::test_no_forked_bridge_logic`
+  asserts the same. **One bridge, one copy.**
+- **It builds a real component.** `/td_mcp` Base COMP with a `bridge` Text DAT,
+  a `startup` Execute DAT and a `control` Parameter Execute DAT, plus a
+  parameter page (Active, Port, Auth Token, Allow Python Execution, Protected
+  Paths, Restart, Print Auth Token). Idempotent, and it preserves values you
+  have set.
+- **`Create` as well as `Start`.** A dragged-in `.tox` never fires `Start`, so a
+  component wired only for startup looks inert until the next restart — the most
+  confusing thing a drop-in can do.
+- **`link` vs `embed`.** `link` points the Text DAT at the `.py` with *Sync to
+  File*, so TouchDesigner reloads on save and the file stays the single source
+  of truth. `embed` pastes the source for a component that travels. Saving a
+  `.tox` forces `embed`, because a file-linked DAT on a machine without the repo
+  loads *empty* and fails as "no module named start".
+- **`TD_MCP_SAVE_TOX = 1` emits `td_mcp.tox`** — the drag-and-drop artifact. A
+  `.tox` is opaque compressed binary that only TouchDesigner can author, so the
+  script is the source and the `.tox` is a build artifact.
+- **Every offline tool now carries an explicit risk class.** They were relying
+  on the `WRITE_ADDITIVE` fallback, so a client running a read-only policy
+  refused plain documentation lookups.
+
+### Fixed — the builder could not find the bridge (field-reported)
+
+The first run in a real TouchDesigner failed immediately, and the error pointed
+at a folder that never existed:
+
+```
+RuntimeError: cannot embed the bridge:
+C:\project1\td_mcp_bridge.py is not readable.
+```
+
+Three bugs behind it, none of which a test against the API double could have
+caught, because all three are about how TouchDesigner supplies `__file__`:
+
+- **`__file__` inside a Text DAT is the DAT's *operator path*.** Running
+  `os.path.abspath('/project1/bootstrap')` turns it into
+  `C:\project1ootstrap`, so the lookup beside it named a folder on no disk.
+  `_real_file_dir()` now checks `os.path.isfile` before trusting it.
+- **The documented `exec(open(...).read())` invocation was equally broken** — it
+  inherits the Textport's globals, where `__file__` is undefined, so `build()`
+  raised `NameError` before reaching any of this. Every doc showing the
+  one-liner has been corrected to name `TD_MCP_REPO` first.
+- **`resolve_mode` fell back to `embed` when the source was unreadable** — the
+  one mode that cannot work without the text, guaranteeing a failure one step
+  later. It falls back to `link` now.
+
+`locate_bridge()` replaces the single guess with an ordered search: an explicit
+`TD_MCP_BRIDGE_PATH`, `TD_MCP_REPO`, **the builder's own DAT File parameter**,
+a verified `__file__`, `project.folder`, then the working directory — accepting
+either a repo root or its `bridge/` folder at each. Not finding it now prints
+the folders searched and the exact lines to fix it, instead of a misleading
+"not readable".
+
+The DAT-File lookup makes a new install path work with zero configuration:
+**drag `bootstrap.py` into the network, right-click → Run Script.**
+
+### Fixed — parameter names, guessed and wrong (field-reported)
+
+The second real run got further — the component built — and then died setting a
+parameter that does not exist:
+
+```
+td.tdAttributeError: 'td.ParCollection' object has no attribute 'pulse'
+Context:/project1/td_mcp/control
+```
+
+TouchDesigner calls it **`onpulse`**. Transcribed the Parameter Execute DAT and
+Execute DAT parameter pages from the operator help rather than guessing again:
+`active`, `op`, `pars`, `valuechange`, `valueschanged`, `onpulse`,
+`expressionchange`, `exportchange`, `enablechange`. Two of those were missing
+entirely and mattered — `pars` was never set, and an empty **Parameters** field
+watches nothing, so every callback on that DAT would have been dead even once
+the name was right.
+
+- **The double had agreed with the bug.** `_DEFAULT_PARS_BY_TYPE` listed
+  `"pulse"` because the *builder* set `control.par.pulse` — the table was
+  written from the code under test instead of from TouchDesigner's
+  documentation, which is the one thing a double must never do. It is now
+  transcribed from `Text_DAT.htm`, `Execute_DAT.htm` and
+  `Parameter_Execute_DAT.htm`, with the sources named in a comment.
+- **`FakeParCollection` now raises on assignment to an unknown parameter**,
+  with TouchDesigner's own message. It used to create the attribute silently,
+  so a typo was a no-op in tests and an exception in the field. Turning this on
+  reproduced the reported failure in 16 tests.
+- **`set_pars()` collects failures instead of aborting.** A wrong name used to
+  kill the build midway and leave a half-configured component with a traceback
+  and no other output. Failures are now reported at the end, named, with the
+  component intact — and a test asserts the list is empty, so this stays loud.
+
+### Fixed — `set_parameters` silently succeeded on a misspelling
+
+Found while writing the first handler test for it. `set_parameters` is among
+the most-used tools in the server and had **no test at all** — the double could
+not express one until it modelled `op.par['name']`, the form the bridge uses at
+three call sites.
+
+Setting an unknown parameter was a bare `continue`, so:
+
+```jsonc
+set_parameters("/project1/noise1", {"perriod": 4.0})
+→ {"ok": true, "applied": {}}          // nothing was set. Caller carries on.
+```
+
+For an agent this is the worst possible shape: it believes the network is
+configured and debugs the wrong thing. Unknown parameters now come back as
+`ok: false` with what *did* apply, the names that did not, and a close match
+for each (`suggest_parameter`, case-insensitive second pass because TD
+built-ins are lowercase and custom parameters are capitalised). The
+close-match suggestion was a documented feature that existed only in the
+offline `param_resolver`; the live path never had it.
+
+### Fixed — the bridge had never compiled inside TouchDesigner (field-reported)
+
+The third real run built the component and then, on `Active`:
+
+```
+DAT compile error: /project1/td_mcp/bridge
+NameError: name 'StreamableHTTPMixin' is not defined
+```
+
+followed by six stacked `Module compilation error` tracebacks as every
+callback on the component hit the same wall.
+
+`from td_mcp.streamable_http import StreamableHTTPMixin` sat at the top of the
+bridge in a `try/except` that set `STREAMABLE_HTTP_AVAILABLE = False` on
+failure — and the handler class then inherited from the missing name
+unconditionally. Inside TouchDesigner `td_mcp` is never on `sys.path`, so
+**the bridge had never compiled there, in any version.** Every "paste it into
+a Text DAT" instruction this project ever shipped led to this error. Pytest
+runs with `td_mcp` importable, which is how 640 tests said otherwise.
+
+Pulling the thread found three more problems in the same transport:
+
+- **The mixin contributed nothing.** `_Handler` overrode every method it
+  defined, including `_handle_jsonrpc` — so the protocol negotiation this
+  release added to `streamable_http.py` never ran; the bridge kept answering
+  `2026-07-28` to every client.
+- **The bridge called three session helpers it never defined** —
+  `_generate_session_id`, `_touch_session`, `_get_session` — a `NameError`
+  waiting on the first JSON-RPC request.
+- **`parent = _op(path) or parent()`** at three handlers. Assigning `parent`
+  makes it a local for the whole function, so the fallback call raised
+  `UnboundLocalError`. Only on the error path, which is how it survived: a
+  bad parent path now says "parent not found".
+
+`td_mcp/streamable_http.py` is deleted. The session store and negotiation
+live in the bridge, which now imports **nothing** from `td_mcp`. Two guards
+make that permanent: `scripts/check_bridge_stale.py` refuses any `td_mcp`
+import under `bridge/`, and the test double **blocks `td_mcp` imports** the
+way TouchDesigner does, so a dependent bridge fails in CI instead of in the
+field. `_locate_bridge_dir` no longer trusts `__file__` either, so the chat UI
+can be found beside a file-linked DAT.
+
+- **The double now models `DAT.module`**: the DAT's text compiled lazily on
+  first access with `me`, `parent` and an *operator-path* `__file__`, raising
+  TouchDesigner's own "Module compilation error" on failure. Turning **Sync to
+  File** on loads the file immediately, as the Text DAT docs say. That is
+  enough to run the whole chain — startup DAT → environment applied → bridge
+  DAT compiled with `td_mcp` blocked → **a real server bound on an ephemeral
+  port** — and four new tests drive the real handler over HTTP: the legacy
+  `/mcp` tool call, a 401, a JSON-RPC `initialize` that negotiates, and a
+  JSON-RPC `tools/call` that reaches the double.
+- **The builder starts the bridge at build time.** The token prints
+  immediately, and a bridge that will not compile fails *there*, as one line
+  that says which DAT to open, with the component intact — instead of six
+  tracebacks after clicking `Active`.
+
+### Fixed — every tool call died on `with ui.undo:` (field-reported, first live session)
+
+The bridge compiled, started, printed its token — and then answered every
+request with:
+
+```
+{"ok": false, "error": "'td.Undo' object does not support the context manager protocol"}
+```
+
+TouchDesigner's `ui.undo` is an `Undo` object with `startBlock(name)` /
+`endBlock()` (Undo_Class). It is not a context manager, and `with ui.undo:`
+sat at all three dispatch sites — legacy `/mcp`, `batch`, WebSocket — so
+every tool, read-only ones included, failed before reaching its handler. The
+README's headline claim, "every mutation is wrapped in `ui.undo` so one Ctrl+Z
+reverts a whole agent batch", had never once been true in a real session.
+
+The double had modelled `ui.undo` **as a context manager** — written from the
+bridge rather than from the docs, the same mistake as `pulse`/`onpulse`. It
+now models the real object, refuses the `with` protocol, and counts named
+blocks, so a test asserts that a tool call opens exactly one block named
+`td_mcp: <tool>` and closes it. `_undo_block` is tolerant: a host with no
+`ui.undo` still runs the tool.
+
+### Fixed — link-mode reload left the old server holding the port
+
+Found while fixing the above. In link mode TouchDesigner recompiles the DAT's
+module when the file changes — but the **previous** module's `serve_forever`
+thread keeps running and keeps port 9980. The new module's `_server` is
+`None`, so `stop()` did nothing and `start()` would fail with "address already
+in use"; **Restart Bridge** could never have worked after an edit.
+
+The server thread is the durable handle: its target is the bound method
+`server.serve_forever`, so `_orphaned_servers(port)` finds a previous load's
+server through `threading.enumerate()` and `start()`/`stop()` adopt it. No TD
+storage involved — that is saved into the `.toe` and must never hold a socket.
+Two tests reload the module against a real port and prove the adoption.
+
+### Fixed — every handler touched TouchDesigner from the HTTP thread (field-reported)
+
+With `ui.undo` fixed, the second live pass reached the handlers, and
+TouchDesigner answered every one of them:
+
+```
+TouchDesigner objects cannot be accessed outside the main thread.
+```
+
+and put up a dialog: *"TouchDesigner objects cannot be referenced from
+separate threads. Application may behave unpredictably or terminate."*
+
+This is the cost the docs had flagged for not using a Web Server DAT: the
+bridge's `HTTPServer` runs on its own thread, and every `_do_*` handler ran
+there. Nor is `run()` a way back — called off the main thread it does not
+raise, it corrupts TD silently (Embody v6.0.251, Derivative-confirmed). The
+sanctioned pattern is a queue drained from the main thread, and that is what
+the bridge does now:
+
+- **The HTTP/WebSocket/JSON-RPC threads only enqueue.** `_invoke(tool, args)`
+  puts a job on a queue and waits; nothing on those threads touches a TD
+  object any more, including `GET /api/resource`.
+- **The component's `startup` Execute DAT drains the queue on Frame Start**,
+  on the main thread, calling `bridge.module.pump()` under an 8 ms time
+  budget (`TD_MCP_PUMP_BUDGET_MS`). Latency is at most one frame. Calls that
+  are already on the main thread — a tool calling a tool, the Textport — run
+  inline, so nothing deadlocks on its own queue.
+- **A missing or stalled pump fails fast with a diagnosis** ("the main-thread
+  pump has never run … re-run bridge/bootstrap.py", or "… pulse Restart
+  Bridge" after a link-mode reload) instead of hanging for the full timeout.
+- The pump must not import the bridge before `start_bridge()` has applied
+  the environment — a Text DAT imports on first `.module` access and the
+  bridge reads its config at import — so `onFrameStart` checks a `_started`
+  flag first. A test pins it.
+- `start()` now prints **`bridge v<version> on TouchDesigner <build>`**, and
+  `status()` reports `version`, `pump_alive`, `pump_age_seconds` and the
+  queue depth.
+
+The double gained a **frame loop** (`TDEnv.frame_loop()`) that calls
+`onFrameStart` on every Execute DAT with Frame Start on, from a dedicated
+thread — so the real handler is now exercised over a real socket *from the
+wrong thread*, the way TouchDesigner will call it, and a test asserts the
+tool ran on the pumping thread and not the HTTP one. Existing components
+need the builder re-run once to gain the Frame Start callback.
+
+### Fixed — `project.cook` does not exist
+
+`project_info`, `get_performance` and `timeline` addressed `project.cook`
+(`'td.Project' object has no attribute 'cook'`). Per Project_Class the frame
+rate is `project.cookRate`; per TimeCOMP_Class the global timeline is the
+Time COMP at `root.time` with `frame` / `seconds` / `rate` / `play` /
+`start` / `end`. `timeline` now speaks that API and returns the full state;
+`seek` clamps to `start`. The double had modelled `project.cook` — because
+the bridge used it — and is now transcribed from the docs.
+
+### Fixed — the first live session that got past the transport (31 of 34)
+
+With the main-thread pump in place the bridge ran real tools inside a real
+TouchDesigner 2025.33070 for the first time: create, wire, expressions,
+GLSL compile errors read from the actual docked Info DAT, capture, observe,
+export, snapshot, delete, JSON-RPC negotiation — and a real MCP client
+spawning `td-mcp-live` over stdio, listing 47 tools and reading live project
+data. Three calls failed, and the failures were all API-shape bugs the double
+had been unable to see because it had been written from the bridge:
+
+- **`'opacity' in node.par` is always False.** ParCollection has no
+  name-based membership; iteration yields Par objects, so a string is never
+  "in" it. `set_parameters` refused every real call with *"unknown
+  parameter(s): opacity (did you mean opacity?)"*. Per ParCollection_Class,
+  `par['name']` returns the Par **or None**; the bridge and `import_recipe`
+  now use that, and the double answers `in` and `[]` the way TouchDesigner
+  does.
+- **`node.chans` is a method.** CHOP_Class: `chans(*patterns)` and
+  `chan(nameOrIndex)` are methods; iterating the bound method is the
+  *"'builtin_function_or_method' object is not iterable"* both `read_chop`
+  calls returned. The double's `chans` property became a method too.
+- **Default expressions were exported as configuration.** A container COMP
+  ships with `resizecomp = me`; `export_recipe` was writing it into every
+  recipe. Par_Class defines `isDefault` over value, expression *and* mode, so
+  `_capture_parameters` now skips default parameters first, and the double's
+  `isDefault` matches the definition.
+
+Two more came out of the same session:
+
+- **`capture_viewport` called a healthy Noise TOP black.** `TOP.numpyArray()`
+  returns floats in 0..1 and the thresholds assumed 0..255, so a mid-grey
+  render (mean 0.46) was `is_black` and every good build lost 20 points to a
+  "black" viewport. Pixel data is now normalised to 0..255 before the
+  thresholds, for the still verdict and for `observe`'s motion grid (where a
+  full-scale change in 0..1 data sat *below* the static threshold). The
+  double gained `FakeTOP.numpyArray()` returning float32 0..1, and `numpy`
+  joins the `[test]` extra so the regression runs in CI.
+- **A refused request RST'd the socket.** The handler answered 401/403 before
+  reading the request body; on Windows, closing with unread bytes sends a
+  reset and the client sees *"[WinError 10053] connection aborted"* instead
+  of the status. It surfaced as a flaky test. The body is now consumed first,
+  bounded by `TD_MCP_MAX_BODY_BYTES` (32 MiB).
+
+And one that was the test client's fault but exposed a gap:
+`build_and_verify`'s MCP schema said `op_type` where every other tool says
+`type`. It now advertises `type` (and accepts `op_type`), passes `name`
+through, and **`tests/test_argument_parity.py`** proves, by AST, that for all
+47 tools the schema's properties are exactly the keys the registry lambda
+reads, and that every key `TDClient` sends is a key the bridge handler reads.
+
+### Verified — live in TouchDesigner 2025.33070
+
+The third live pass: **37 of 37** smoke calls against a running session —
+read-only inspection, then inside one scratch container: create by display
+name and by opType, wire, `set_parameters` (and a close-match refusal),
+`bind_parameter_expression` (good and bad), `read_chop` stats and values,
+`diff_chop`, a GLSL TOP with a broken pixel shader whose compile error came
+back from the real docked Info DAT, `clear_script_errors`,
+`capture_viewport` (a mid-grey render correctly *not* black), `observe`,
+`scan_network`, `validate_network`, `export_recipe` (expressions and DAT
+text embedded, default expressions absent), `execute_python` confirming
+`main_thread: True`, `snapshot_network`, `delete_node`, and a JSON-RPC
+`initialize` + `tools/call` on the Streamable HTTP path. The project held
+only `td_mcp` and `bootstrap` afterwards.
+
+And the path an AI client takes: a real MCP client spawned `td-mcp-live
+--mcp` over stdio, negotiated `2025-06-18`, listed 47 tools, read live
+project data, ran `build_and_verify` (created, zero errors on all four
+surfaces, offline score **100 A**) and cleaned up. **PASS.**
+
+The last two bugs, from the pass before that:
+
+- **`root` is an OP, not a function.** Nine `_op(path) or root()` fallbacks
+  raised *"'td.baseCOMP' object is not callable"* whenever a path did not
+  resolve; `timeline` hit it first. The double had supplied a callable.
+- **`clearScriptErrors` is keyword-only** (*"Call contains unexpected
+  positional arguments: Value:(False,)"*). Every OP diagnostic call now
+  passes `recurse=` by keyword.
+
+The bridge can also now be restarted from outside without a hand in
+TouchDesigner: `execute_python` runs on the main thread, so a client can
+schedule `stop_bridge(); start_bridge()` through TD's own `run(...,
+delayFrames=10)` — it fires after the request completes, the new module
+adopts the old server's port, and the token survives via the environment.
+
+### Fixed — a deep pass through the MCP protocol found nine more (field-reported)
+
+77 tool calls driven **through MCP** against the live session -- one client
+speaking JSON-RPC to `td-mcp-live`, another to `td-mcp-offline` -- plus an
+end-to-end loop where the offline server authors a network and the live server
+materialises it. First run: 62/77. Now **77/77**.
+
+**No MCP client had ever seen the offline server's tools.** `tools/list`
+answered *"Handler returned an invalid result"* -- every one of the 57 tools
+declared `inputSchema` as a bare property map (`{"spec": {"type": "string"}}`)
+where MCP requires a JSON Schema *object* (`{"type": "object", "properties":
+{...}}`). The SDK validates on the way out, so the in-process tests passed and
+the wire was empty. `_input_schema()` now wraps them and turns the
+non-standard `"optional": True` marker into a real `required` list.
+`td_validate_live` -- the whole point of the live↔offline loop -- was also
+never advertised or dispatched at all; it is now both (58 tools).
+
+**`Connector.connections` holds connectors, not operators.** Per
+Connector_Class the far end is `connector.owner`; there is no
+`outputOP`/`inputOP`. Six sites read those inside a bare `except`, so
+`get_connections`, `get_node`, `map_network` and `export_recipe` all reported
+**empty wiring for every network**. `disconnect_nodes` failed outright, and it
+was disconnecting the far-end (upstream *output*) connector, which would have
+dropped every wire that output fed rather than the one asked for.
+
+**`OP.type` cannot rebuild an operator.** It is the short, family-less form
+(`'noise'`, `'constant'`); `OP.OPType` (`'noiseTOP'`) is what `COMP.create()`
+takes. `export_recipe` recorded `type`, so re-importing a recipe died with
+*"Unknown operator type. Value:'constant'"*. Recipes now carry `OPType`, and
+every read reports both. The double had returned the full form for both, which
+is why a round-trip looked sound in tests.
+
+**`read_pop` reported no attributes for a 252-point sphere.** The API is
+`pointAttributes` / `primAttributes` / `vertAttributes` -- *properties*, each
+an iterable of Attribute objects with `name`/`size`/`type`/`vals`. There is no
+`attributes()` method. Attributes are now grouped by class, values read from
+`Attribute.vals`, and `numPrims` (a **method**, where `numPoints` is a
+property) is reported too.
+
+**Optimistic concurrency never worked on a table DAT.** `set_dat_text` hashed
+the text it *sent*; TouchDesigner re-normalises a table's text on assignment,
+so the returned sha never matched the next write and every CAS write was
+refused. It now hashes what TD stores, and reports `normalized`.
+
+**`find_nodes` treated a glob as a substring**, so the natural `noise*`
+matched nothing. It now globs when the query contains `* ? [`, matches short
+type or OPType, and de-duplicates.
+
+**`get_resource` could not resolve any path.** `td://node/project1/x` arrives
+without its leading slash, so the lookup was relative to the bridge DAT and
+found nothing. Also `node.chans` was read as a property.
+
+**`get_parameter_info` hid the expression.** It reported `mode=EXPRESSION` and
+no `expr`, so an agent could see that a parameter was driven and had no way to
+read, preserve or repair what drove it. `expr`, `bindExpr` and `isDefault` are
+now included.
+
+**`capture_viewport` returned base64 as prose.** The PNG was already attached
+to the payload, but the MCP layer serialised the whole thing into one text
+block -- kilobytes of base64 no model can use, and no image a client can
+render. It now emits a real `ImageContent` block alongside a text block with
+the base64 stripped out and a byte count in its place.
+
+### Fixed — pausing the timeline wedged the bridge (field-reported)
+
+`timeline pause` succeeded; every call after it timed out, and recovery took a
+TouchDesigner restart. Pausing stops frames, the main-thread pump runs on
+**Frame Start**, so a pause issued through the bridge disables the bridge --
+including the `timeline play` that would undo it. Only someone at the keyboard
+could recover it.
+
+`timeline` now **refuses to pause** unless `force=true`, and says why. The
+pump records `root.time.play` on every run so the stall message can name the
+cause -- *"the TouchDesigner timeline is PAUSED ... Press Play"* -- rather than
+offering a generic stall. The component's Execute DAT also gains
+`playstatechange`, so pressing Play drains the backlog immediately instead of
+on the next frame. **Existing components need `bridge/bootstrap.py` re-run
+once to pick that up**; the refusal itself is in the bridge and is live as
+soon as the bridge file is updated.
+
+This is the sharpest edge of not using a Web Server DAT (whose callbacks are
+network-driven and would not care about the timeline). The trade is documented
+in `docs/TOUCHDESIGNER_COMPONENT.md`.
+
+### Fixed — the exec guard refused most legitimate TouchDesigner Python
+
+`execute_python` checked its forbidden builtins with `if name in code` -- a
+substring test over the raw source. `par.eval()` is the commonest call in
+TouchDesigner Python and it contains "eval", so **reading any parameter was
+refused**: `str(d.par.file.eval())`, `me.par.Tx.eval()`, a variable named
+`retrieval`, even the word "open" in a comment. It cost two silent probe
+failures in one live session before the error text was actually read.
+
+Substring matching was never a defence either -- `getattr(__builtins__,
+'ev' + 'al')` walks straight past it. `forbidden_builtins()` now parses the
+submitted code and matches a bare `ast.Name`, which is what a builtin call
+actually looks like: `eval(...)` and `f = eval` are caught, `par.eval()` and
+`"eval"` in a string are not. Code that does not parse is reported rather
+than run, and the refusal names what is still allowed.
+
+It remains a guard-rail against an obvious mistake, not a sandbox -- with
+exec enabled a caller holding the token can reach anything TouchDesigner can,
+as `docs/SECURITY.md` has always said.
+
+### Documentation
+
+Nine new pages under [`docs/`](docs/README.md), and the root docs updated to
+match reality:
+
+- **[TOUCHDESIGNER_COMPONENT.md](docs/TOUCHDESIGNER_COMPONENT.md)** — what goes
+  into TouchDesigner and why, including a survey of how all 30 projects in the
+  reference library package themselves (13 ship a binary `.tox`; mintiasaikoh
+  and benoitliard generate theirs; dcc-mcp and superdwayne stage files and load
+  them from a stub DAT).
+- **[DIAGNOSTICS.md](docs/DIAGNOSTICS.md)** — the four error surfaces, in depth.
+- **[INSTALL.md](docs/INSTALL.md)**, **[TOOLS.md](docs/TOOLS.md)**,
+  **[AGENT_GUIDE.md](docs/AGENT_GUIDE.md)**,
+  **[TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)**,
+  **[TDN_FORMAT.md](docs/TDN_FORMAT.md)**, **[TESTING.md](docs/TESTING.md)**,
+  **[SECURITY.md](docs/SECURITY.md)**, **[RAG.md](docs/RAG.md)**,
+  **[ECOSYSTEM.md](docs/ECOSYSTEM.md)**.
+- `ARCHITECTURE.md` §6 claimed the live loop did not call validate/score/heal.
+  It does now; the section is rewritten and its remaining limitations are real
+  ones — starting with the honest one: **none of this has been smoke-tested
+  against a live TouchDesigner.**
+
+### Tests
+
+**803 collected, 803 passing, 0 skipped** (was 389 — the 6 numpy-gated skips now run, since `numpy` joined the `[test]` extra). Nine new suites:
+`test_bridge_handlers`, `test_bridge_readers`, `test_tdn_fidelity`,
+`test_motion`, `test_install_lifecycle`, `test_bootstrap`, `test_stdio_utf8`,
+`test_protocol_negotiation` and `test_version_truth`.
+
+---
+
 ## [1.11.0] — 2026-08-20 — Structured wiki KB (full official docs, offline)
 
 The knowledge base grows from 1,091 curated chunks to **9,602** by ingesting a

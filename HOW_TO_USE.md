@@ -2,6 +2,8 @@
 
 This guide covers setting up the TouchDesigner bridge, launching the MCP servers (offline and live), configuring your AI client (Claude Desktop, Cursor, VS Code, Gemini, etc.), and using the toolset.
 
+> Reference documentation lives in [`docs/`](docs/README.md): [install](docs/INSTALL.md) · [the TouchDesigner component](docs/TOUCHDESIGNER_COMPONENT.md) · [tools](docs/TOOLS.md) · [diagnostics](docs/DIAGNOSTICS.md) · [agent guide](docs/AGENT_GUIDE.md) · [troubleshooting](docs/TROUBLESHOOTING.md).
+
 ---
 
 ## 1. Prerequisites
@@ -15,25 +17,79 @@ Make sure you have:
 
 ## 2. Setting up the TouchDesigner Bridge
 
-To allow the live server to control TouchDesigner, you must start the python bridge inside your TouchDesigner session:
+The live server talks to a **component inside your project**. Nothing outside
+TouchDesigner can create that component for you, so this step is yours.
 
-1. Open your project in TouchDesigner.
-2. Create a new **Text DAT** (e.g., name it `mcp_bridge`).
-3. Paste the contents of [bridge/td_mcp_bridge.py](bridge/td_mcp_bridge.py) into the Text DAT.
-4. Open the TouchDesigner Textport (`Alt+T`) and run:
-   ```python
-   op('mcp_bridge').module.start()
-   ```
-5. You will see output in the TouchDesigner console indicating the bridge started on `http://127.0.0.1:9980` and printing an **auto-generated auth token**:
-   ```
-   [td_mcp] auth token: YOUR_AUTO_GENERATED_TOKEN
-   ```
-   > Keep this token handy or set the `TD_MCP_AUTH_TOKEN` environment variable before launching TouchDesigner.
+### The one-liner
 
-6. To stop the bridge, run:
-   ```python
-   op('mcp_bridge').module.stop()
-   ```
+Open your project, open the Textport (`Alt+T`), and run:
+
+```python
+TD_MCP_REPO = r'C:/path/to/td-mcp'
+exec(open(TD_MCP_REPO + '/bridge/bootstrap.py').read())
+```
+
+It builds `/project1/td_mcp` and starts the bridge:
+
+```
+[td_mcp] component ready at /project1/td_mcp (mode=link)
+[td_mcp] bridge DAT is synced to C:/path/to/td-mcp/bridge/td_mcp_bridge.py
+[td_mcp] listening on http://127.0.0.1:9980
+[td_mcp] auth token: xK9_pR2mQvN4tL8sW1hY6bZ3
+```
+
+**Copy that token** — your MCP client needs it. Then **save your project**: the
+component lives in the `.toe`, and if you do not save you will do this again
+next session.
+
+Re-running the script is safe; it updates the component in place and keeps any
+parameter values you have set.
+
+### What it built
+
+```
+/project1/td_mcp                Base COMP — parameter page "TD MCP"
+├── bridge      Text DAT        the bridge, synced to the .py on disk
+├── startup     Execute DAT     starts on Start and on Create, stops on Exit
+└── control     Parameter Exec  Active / Port / Token / Allow Exec → restart
+```
+
+Use the component's parameters rather than the Textport: toggle **Active** to
+start and stop, pulse **Restart Bridge** after changing the source, pulse
+**Print Auth Token** to see the token again.
+
+Because the Text DAT is *synced to the file*, editing
+`bridge/td_mcp_bridge.py` and pulsing **Restart Bridge** is the whole update
+loop — no re-pasting, and git sees every change.
+
+### Making a drag-and-drop `.tox`
+
+```python
+TD_MCP_SAVE_TOX = 1
+TD_MCP_REPO = r'C:/path/to/td-mcp'
+exec(open(TD_MCP_REPO + '/bridge/bootstrap.py').read())
+```
+
+Writes `td_mcp.tox` next to your project, with the bridge **embedded** so it
+works on machines that have never seen this repo. Drag it into any project and
+it starts itself.
+
+A `.tox` is opaque compressed binary that only TouchDesigner can author, which
+is why this repository ships the builder rather than the artifact. The full
+reasoning — and a survey of how the other 30 TouchDesigner MCP projects package
+themselves — is in
+**[docs/TOUCHDESIGNER_COMPONENT.md](docs/TOUCHDESIGNER_COMPONENT.md)**.
+
+### Doing it by hand
+
+1. Create a **Base COMP** named `td_mcp`; inside it a **Text DAT** named `bridge`.
+2. Either set the DAT's **File** parameter to `bridge/td_mcp_bridge.py` and turn
+   on **Sync to File**, or paste the file's contents in.
+3. Textport: `op('/project1/td_mcp/bridge').module.start()`
+4. Stop with `…module.stop()`.
+
+You get a working bridge with no parameters and no auto-start — fine for a
+one-off session.
 
 ---
 
