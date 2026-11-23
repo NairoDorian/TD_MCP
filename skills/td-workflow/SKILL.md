@@ -18,12 +18,18 @@ The **live** bridge acts inside a running TouchDesigner, one undo step per call.
    `describe_op_type` (live) or `td_describe_op_type` (offline): it returns the exact
    parameter names, menu tokens and creation defaults. Draft bigger builds as a spec
    and run `td_validate_build` -> `td_self_heal` before touching TouchDesigner.
-3. **Build** -- `create_node` (type = class name: `noiseTOP`, `lfoCHOP`, `gridPOP`),
-   `set_parameters`, `connect_nodes`; three or more similar calls go in one `batch`.
+3. **Build** -- for a network, write the spec once, check it with
+   `td_validate_build`, then create it with `build_network`: every operator,
+   parameter, wire and flag in one call and one Ctrl+Z, with a per-operator
+   report. For single edits: `create_node` (type = class name: `noiseTOP`,
+   `lfoCHOP`, `gridPOP`), `set_parameters`, `connect_nodes`, or a `batch`.
 4. **Verify** -- `get_errors` with `recurse=true` after every step that matters (it
    reads cook errors, warnings, script tracebacks AND GLSL compile logs). Then look:
    `capture_viewport` (any family) and `observe` (is it actually moving?). Read
-   `read_chop` / `read_dat` / `read_pop` stats for data chains.
+   `read_chop` / `read_dat` / `read_pop` stats for data chains. Judge cost with
+   `get_performance samples=10` (median per frame): one reading right after a
+   build includes one-off costs. A COMP nobody is viewing does not cook at all
+   (TD is pull-based), so stale readings there are the truth, not a fault.
 5. **Tidy** -- see `td-network-layout`.
 
 ## Done means evidence

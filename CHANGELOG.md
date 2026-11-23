@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.13.3] — 2026-11-23 — A built-in demo, built and verified as an agent
+
+From scratch: TouchDesigner launched on TEST-01 and a template network built
+through MCP the way an agent would. Every fix below came out of doing that.
+
+### Added
+- **`build_network`**: a whole network in one call and one Ctrl+Z -- create,
+  parameters (through set_parameters' read-back), wires, flags, DAT text,
+  left-to-right placement, per-operator report, cook errors. It takes the
+  spec `td_validate_build` checks offline, and the live server resolves
+  parameter names against the catalog before the bridge sees them.
+  (`import_recipe` silently skipped unknown names and swallowed errors.)
+- **`examples/feedback_trails.json`** and **`scripts/demo_build.py`**: plan
+  (offline validate) -> build (one call) -> verify (errors, capture, motion,
+  median cost) over MCP; 7/7 stages on TD 2025.33230. `tests/test_examples.py`
+  keeps examples valid in CI.
+- `get_performance samples=N`: one cook per real frame, median per operator
+  with `peak_ms`.
+
+### Fixed
+- **`observe` could never see motion.** It cooked N times inside one
+  main-thread job, i.e. in ONE frame: time did not advance and feedback did
+  not step, so a working animation always read "frozen (max tile delta
+  0.000)". It now samples across real frames (verified: delta ~10.5 on the
+  demo); inside `batch` it says it cannot judge instead of guessing.
+- **A single performance reading right after a build read 167% of a frame**
+  for a network whose steady state is ~2.4% (first-cook costs). Use
+  `samples`; the demo does.
+- **The first 1.13.3 build broke the bridge in TouchDesigner**: a source
+  fingerprint read the bridge DAT's text at import, the module stopped
+  part-way and every POST failed (`NameError: MAX_BODY_BYTES`). Caught live,
+  replaced by a start timestamp; `tests/test_bridge_wave13.py` now fails on
+  any TD access at module level, and the one existing case (`chat_ui.html`
+  path) is resolved lazily.
+- `scripts/td_live.py deploy` confirmed a restart by version alone (the old
+  server reports the same version) and could restart before TD re-read the
+  file. It now pulses Load File, waits for a newer `started_at`, then for a
+  working tool call: 7/7 deploys confirmed.
+
 ## [1.13.2] — 2026-11-23 — Tested the way an agent uses it
 
 New standing rule, recorded in `AGENTS.md`, the README, `docs/TESTING.md`,

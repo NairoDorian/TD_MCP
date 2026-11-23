@@ -1,12 +1,12 @@
 # Tool reference
 
-**108 tools across two servers.** They are deliberately split, because they
+**109 tools across two servers.** They are deliberately split, because they
 have different requirements and different risks.
 
 | Server | Tools | Needs TouchDesigner | What it is |
 |---|---|---|---|
 | `td-mcp-offline` | 59 | No | Documentation, RAG, network authoring, validation, scoring, planning |
-| `td-mcp-live` | 49 | Yes | Everything that touches a running session |
+| `td-mcp-live` | 50 | Yes | Everything that touches a running session |
 
 Register only the offline server if you want documentation and offline
 authoring without exposing a live session.
@@ -39,7 +39,7 @@ max-risk policy admit code it meant to block.
 
 ---
 
-## Live server — 49 tools
+## Live server — 50 tools
 
 Everything below requires the bridge component running inside TouchDesigner.
 See [TOUCHDESIGNER_COMPONENT.md](TOUCHDESIGNER_COMPONENT.md).
@@ -87,6 +87,7 @@ See [DIAGNOSTICS.md](DIAGNOSTICS.md) for the full story.
 | Tool | Risk | Notes |
 |---|---|---|
 | `get_parameters` | READ_ONLY | |
+| `build_network` | WRITE_ADDITIVE | A whole network in ONE call (one Ctrl+Z): create, parameters (read back), wires, flags, DAT text, left-to-right placement, per-operator report and cook errors. Takes the spec `td_validate_build` checks offline; names are resolved against the catalog first. |
 | `describe_op_type` | READ_ONLY | Parameter names, labels, styles, creation defaults and menu tokens for an operator **type**, probed off a throwaway instance in `/sys/quiet`. Look before you guess. |
 | `pulse_parameter` | WRITE_ADDITIVE | Pulse a pulse parameter (reset, reload, start). Setting `true` on one does nothing in TD. |
 | `get_parameter_info` | READ_ONLY | Full schema: label, value, **expr**, mode, default, page, style, bounds, menu. The expression *is* the configuration; `value` is one reading of it. |

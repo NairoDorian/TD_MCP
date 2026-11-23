@@ -45,7 +45,7 @@ td-mcp/
 │   └── generate_summary.py   # generates SUMMARY.md (code-free file/architecture overview)
 ├── td_mcp/
 │   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (59 tools)
-│   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server for the bridge (49 tools)
+│   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server for the bridge (50 tools)
 │   ├── heal.py               # self-healing orchestrator: validate → score → auto-repair → hints
 │   ├── validation.py          # 5-stage build validation + auto-repair (pure, TD-free)
 │   ├── scoring.py             # score_build (0..100 A–F) + repair_network
@@ -238,4 +238,4 @@ cut; see [`UPSTREAM_SYNC_2026-08-26.md`](UPSTREAM_SYNC_2026-08-26.md).)*
   query (cached per identical query); a persistent session would remove the
   launch cost entirely.
 - WebRTC transport, live multi-instance client targeting, and a thin verb façade
-  over the 49 live tools remain surveyed but unbuilt.
+  over the 50 live tools remain surveyed but unbuilt.

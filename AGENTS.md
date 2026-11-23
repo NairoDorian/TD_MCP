@@ -10,6 +10,7 @@ the test project and check a behaviour, a parameter name or a fix live:
 python scripts/td_live.py launch     # open ../TD_MCP_TESTS/TEST-01/NewProject.toe with a known token
 python scripts/td_live.py deploy     # after changing bridge/: copy it into TEST-01 and restart it
 python scripts/live_smoke.py         # use TD_MCP exactly as an agent does (MCP stdio client)
+python scripts/demo_build.py         # build + verify the examples/ template network end to end
 python scripts/td_live.py call describe_op_type '{"op_type": "blurTOP"}'
 python scripts/td_live.py py "result = op('/project1').children[0].OPType"
 ```

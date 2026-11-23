@@ -117,6 +117,7 @@ RISK_CLASS = {
     "create_node":           "WRITE_ADDITIVE",
     "set_parameters":        "WRITE_ADDITIVE",
     "pulse_parameter":       "WRITE_ADDITIVE",
+    "build_network":         "WRITE_ADDITIVE",  # replace=true overwrites same-named ops
     "batch":                 "WRITE_ADDITIVE",  # mixed, but creates more than deletes
     "build_and_verify":      "WRITE_ADDITIVE",
     "connect_nodes":         "WRITE_ADDITIVE",

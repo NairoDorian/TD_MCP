@@ -30,7 +30,7 @@ td-mcp is built around **two cooperating servers that share one authoring brain*
 | Module | `td_mcp/server_offline.py` | `td_mcp/server_live.py` + `bridge/td_mcp_bridge.py` |
 | Needs TouchDesigner? | **No** | **Yes** (running instance) |
 | Role | Doc/RAG answers, network *generation* (YAML, not live nodes), validation, scoring, self-heal | Create / delete / wire / inspect a live TD document over HTTP / stdio |
-| Tools | 1 (`td_*`) | 49 (`create_node`, `set_parameters`, …) |
+| Tools | 1 (`td_*`) | 50 (`create_node`, `set_parameters`, …) |
 
 The offline side owns the *intelligence*: `generators` -> `validation` ->
 `scoring` -> `heal` produce a diffable network description (**TDN** YAML) that the
@@ -81,9 +81,13 @@ td-mcp/
 │   ├── TOOLS.md
 │   ├── TOUCHDESIGNER_COMPONENT.md
 │   └── TROUBLESHOOTING.md
+├── examples
+│   ├── feedback_trails.json
+│   └── README.md
 ├── scripts
 │   ├── bump_version.py
 │   ├── check_bridge_stale.py
+│   ├── demo_build.py
 │   ├── generate_summary.py
 │   ├── install_all.py
 │   ├── live_smoke.py
@@ -220,6 +224,7 @@ td-mcp/
 │   ├── test_corpus.py
 │   ├── test_discover.py
 │   ├── test_eval.py
+│   ├── test_examples.py
 │   ├── test_experimental.py
 │   ├── test_freshness_integrity.py
 │   ├── test_glsl.py
@@ -320,14 +325,20 @@ td-mcp/
 - **`docs/SECURITY.md`** — Security model — The bridge opens a port inside your TouchDesigner session and lets a language
 - **`docs/TDN_FORMAT.md`** — TDN — TouchDesigner Network format — Version **2.1**. A diffable YAML serialisation of a TouchDesigner network, so a
 - **`docs/TESTING.md`** — Testing — **944+ tests.** `uv run pytest` on a fresh clone, after
-- **`docs/TOOLS.md`** — Tool reference — **108 tools across two servers.** They are deliberately split, because they
+- **`docs/TOOLS.md`** — Tool reference — **109 tools across two servers.** They are deliberately split, because they
 - **`docs/TOUCHDESIGNER_COMPONENT.md`** — What goes *into* TouchDesigner — The MCP server runs *outside* TouchDesigner, as a normal Python process your AI
 - **`docs/TROUBLESHOOTING.md`** — Troubleshooting — Ordered by how often each one bites. Every symptom here has been seen.
+
+### `examples/`
+
+- **`examples/README.md`** — Examples — template networks, built the way an agent should — Each `*.json` here is a network spec in the format `td_validate_build` checks
+- **`examples/feedback_trails.json`** — Project file.
 
 ### `scripts/`
 
 - **`scripts/bump_version.py`** — Bump the td-mcp version in ONE place and keep the changelog in sync.
 - **`scripts/check_bridge_stale.py`** — Bridge staleness guard (quentinR2 generated-bridge + CI guard idea).
+- **`scripts/demo_build.py`** — Build a template network from ``examples/`` the way an agent should.
 - **`scripts/generate_summary.py`** — Generate a clean, code-free summary of the td-mcp repository.
 - **`scripts/install_all.py`** — One-command install (ai-brain / johnsabath / 8beeeaaat idea).
 - **`scripts/live_smoke.py`** — Use TD_MCP the way an agent does, and check that it works.
@@ -451,6 +462,7 @@ td-mcp/
 - **`tests/test_corpus.py`** — Tests for the merged corpus (operator + Python + version) loading.
 - **`tests/test_discover.py`** — Tests for td_mcp.discover (multi-instance discovery).
 - **`tests/test_eval.py`** — Test eval harness.
+- **`tests/test_examples.py`** — The built-in examples and the one-call builder they are built with.
 - **`tests/test_experimental.py`** — Tests for the experimental techniques loader and skill pack.
 - **`tests/test_freshness_integrity.py`** — Tests for freshness banner + KB integrity receipt.
 - **`tests/test_glsl.py`** — Tests for td_mcp.glsl_patterns (named shaders + network templates).

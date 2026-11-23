@@ -1,0 +1,29 @@
+{
+  "name": "feedback_trails",
+  "description": "Template demo: an LFO drives 4D noise through a feedback loop that leaves zooming colour trails. Exercises CHOP->expression control, TOP chains, a feedback reference, tuplets, a menu token and the display flag.",
+  "operators": [
+    {"name": "lfo_drift", "type": "lfoCHOP",
+     "parameters": {"frequency": 0.05, "wavetype": "sin"}},
+    {"name": "null_ctrl", "type": "nullCHOP", "inputs": ["lfo_drift"]},
+
+    {"name": "noise_field", "type": "noiseTOP",
+     "parameters": {"resolution": [640, 360], "period": 2.5, "mono": false,
+                    "harmon": 3, "tz": {"expr": "op('null_ctrl')['chan1'] * 2"}}},
+    {"name": "level_shape", "type": "levelTOP", "inputs": ["noise_field"],
+     "parameters": {"brightness1": 1.15, "gamma1": 1.4}},
+
+    {"name": "feedback_loop", "type": "feedbackTOP", "inputs": ["level_shape"],
+     "parameters": {"top": "null_out"}},
+    {"name": "transform_zoom", "type": "transformTOP", "inputs": ["feedback_loop"],
+     "parameters": {"sx": 1.01, "sy": 1.01, "extend": "hold"}},
+    {"name": "level_decay", "type": "levelTOP", "inputs": ["transform_zoom"],
+     "parameters": {"opacity": 0.93}},
+
+    {"name": "composite_trails", "type": "compositeTOP",
+     "inputs": ["level_shape", "level_decay"],
+     "parameters": {"operand": "maximum"}},
+    {"name": "null_out", "type": "nullTOP", "inputs": ["composite_trails"],
+     "flags": {"display": true}}
+  ],
+  "connections": []
+}

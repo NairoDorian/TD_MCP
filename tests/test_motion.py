@@ -115,6 +115,17 @@ class TestScoringPenalisesAFrozenRender:
         assert unknown["viewport_flags"] == []
 
 
+def _observe(br, path, frames=3):
+    """`observe` as the server runs it: across real frames (_observe_across_frames).
+
+    Until 1.13.3 these tests called the same-frame handler directly, which is
+    exactly the path that could never see motion in TouchDesigner: every
+    sample landed in one frame. In the double the sampler runs inline (the
+    test thread is the bridge's main thread) with a short sleep per frame.
+    """
+    return br["_observe_across_frames"]({"path": path, "frames": frames})
+
+
 class TestObserveHandler:
     @pytest.fixture()
     def bridge(self):
@@ -125,7 +136,7 @@ class TestObserveHandler:
         guessed."""
         br, td = bridge
         td.make("n1", "noiseCHOP", channels={"c": [1.0]})
-        out = br["_do_observe"]("/project1/n1")
+        out = _observe(br, "/project1/n1")
         assert out["ok"] is True
         assert out["verdict"]["is_static"] is None
         assert "motion could not be judged" in out["note"]
@@ -134,7 +145,7 @@ class TestObserveHandler:
         br, td = bridge
         node = td.make("n1", "noiseTOP")
         br["_frame_signature"] = lambda n: [1.0] * 64
-        out = br["_do_observe"]("/project1/n1")
+        out = _observe(br, "/project1/n1")
         assert out["verdict"]["is_static"] is True
         assert out["motion"]["frames"] == 3
 
@@ -143,7 +154,7 @@ class TestObserveHandler:
         td.make("n1", "noiseTOP")
         seq = iter([[0.0] * 64, [50.0] * 64, [100.0] * 64])
         br["_frame_signature"] = lambda n: next(seq)
-        out = br["_do_observe"]("/project1/n1")
+        out = _observe(br, "/project1/n1")
         assert out["verdict"]["is_static"] is False
 
     def test_frame_count_is_capped(self, bridge):
@@ -151,7 +162,7 @@ class TestObserveHandler:
         td.make("n1", "noiseTOP")
         calls = []
         br["_frame_signature"] = lambda n: (calls.append(1), [1.0] * 64)[1]
-        br["_do_observe"]("/project1/n1", frames=9999)
+        _observe(br, "/project1/n1", frames=9999)
         assert len(calls) == br["_MOTION_MAX_FRAMES"]
 
     def test_at_least_two_frames_are_always_taken(self, bridge):
@@ -159,12 +170,21 @@ class TestObserveHandler:
         td.make("n1", "noiseTOP")
         calls = []
         br["_frame_signature"] = lambda n: (calls.append(1), [1.0] * 64)[1]
-        br["_do_observe"]("/project1/n1", frames=1)
+        _observe(br, "/project1/n1", frames=1)
         assert len(calls) == 2
+
+    def test_same_frame_call_refuses_to_judge_instead_of_saying_frozen(self, bridge):
+        """Inside `batch` (main thread) every sample would share one frame; on
+        TD 2025.33230 that read a live feedback network as 'frozen'."""
+        br, td = bridge
+        td.make("n1", "noiseTOP")
+        br["_frame_signature"] = lambda n: [1.0] * 64
+        out = br["_do_observe"]("/project1/n1")
+        assert out["verdict"]["is_static"] is None and "frames" in out["verdict"]["motion_caption"]
 
     def test_missing_node(self, bridge):
         br, _ = bridge
-        assert br["_do_observe"]("/nope")["ok"] is False
+        assert _observe(br, "/nope")["ok"] is False
 
 
 class TestNumpyArrayRange:
@@ -224,11 +244,11 @@ class TestNumpyArrayRange:
         br, td = bridge
         frames = [np.full((16, 16, 4), v, dtype=np.float32) for v in (0.2, 0.5, 0.8)]
         td.make("n1", "noiseTOP", frames=frames)
-        assert br["_do_observe"]("/project1/n1", frames=3)["verdict"]["is_static"] is False
+        assert _observe(br, "/project1/n1", frames=3)["verdict"]["is_static"] is False
 
     def test_observe_sees_a_frozen_float_render(self, bridge):
         import numpy as np
         br, td = bridge
         frames = [np.full((16, 16, 4), 0.5, dtype=np.float32)] * 3
         td.make("n1", "noiseTOP", frames=frames)
-        assert br["_do_observe"]("/project1/n1", frames=3)["verdict"]["is_static"] is True
+        assert _observe(br, "/project1/n1", frames=3)["verdict"]["is_static"] is True

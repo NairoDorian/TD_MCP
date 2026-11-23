@@ -172,8 +172,11 @@ def _locate_bridge_dir():
 
 
 # Path to the chat UI HTML (beside this file when running in TD)
-_BRIDGE_DIR = _locate_bridge_dir()
-_CHAT_UI_PATH = os.path.join(_BRIDGE_DIR, "chat_ui.html")
+def _chat_ui_path():
+    """Resolved on first use, never at import: module-level code runs while
+    the DAT is still compiling, and reading a TD object there is how 1.13.3's
+    first build broke (see _STARTED_AT). tests/test_bridge_wave13.py enforces it."""
+    return os.path.join(_locate_bridge_dir(), "chat_ui.html")
 
 # WebSocket connected clients set (for future push events)
 _ws_clients = set()
@@ -393,6 +396,7 @@ _SELF_GUARDED = {
     "connect_nodes": ("to_path", False),
     "disconnect_nodes": ("to_path", False),
     "import_recipe": ("target_parent", False),
+    "build_network": ("target_parent", False),
     "restore_network": ("target_parent", False),
     "edit_custom_parameters": ("path", False),
 }
@@ -475,7 +479,15 @@ def _ws_push(event):
 # version lets the live server say so on the first call instead. Keep in sync
 # with pyproject.toml [project].version -- scripts/check_bridge_stale.py fails
 # CI when they diverge.
-BRIDGE_VERSION = "1.13.2"
+BRIDGE_VERSION = "1.13.3"
+
+
+#: time.time() when this module's server started listening. `scripts/td_live.py
+#: deploy` waits for it to change: a new value proves the server was restarted
+#: AFTER the file copy, so it runs the new code. (A source hash read from the
+#: DAT at import time was tried first and broke the module: never touch TD
+#: objects at module level -- the import runs before the network is ready.)
+_STARTED_AT = None
 
 TD_MCP_PORT = int(os.environ.get("TD_MCP_PORT", "9980"))
 
@@ -2906,6 +2918,149 @@ def _do_export_recipe(path, depth=3):
     return out
 
 
+def _build_layout(specs, origin=(0, 0), step_x=200, step_y=-160):
+    """Left-to-right positions by wiring depth for specs without a position."""
+    by_name = {s.get("name"): s for s in specs if s.get("name")}
+    depth = {}
+
+    def depth_of(name, seen=()):
+        if name in depth:
+            return depth[name]
+        if name in seen or name not in by_name:
+            return 0  # cycle or external source
+        srcs = [s for s in (by_name[name].get("inputs") or []) if s]
+        d = 0 if not srcs else 1 + max(depth_of(s, seen + (name,)) for s in srcs)
+        depth[name] = d
+        return d
+
+    rows, out = {}, {}
+    for name in by_name:
+        d = depth_of(name)
+        row = rows.get(d, 0)
+        rows[d] = row + 1
+        out[name] = [origin[0] + d * step_x, origin[1] + row * step_y]
+    return out
+
+
+def _do_build_network(spec, target_parent=None, replace=False):
+    """Create, configure and wire a whole network in ONE call (one Ctrl+Z).
+
+    ``spec`` is the format ``td_validate_build`` checks offline:
+    ``{"operators": [{"name", "type", "parameters": {...}, "inputs": [src|null],
+    "position": [x, y], "flags": {...}, "text": "..."}], "connections": [...]}``.
+    Parameters go through set_parameters (read-back, tuplets, menu tokens,
+    ``{"expr": ...}``), so nothing is silently dropped the way import_recipe
+    drops an unknown name. Returns a per-operator report plus the cook errors
+    of everything created.
+    """
+    if isinstance(spec, str):
+        try:
+            spec = json.loads(spec)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": "bad spec json: %s" % exc}
+    if not isinstance(spec, dict) or not isinstance(spec.get("operators"), list):
+        return {"ok": False, "error": "spec must be {'operators': [...], 'connections': [...]}"}
+    specs = [s for s in spec["operators"] if isinstance(s, dict)]
+    if not ALLOW_EXEC:
+        sources = []
+        for s in specs:
+            sources.extend("%s on %s" % (f, s.get("name")) for f in code_bearing_sources(
+                op_type=s.get("type"), params=s.get("parameters"), text=s.get("text")))
+        if sources:
+            return code_route_denied("build_network", sources[:10])
+    parent = _op(target_parent) if target_parent else _current_parent()
+    if parent is None or not getattr(parent, "isCOMP", False):
+        return {"ok": False, "error": "target_parent is not a COMP: %s" % target_parent}
+
+    report, created, issues = {}, {}, []
+    layout = _build_layout(specs)
+    for s in specs:
+        name, op_type = s.get("name"), s.get("type")
+        if not name or not op_type:
+            issues.append("operator without name/type skipped: %r" % (s,))
+            continue
+        existing = parent.op(name)
+        if existing is not None:
+            if not replace:
+                report[name] = {"ok": False, "error": "already exists (pass replace=true)"}
+                issues.append("%s already exists" % name)
+                continue
+            existing.destroy()
+        try:
+            node = parent.create(normalize_op_type(op_type), name)
+        except Exception as exc:  # noqa: BLE001
+            report[name] = {"ok": False, "error": "create failed: %s" % exc}
+            issues.append("%s: create failed (%s)" % (name, exc))
+            continue
+        created[name] = node
+        x, y = s.get("position") or layout.get(name, [0, 0])
+        node.nodeX, node.nodeY = int(x), int(y)
+        report[name] = {"ok": True, "path": node.path, "type": _op_type(node)}
+
+    for s in specs:
+        node = created.get(s.get("name"))
+        if node is None:
+            continue
+        entry = report[s["name"]]
+        params = s.get("parameters") or s.get("params") or {}
+        if params:
+            res = _do_set_parameters(node.path, params)
+            if not res.get("ok"):
+                entry["ok"] = False
+                entry["error"] = res.get("error")
+                issues.append("%s: %s" % (s["name"], res.get("error")))
+            if res.get("notes"):
+                entry["notes"] = res["notes"]
+        if s.get("text") is not None and hasattr(node, "text"):
+            try:
+                node.text = s["text"]
+            except Exception as exc:  # noqa: BLE001
+                entry["ok"] = False
+                issues.append("%s: text not set (%s)" % (s["name"], exc))
+        if s.get("flags"):
+            res = _do_set_flags(node.path, s["flags"])
+            if not res.get("ok"):
+                entry["ok"] = False
+                issues.append("%s: flags (%s)" % (s["name"], res.get("error")))
+
+    edges = []
+    for s in specs:
+        for i, src in enumerate(s.get("inputs") or []):
+            if src:
+                edges.append((src, s.get("name"), 0, i))
+    for c in spec.get("connections") or []:
+        edges.append((c.get("from"), c.get("to"), int(c.get("from_output", 0)),
+                      int(c.get("to_input", 0))))
+    wired, unwired = 0, []
+    for src, dst, out_i, in_i in edges:
+        a, b = created.get(src) or parent.op(src or ""), created.get(dst)
+        if a is None or b is None:
+            unwired.append("%s -> %s" % (src, dst))
+            continue
+        try:
+            b.inputConnectors[in_i].connect(a.outputConnectors[out_i])
+            wired += 1
+        except Exception as exc:  # noqa: BLE001
+            unwired.append("%s -> %s[%d]: %s" % (src, dst, in_i, exc))
+    if unwired:
+        issues.append("unwired: %s" % "; ".join(unwired))
+
+    # Pull the network once so first-cook errors exist to be read: cooking
+    # every leaf demands everything upstream of it.
+    for node in created.values():
+        if not _output_targets(node):
+            _force_cook(node)
+    cook_errors = {}
+    for name, node in created.items():
+        errs = _node_errors(node)
+        if errs:
+            cook_errors[name] = errs
+    return {"ok": not issues, "parent": parent.path, "created": len(created),
+            "wired": wired, "operators": report, "issues": issues,
+            "cook_errors": cook_errors,
+            "note": "one undo step: Ctrl+Z in TouchDesigner removes the whole build"}
+
+
 def _do_import_recipe(recipe, target_parent="*here"):
     """Rebuild a blueprint produced by export_recipe under target_parent."""
     parent = _op(target_parent) if target_parent else _current_parent()
@@ -3008,6 +3163,7 @@ def _do_project_info():
                                               getattr(app, "build", None)),
             "td_version": str(getattr(app, "version", "")),
             "bridge_version": BRIDGE_VERSION,
+            "server_started_at": _STARTED_AT,
             "fps": project.cookRate,
             "file": project.name}
 
@@ -3146,7 +3302,9 @@ def _capture_any_family(args):
 #: Tools that must span frames. They run on the HTTP thread and marshal each
 #: step to the main thread themselves; called ON the main thread (a batch, the
 #: Textport) they fall back to the single-frame handler.
-_MULTI_FRAME_TOOLS = {"capture_viewport": _capture_any_family}
+_MULTI_FRAME_TOOLS = {"capture_viewport": _capture_any_family,
+                      "observe": lambda a: _observe_across_frames(a),
+                      "get_performance": lambda a: _perf_across_frames(a)}
 
 
 def _do_capture_viewport(path, detail="normal"):
@@ -3250,19 +3408,136 @@ def _do_observe(path, frames=_MOTION_FRAMES, detail="normal"):
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
-    count = max(2, _cap(frames, _MOTION_MAX_FRAMES))
-    signatures = []
-    for _ in range(count):
-        _force_cook(node)
-        sig = _frame_signature(node)
+    # Reached on the main thread (inside `batch`, the in-TD agent). All samples
+    # here land in ONE frame: absTime does not advance and feedback does not
+    # step, so a working animation reads as frozen (verified 2025.33230: max
+    # tile delta 0.000 on a live feedback network). Say so instead of guessing;
+    # `observe` called directly samples across real frames (_observe_across_frames).
+    still = _do_capture_viewport(path, detail)
+    verdict = dict(still.get("verdict") or {})
+    verdict.update({"is_static": None,
+                    "motion_caption": "motion needs frames to pass: call observe "
+                                      "directly, not inside batch"})
+    return {"ok": True, "path": node.path, "verdict": verdict,
+            "motion": {"is_static": None, "frames": 0}, "file": still.get("file"),
+            "note": "same-frame call: motion not judged"}
+
+
+def perf_summary(snapshots, fps=60.0, limit=25):
+    """Median per-operator cost over several per-frame snapshots. Pure.
+
+    ``snapshots`` is a list of ``{path: (type, cpu_ms, gpu_ms)}``. A single
+    reading is the LAST cook, and right after a build that includes one-off
+    costs (first GPU allocation): verified 2025.33230, one snapshot of a fresh
+    9-operator network read 167% of a frame while its steady state is ~2.4%.
+    """
+    frame_ms = 1000.0 / (fps or 60.0)
+    per = {}
+    for snap in snapshots:
+        for path, (op_type, cpu, gpu) in snap.items():
+            per.setdefault(path, [op_type, [], []])
+            per[path][1].append(float(cpu or 0))
+            per[path][2].append(float(gpu or 0))
+
+    def median(xs):
+        xs = sorted(xs)
+        n = len(xs)
+        return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2.0
+
+    rows = []
+    for path, (op_type, cpus, gpus) in per.items():
+        cpu, gpu = median(cpus), median(gpus)
+        peak = max(c + g for c, g in zip(cpus, gpus))
+        rows.append({"path": path, "type": op_type, "cpu_ms": round(cpu, 4),
+                     "gpu_ms": round(gpu, 4), "peak_ms": round(peak, 4),
+                     "budget_pct": round(100.0 * (cpu + gpu) / frame_ms, 2)})
+    rows.sort(key=lambda r: -(r["cpu_ms"] + r["gpu_ms"]))
+    return {"ok": True, "fps": fps, "frame_budget_ms": round(frame_ms, 3), "units": "ms",
+            "samples": len(snapshots), "statistic": "median per frame (peak = worst frame)",
+            "count": len(rows),
+            "live_total_budget_pct": round(sum(r["budget_pct"] for r in rows), 2),
+            "hotspots": rows[:5], "cooks": rows[:int(limit or 25)]}
+
+
+def _perf_sample(path, depth=1):
+    """Main thread: cook ``path``'s network once (its leaves pull everything
+    upstream) and read each operator's cook times for that frame."""
+    start = _op(path) if path else root  # noqa: F821
+    if start is None:
+        return None
+    if getattr(start, "isCOMP", False):
+        try:
+            nodes = start.findChildren(maxDepth=max(1, min(int(depth or 1), MAX_DEPTH)))
+        except Exception:  # noqa: BLE001
+            nodes = list(getattr(start, "children", []))
+    else:
+        nodes = [start]
+    for node in nodes:
+        if not _output_targets(node):
+            _force_cook(node)
+    return {n.path: (_op_type(n), getattr(n, "cpuCookTime", 0) or 0,
+                     getattr(n, "gpuCookTime", 0) or 0) for n in nodes}
+
+
+def _perf_across_frames(args):
+    """HTTP thread: ``get_performance`` with ``samples`` > 1 -- one cook per real
+    frame, median per operator. ``samples`` 1 (default) is the classic
+    single-frame read with stale marking."""
+    samples = max(1, min(int(args.get("samples") or 1), 60))
+    if samples == 1:
+        return _call_on_main(_run_tool, "get_performance", args)
+    path, depth = args.get("path"), args.get("depth", 1)
+    snapshots = []
+    for _ in range(samples):
+        snap = _call_on_main(_perf_sample, path, depth)
+        if snap is None:
+            return _wrap({"ok": False, "error": "not found: %s" % path})
+        snapshots.append(snap)
+        time.sleep(0.05)  # > one frame at 60 fps
+    try:
+        fps = float(_call_on_main(lambda: project.cookRate))  # noqa: F821
+    except Exception:  # noqa: BLE001
+        fps = 60.0
+    out = perf_summary(snapshots, fps, args.get("limit", 25))
+    out["note"] = ("each sample forced one cook of the network, so this is the "
+                   "cost of cooking it every frame -- an upper bound for parts "
+                   "that would not recook on their own")
+    return out
+
+
+def _observe_sample(path):
+    """Main thread: one forced cook and an 8x8 luma signature of ``path``."""
+    node = _op(path)
+    if node is None:
+        return None
+    _force_cook(node)
+    return _frame_signature(node)
+
+
+def _observe_across_frames(args):
+    """HTTP thread: sample ``frames`` signatures with a real frame between each.
+
+    ``observe`` exists to catch a network that renders one good frame and then
+    freezes, so its samples must straddle frames -- see _do_observe.
+    """
+    path = args.get("path")
+    detail = args.get("detailLevel", "normal")
+    count = max(2, _cap(args.get("frames", _MOTION_FRAMES), _MOTION_MAX_FRAMES))
+    first = _call_on_main(_observe_sample, path)
+    if first is None:
+        return _wrap({"ok": False, "error": "not found: %s" % path})
+    signatures = [first] if first else []
+    for _ in range(count - 1):
+        time.sleep(0.05)  # > one frame at 60 fps: let the timeline advance
+        sig = _call_on_main(_observe_sample, path)
         if sig:
             signatures.append(sig)
     motion = motion_verdict(signatures)
-    still = _do_capture_viewport(path, detail)
+    still = _call_on_main(_do_capture_viewport, path, detail)
     verdict = dict(still.get("verdict") or {})
-    verdict.update({"is_static": motion["is_static"],
-                    "motion_caption": motion["caption"]})
-    out = {"ok": True, "path": node.path, "verdict": verdict, "motion": motion}
+    verdict.update({"is_static": motion["is_static"], "motion_caption": motion["caption"]})
+    out = {"ok": True, "path": path, "verdict": verdict, "motion": motion,
+           "is_static": motion["is_static"]}
     if still.get("file"):
         out["file"] = still["file"]
     if not signatures:
@@ -3692,6 +3967,8 @@ _DISPATCH = {
     "timeline": lambda a: _do_timeline(a.get("action"), a.get("value"), a.get("force", False)),
     "export_recipe": lambda a: _do_export_recipe(a.get("path"), _cap(a.get("depth", 3), MAX_DEPTH)),
     "import_recipe": lambda a: _do_import_recipe(a.get("recipe"), a.get("target_parent", "*here")),
+    "build_network": lambda a: _do_build_network(a.get("spec"), a.get("target_parent"),
+                                                 a.get("replace", False)),
     "save_tox": lambda a: _do_save_tox(a.get("path"), a.get("file_path")),
 }
 
@@ -4008,14 +4285,15 @@ class _Handler(BaseHTTPRequestHandler):
 
         if self.path in ("/", "/ui", "/chat"):
             try:
-                with open(_CHAT_UI_PATH, "rb") as f:
+                with open(_chat_ui_path(), "rb") as f:
                     self._send_html(f.read())
             except FileNotFoundError:
                 self._send({"ok": False, "error": "chat_ui.html not found"})
             return
         if self.path == "/api/status":
             self._send({"ok": True, "status": "running", "port": TD_MCP_PORT,
-                        "auth": True, "allow_exec": ALLOW_EXEC})
+                        "auth": True, "allow_exec": ALLOW_EXEC,
+                        "bridge_version": BRIDGE_VERSION, "started_at": _STARTED_AT})
         elif self.path.startswith("/api/resource?"):
             m = re.search(r"uri=([^&]+)", self.path)
             uri = _urldecode(m.group(1)) if m else ""
@@ -4186,7 +4464,7 @@ _thread = None
 
 
 def start():
-    global _server, _thread
+    global _server, _thread, _STARTED_AT
     if _server is not None:
         debug("td_mcp already running")
         return
@@ -4212,6 +4490,7 @@ def start():
     _Handler.AUTH_TOKEN = AUTH_TOKEN  # set auth token on handler class
     _thread = threading.Thread(target=_server.serve_forever, daemon=True)
     _thread.start()
+    _STARTED_AT = time.time()
     debug(f"td_mcp bridge v{BRIDGE_VERSION} started on http://127.0.0.1:{_server.server_address[1]}")
 
 

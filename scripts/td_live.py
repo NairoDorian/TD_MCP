@@ -140,9 +140,24 @@ def deploy() -> None:
     for name in ("td_mcp_bridge.py", "td_mcp_agent.py"):
         shutil.copy2(ROOT / "bridge" / name, target / name)
     want = _repo_bridge_version()
-    call("execute_python", {"code": "run(\"op('/project1/td_mcp').par.Restart.pulse()\", "
+    before = (status() or {}).get("started_at")
+    # Load File first: TouchDesigner notices a changed file on its own
+    # schedule, and a restart that fires before it does restarts the OLD code.
+    call("execute_python", {"code": "op('/project1/td_mcp/bridge').par.loadonstartpulse.pulse()\n"
+                                    "run(\"op('/project1/td_mcp').par.Restart.pulse()\", "
                                     "delayFrames=20)\nresult = 'scheduled'"})
-    ok = wait_for(lambda: call("project_info").get("bridge_version") == want, 30)
+
+    # The version alone cannot prove a restart: the old server answers with
+    # the same version until it is replaced. A newer start time can -- the
+    # restart came after the forced reload, so the new server runs the new file.
+    def restarted():
+        st = status() or {}
+        return (st.get("bridge_version") == want and st.get("started_at") is not None
+                and st.get("started_at") != before)
+
+    ok = wait_for(restarted, 30)
+    if ok:  # and the tool path answers, not just the socket (give it a moment)
+        ok = wait_for(lambda: call("project_info").get("ok") is True, 10)
     print(f"bridge {want} {'running' if ok else 'NOT confirmed'} in {target.name}")
     if not ok:
         sys.exit(1)

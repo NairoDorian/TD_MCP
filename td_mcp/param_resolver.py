@@ -152,6 +152,9 @@ def _map_key(op_type: str, key: str, schema: Dict[str, Any],
 def _normalize_value(name: str, info: Dict[str, Any], val: Any,
                      warnings: List[Dict[str, str]]) -> Tuple[Any, bool]:
     """``(value, valid)`` after menu / toggle / range checks for one param."""
+    if isinstance(val, dict):
+        # {"expr": ...} / {"pulse": true}: an instruction, not a value to check
+        return val, True
     menu = info.get("menu") or []
     if menu:
         if val in menu:
@@ -246,7 +249,7 @@ def resolve_parameters(op_type: Optional[str], params: Dict[str, Any]
                 if len(val) > len(comps):
                     warnings.append({"param": raw_key, "message":
                                      f"{mapped} has {len(comps)} components; extra values dropped"})
-                pairs = list(zip(comps, val))
+                pairs = list(zip(comps, val, strict=False))  # extras dropped, warned above
             else:
                 warnings.append({"param": raw_key, "message":
                                  f"scalar on tuplet {mapped!r} broadcast to {', '.join(comps)}"})

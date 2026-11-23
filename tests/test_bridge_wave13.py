@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.td_double import FakeOP, FakeParMode, build_bridge
+from tests.td_double import BRIDGE_PATH, FakeOP, FakeParMode, build_bridge
 
 
 @pytest.fixture()
@@ -193,3 +193,70 @@ class TestCaptureOnTheMainThread:
         out = br["_do_batch"]([{"tool": "capture_viewport", "args": {"path": "/project1/lfo1"}}])
         res = out["batch"][0]["result"]
         assert res["ok"] is False and res["error_code"] == "needs_frames"
+
+
+class TestNoTouchDesignerAccessAtImport:
+    """The bridge must not touch a TD object while its module is importing.
+
+    1.13.3's first build read the bridge DAT's own text at module level; in
+    TouchDesigner the module stopped part-way through, and every POST failed
+    with "NameError: name 'MAX_BODY_BYTES' is not defined". The double could
+    not see it (it has no compile-time DAT), so this checks the source: no
+    module-level statement may reference a TD global, directly or by calling
+    a function that does. Lambdas, defs and classes run later and are exempt.
+    """
+
+    TD_GLOBALS = {"me", "op", "parent", "root", "project", "ui", "app", "absTime",
+                  "mod", "tdu", "ipar", "iop"}
+
+    def test_module_level_code_touches_no_td_object(self):
+        import ast
+        tree = ast.parse(open(BRIDGE_PATH, encoding="utf-8").read())
+        td = self.TD_GLOBALS
+
+        def refs(node):
+            return {n.id for n in ast.walk(node)
+                    if isinstance(n, ast.Name) and n.id in td and isinstance(n.ctx, ast.Load)}
+
+        touching = {n.name: refs(n) for n in tree.body
+                    if isinstance(n, ast.FunctionDef) and refs(n)}
+
+        class AtImport(ast.NodeVisitor):
+            def __init__(self):
+                self.hits = set()
+
+            def visit_Lambda(self, node):  # runs later
+                pass
+
+            visit_FunctionDef = visit_ClassDef = visit_Lambda
+
+            def visit_Name(self, node):
+                if node.id in td and isinstance(node.ctx, ast.Load):
+                    self.hits.add(node.id)
+
+            def visit_Call(self, node):
+                if isinstance(node.func, ast.Name) and node.func.id in touching:
+                    self.hits.add("%s() -> %s" % (node.func.id, sorted(touching[node.func.id])))
+                self.generic_visit(node)
+
+        bad = []
+        for stmt in tree.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)):
+                continue
+            v = AtImport()
+            v.visit(stmt)
+            if v.hits:
+                bad.append("line %d: %s" % (stmt.lineno, sorted(v.hits)))
+        assert not bad, "TD access at import time: %s" % bad
+
+
+class TestPerformanceSampling:
+    def test_median_hides_a_first_cook_spike_but_peak_keeps_it(self, bridge):
+        br, _ = bridge
+        snaps = [{"/p/noise": ("noiseTOP", 27.0, 0.2)},   # first cook after a build
+                 {"/p/noise": ("noiseTOP", 0.09, 0.16)},
+                 {"/p/noise": ("noiseTOP", 0.08, 0.15)}]
+        out = br["perf_summary"](snaps, fps=60.0)
+        row = out["cooks"][0]
+        assert out["samples"] == 3 and row["cpu_ms"] == 0.09 and row["peak_ms"] == 27.2
+        assert out["live_total_budget_pct"] < 2  # not the 160% a single read gave

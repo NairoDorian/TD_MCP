@@ -695,6 +695,24 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "build_network",
+            "description": "Build a whole network in one call (one undo step): create, set "
+                           "parameters, wire, set flags, auto-place, report errors.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "spec": {"type": "object", "description": "{'operators': [{'name', 'type', "
+                             "'parameters', 'inputs': [source|null], 'flags'}], 'connections': []}"},
+                    "target_parent": {"type": "string", "description": "COMP to build in"},
+                    "replace": {"type": "boolean", "description": "Overwrite same-named operators"}
+                },
+                "required": ["spec"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "pulse_parameter",
             "description": "Pulse a pulse-type parameter (reset, reload, start).",
             "parameters": {

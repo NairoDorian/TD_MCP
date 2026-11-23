@@ -424,6 +424,31 @@ class TDClient:
     def import_recipe(self, recipe, target_parent="*here"):
         return self._call("import_recipe", {"recipe": recipe, "target_parent": target_parent})
 
+    def build_network(self, spec, target_parent=None, replace=False):
+        """Resolve parameter names offline (live-probed catalog), then build.
+
+        The agent's friendly names ('brightness', 'resolution', 'monochrome')
+        are mapped to TouchDesigner's before the bridge creates anything, and
+        what was changed rides back under ``resolver`` so the agent learns the
+        real names for next time.
+        """
+        if isinstance(spec, str):
+            try:
+                spec = json.loads(spec)
+            except ValueError as exc:
+                return {"ok": False, "error": "bad spec json: %s" % exc}
+        resolver = []
+        try:
+            from td_mcp import param_resolver
+            spec, resolver, _ok = param_resolver.resolve_build(spec or {})
+        except Exception:  # noqa: BLE001 - resolution is advisory
+            pass
+        result = self._call("build_network", {"spec": spec, "target_parent": target_parent,
+                                               "replace": replace})
+        if isinstance(result, dict) and resolver:
+            result["resolver"] = resolver
+        return result
+
     def save_tox(self, path, file_path=None):
         return self._call("save_tox", {"path": path, "file_path": file_path})
 
@@ -476,6 +501,9 @@ _CLIENT_SIDE = {
     "build_and_verify": _wrap_tool(lambda c, a: c.build_and_verify(
         a.get("path"), a.get("type") or a.get("op_type"), a.get("params"), a.get("name"))),
     "get_non_default_params": _wrap_tool(lambda c, a: c.get_non_default_params(a.get("path"))),
+    # resolves parameter names against the catalog before the bridge sees them
+    "build_network": _wrap_tool(lambda c, a: c.build_network(
+        a.get("spec"), a.get("target_parent"), a.get("replace", False))),
 }
 
 TOOL_REGISTRY = {}  # filled from _TOOL_META below, so the two cannot drift
@@ -645,8 +673,11 @@ _TOOL_META = [
     ("get_performance", "What is slowing a network down: cook time per operator in ms "
      "(CPU+GPU), budget_pct of one frame, hotspots. An operator that has not cooked "
      "within max_age_frames is marked stale and ranked last (its cook time is history). "
-     "A non-COMP path profiles that one operator.",
-     {"path": _PATH, "max_age_frames": _I, "depth": _I, "limit": _I}),
+     "A non-COMP path profiles that one operator. samples=N (e.g. 10) cooks the "
+     "network once per real frame for N frames and reports the MEDIAN per operator "
+     "(peak_ms = worst frame): one reading right after a build includes one-off "
+     "costs and can be 50x the steady state.",
+     {"path": _PATH, "max_age_frames": _I, "depth": _I, "limit": _I, "samples": _I}),
     ("validate_network", "Scene contract check: unplaced/overlapping nodes and cook errors.",
      {"path": _PATH, "depth": _I}),
     ("set_flags", "Set operator flags: display, render, bypass, lock, viewer, "
@@ -668,6 +699,15 @@ _TOOL_META = [
     ("export_recipe", "Serialize a COMP's operators, parameters and wiring to a JSON "
      "recipe (import_recipe rebuilds it).",
      {"path": _PATH, "depth": _I}),
+    ("build_network", "Build a whole network in ONE call (one Ctrl+Z): create, set parameters, "
+     "wire, set flags and DAT text, auto-place left to right, then report every "
+     "operator's result and cook errors. `spec` is the format td_validate_build "
+     "checks offline: {'operators': [{'name', 'type', 'parameters', 'inputs': "
+     "[source|null], 'flags', 'position', 'text'}], 'connections': [...]}. Parameter "
+     "names are resolved against the live-probed catalog first. Validate offline, "
+     "then build. replace=true overwrites same-named operators in target_parent.",
+     {"spec": _O, "target_parent": dict(_PATH, description="COMP to build in."),
+      "replace": _B}),
     ("import_recipe", "Rebuild an export_recipe blueprint inside target_parent; reports "
      "any wire it could not reconnect under `unwired`.",
      {"recipe": _O, "target_parent": _S}),
@@ -694,6 +734,7 @@ _REQUIRED = {
     "snapshot_network": ["path"], "restore_network": ["snapshot"],
     "set_flags": ["path", "flags"], "set_node_position": ["path", "x", "y"],
     "timeline": ["action"], "export_recipe": ["path"], "import_recipe": ["recipe"],
+    "build_network": ["spec"],
     "save_tox": ["path"],
 }
 

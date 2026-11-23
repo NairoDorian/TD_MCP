@@ -10,7 +10,7 @@ best ideas of the public TD‑MCP ecosystem into one cohesive package:
 
 - **Offline doc / RAG server** — version‑aware retrieval over a merged MIT corpus **plus the complete official documentation** (no TouchDesigner required, no network, no API keys). Several lexical + semantic backends run **in parallel** and fuse via Reciprocal Rank Fusion, with an optional CrossEncoder reranker and optional external RAG fusion.
 - **Eval harness** — recall@k / MRR / nDCG over a labelled query set, so retrieval quality is provable and regressions are caught. **k=5 recall 1.000** with the wiki KB (**0.991** curated‑only), zero version‑gating violations.
-- **Live bridge + MCP server** — control a running TouchDesigner session (create / wire / inspect / verify) over **Streamable HTTP + SSE**, WebSocket, or stdio. Exposes **49 live tools**; every mutation is wrapped in `ui.undo` so one Ctrl+Z reverts a whole agent batch.
+- **Live bridge + MCP server** — control a running TouchDesigner session (create / wire / inspect / verify) over **Streamable HTTP + SSE**, WebSocket, or stdio. Exposes **50 live tools**; every mutation is wrapped in `ui.undo` so one Ctrl+Z reverts a whole agent batch.
 - **All four of TouchDesigner's error surfaces** — cook errors, warnings, **script tracebacks** and **GLSL compile errors** (which appear on none of the API's error accessors). Most tooling reads one of the four and calls a visibly broken network clean. See **[docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md)**.
 - **Natively embedded chat UI** and a **zero‑dependency autonomous agent** that run *inside* TouchDesigner Text DATs.
 
@@ -26,7 +26,7 @@ Full docs live in **[`docs/`](docs/README.md)**.
 |---|---|
 | **[What goes into TouchDesigner](docs/TOUCHDESIGNER_COMPONENT.md)** | The `/td_mcp` component, drag-and-drop `.tox`, and how the other 30 projects do it |
 | **[Install](docs/INSTALL.md)** | Both halves, the lifecycle, environment variables |
-| **[Tools](docs/TOOLS.md)** | All 108 tools with risk classes |
+| **[Tools](docs/TOOLS.md)** | All 109 tools with risk classes |
 | **[Diagnostics](docs/DIAGNOSTICS.md)** | The four error surfaces — read this one |
 | **[Agent guide](docs/AGENT_GUIDE.md)** | How to sequence the tools |
 | **[Troubleshooting](docs/TROUBLESHOOTING.md)** | Symptom-first |
@@ -48,6 +48,7 @@ Full docs live in **[`docs/`](docs/README.md)**.
 - [Project layout](#project-layout)
 - [Tool catalog](#tool-catalog)
 - [Documentation](#documentation)
+- [Demonstration](#demonstration-build-a-template-network-as-an-agent)
 - [Verify in TouchDesigner — the major rule](#verify-in-touchdesigner--the-major-rule)
 - [Tests](#tests)
 - [License](#license)
@@ -339,7 +340,7 @@ td-mcp/
 │   └── generate_summary.py   # generates SUMMARY.md (code-free file/architecture overview)
 ├── td_mcp/
 │   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (59 tools)
-│   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server for the bridge (49 tools)
+│   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server for the bridge (50 tools)
 │   ├── heal.py                # self-healing orchestrator: validate → score → auto-repair → hints
 │   ├── validation.py          # 5-stage build validation + auto-repair (pure, TD-free)
 │   ├── scoring.py             # score_build (0..100 A–F) + repair_network
@@ -396,7 +397,7 @@ td-mcp/
 `td_scaffold_recipe`, `td_analyze_build`, `td_diff_networks`, `td_optimize_layout`,
 `td_resolve_params`, `td_docs_combos`.
 
-**Live server (49 tools)** — `create_node`, `delete_node`, `set_parameters`, `get_parameters`,
+**Live server (50 tools)** — `build_network`, `create_node`, `delete_node`, `set_parameters`, `get_parameters`,
 `describe_op_type`, `pulse_parameter`,
 `get_parameter_info`, `get_non_default_params`, `bind_parameter_expression`, `get_errors`,
 `clear_script_errors`, `execute_python`, `list_nodes`, `project_info`, `capture_viewport`,
@@ -462,6 +463,19 @@ attribute metadata free with value readback gated on point count. Pass
 | [`TouchDesigner_Links.md`](TouchDesigner_Links.md) | Curated official docs / Python API / curriculum links. |
 
 ---
+
+## Demonstration: build a template network as an agent
+
+```bash
+python scripts/td_live.py launch     # TouchDesigner on TD_MCP_TESTS/TEST-01
+python scripts/demo_build.py         # examples/feedback_trails.json -> /project1/feedback_trails
+```
+
+Over MCP, exactly as an agent: validate the spec offline (`td_validate_build`),
+build it live in one call (`build_network`, one Ctrl+Z), then verify — errors,
+a captured frame, motion across real frames, median frame cost. Measured:
+9 operators in ~150 ms, 0 errors, animating, ~2.5% of a 60 fps frame. See
+[examples/README.md](examples/README.md).
 
 ## Verify in TouchDesigner — the major rule
 

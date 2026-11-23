@@ -90,8 +90,9 @@ async def live() -> None:
             tools = {t.name: t for t in (await s.list_tools()).tools}
             schema = (getattr(tools.get("set_parameters"), "input_schema", None)  # SDK 2.x
                       or getattr(tools.get("set_parameters"), "inputSchema", None) or {})
-            check("live: 49 tools, schemas declare required args",
-                  len(tools) == 49 and schema.get("required") == ["path", "params"],
+            from td_mcp.server_live import _TOOL_META
+            check(f"live: all {len(_TOOL_META)} tools listed, schemas declare required args",
+                  len(tools) == len(_TOOL_META) and schema.get("required") == ["path", "params"],
                   {"count": len(tools), "required": schema.get("required")})
             info = _text(await s.call_tool("project_info", {}))
             want = td_live._repo_bridge_version()
@@ -140,6 +141,14 @@ async def live() -> None:
                 guard = _text(await s.call_tool("delete_node", {"path": "/project1/td_mcp"}))
                 check("live: deleting the bridge is refused",
                       guard.get("ok") is False and guard.get("error_code") == "self_path", guard)
+                spec = json.loads((ROOT / "examples" / "feedback_trails.json").read_text(encoding="utf-8"))
+                await s.call_tool("create_node", {"path": SCRATCH, "type": "baseCOMP", "name": "built",
+                                                  "nodeX": 400, "nodeY": 0})
+                built = _text(await s.call_tool("build_network", {"spec": spec,
+                                                                  "target_parent": SCRATCH + "/built"}))
+                check("live: build_network builds the example in one call",
+                      built.get("ok") and built.get("created") == len(spec["operators"])
+                      and not built.get("cook_errors"), built.get("issues") or built)
                 errs = _text(await s.call_tool("get_errors", {"path": SCRATCH, "recurse": True}))
                 check("live: get_errors recurse answers", errs.get("ok"), errs)
             finally:

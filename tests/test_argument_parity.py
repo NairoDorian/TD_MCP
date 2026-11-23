@@ -100,6 +100,8 @@ _PRE_DISPATCH = {
     # read by the bridge's multi-frame capture path (_capture_any_family),
     # which runs before the single-frame handler is dispatched
     ("capture_viewport", "width"),
+    # read by the multi-frame performance path (_perf_across_frames)
+    ("get_performance", "samples"),
 }
 
 
