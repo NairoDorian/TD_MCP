@@ -117,8 +117,10 @@ keeps checking. Coverage was informed by TDMCPSkills; no text was taken.
   1.000 -> 0.987, because 1,617 long chunks shift BM25 IDF/avgdl for every
   document. If enabled, they get no per-category voter and an intent gate.
   Default build: recall@5 1.000, MRR 0.857 on the 45-query set.
-- Pre-existing, not fixed: with a local wiki mirror, "osc receive network" and
-  "feedback trails recipe" miss one expectation each (recall@5 0.993).
+- With a local wiki mirror, "feedback trails recipe" missed `level_top`
+  (recall@5 0.994): the experimental `technique` category's per-category voter.
+  Fixed in 1.13.1 by letting it rank on merit only -- recall@5 1.000 on both
+  the wiki and the wiki-less build.
 
 ## Backlog (noted, not taken)
 

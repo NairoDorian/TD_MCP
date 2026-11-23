@@ -62,14 +62,6 @@ def _dict_assign(tree: ast.Module, name: str) -> ast.Dict:
     raise AssertionError(f"{name} not found")
 
 
-def _registry_keys() -> dict[str, set[str]]:
-    tree = ast.parse(SERVER.read_text(encoding="utf-8"))
-    out = {}
-    for k, v in zip(_dict_assign(tree, "TOOL_REGISTRY").keys, _dict_assign(tree, "TOOL_REGISTRY").values):
-        out[k.value] = _a_get_keys(v)
-    return out
-
-
 def _bridge_keys() -> dict[str, set[str]]:
     tree = ast.parse(BRIDGE.read_text(encoding="utf-8"))
     d = _dict_assign(tree, "_DISPATCH")

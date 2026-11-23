@@ -17,8 +17,13 @@ jobs:
         with:
           python-version: "3.11"
 
+      # `uv pip install` needs an environment to install into; without
+      # `uv venv` this step failed with "No virtual environment found" on every
+      # run from at least v1.11.0 to v1.13.0, so the tests below never ran.
       - name: Install dependencies
-        run: uv pip install -e ".[test]"
+        run: |
+          uv venv
+          uv pip install -e ".[test]"
 
       - name: Build knowledge base (chunks.jsonl)
         run: uv run python -m td_mcp.kb.build_kb

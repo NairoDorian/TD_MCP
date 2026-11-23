@@ -268,12 +268,13 @@ def auto_repair(desc: Dict[str, Any], report: Optional[Dict[str, Any]] = None
                 ) -> Dict[str, Any]:
     """Apply non-destructive repairs and return a corrected description.
 
-    Currently handles: dangling inputs/connections, auto-naming unnamed nodes,
-    and dropping nodes with no type. Family mismatches are flagged (repairable
-    by inserting a Convert, which the TD side can do) but not silently changed.
+    Handles: dangling inputs/connections, auto-naming unnamed nodes, dropping
+    nodes with no type, and parameters (rename friendly keys, expand tuplets,
+    reset unrescuable menu values -- see ``_repair_params``). Family mismatches
+    are flagged (repairable by inserting a Convert, which the TD side can do)
+    but not silently changed. ``suggest_repairs`` lists the same actions for a
+    caller that wants to apply them itself.
     """
-    report = report or validate_build(desc)
-    repairs = suggest_repairs(report)
     desc = {"operators": [dict(o) for o in desc.get("operators", [])],
             "connections": [dict(c) for c in desc.get("connections", [])]}
 

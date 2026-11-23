@@ -103,12 +103,15 @@ class TitleStrategy(Strategy):
 
 
 #: Categories that rank on merit only, without a per-category voter. A voter
-#: nominates its category's best chunk on EVERY query; for the 1,600-chunk
-#: live-probed `parameters` tables that bought a guaranteed RRF vote on
-#: questions that were not about parameters, and cost ~0.02 recall@5
-#: (measured A/B, 2026-11-22). They still surface through global BM25/title
-#: whenever a query names the parameters it wants.
-_NO_SOURCE_VOTER = {"parameters"}
+#: nominates its category's candidates on EVERY query, so a side category gets
+#: RRF weight on questions that are not about it. Measured 2026-11-22:
+#:   * `parameters` (1,600 live-probed tables): ~0.02 recall@5 lost;
+#:   * `technique` (40 experimental recipes, added 2026-09-14 and never run
+#:     against a wiki build): pushed `level_top` out of "feedback trails
+#:     recipe" with the local wiki mirror -- recall@5 0.994 -> 1.000 and
+#:     nDCG 0.862 -> 0.866 without its voter; the wiki-less build unchanged.
+#: Both still surface through global BM25/title when a query matches them.
+_NO_SOURCE_VOTER = {"parameters", "technique"}
 
 #: Query words that make a parameter table a fair answer (see
 #: ParallelRetriever._gate_parameter_tables).

@@ -470,7 +470,7 @@ def _ws_push(event):
 # version lets the live server say so on the first call instead. Keep in sync
 # with pyproject.toml [project].version -- scripts/check_bridge_stale.py fails
 # CI when they diverge.
-BRIDGE_VERSION = "1.13.0"
+BRIDGE_VERSION = "1.13.1"
 
 TD_MCP_PORT = int(os.environ.get("TD_MCP_PORT", "9980"))
 
@@ -3150,6 +3150,14 @@ def _do_capture_viewport(path, detail="normal"):
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
+    family = _family_of(node)
+    if family and family != "TOP":
+        # Reached on the main thread (inside `batch`, the in-TD agent, the
+        # Textport), where frames cannot pass: the OP Viewer route needs them.
+        # Saving the operator itself would write a .bchan/.tog, not a PNG.
+        return {"ok": False, "error_code": "needs_frames",
+                "error": "%s is a %s: capturing it needs a few frames, so call "
+                         "capture_viewport directly, not inside batch" % (node.path, family)}
     _force_cook(node)
     out = os.path.join(tempfile.gettempdir(), "td_mcp_capture.png")
     try:
@@ -4150,8 +4158,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def _urldecode(s):
-    from urllib.parse import unquote
-    return unquote(s)
+    return unquote(s)  # module-level import (line 83)
 
 
 def _cors_origin(request_origin):

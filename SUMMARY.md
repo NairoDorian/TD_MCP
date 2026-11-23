@@ -359,7 +359,7 @@ td-mcp/
 - **`td_mcp/kb/__init__.py`** — KB subpackage marker (runtime corpus access lives in `corpus.py`).
 - **`td_mcp/kb/build_index.py`** — Build a (optionally dense) index over the KB chunks.
 - **`td_mcp/kb/build_kb.py`** — Build the ultimate local TouchDesigner knowledge base.
-- **`td_mcp/kb/chunks.jsonl`** — Generated data artifact (1,014,779 bytes) — produced by the build/eval pipeline; not hand-edited.
+- **`td_mcp/kb/chunks.jsonl`** — Generated data artifact (10,329,180 bytes) — produced by the build/eval pipeline; not hand-edited.
 - **`td_mcp/kb/corpus.py`** — Runtime access to the merged MIT corpus (operators, Python API, versions).
 - **`td_mcp/kb/corpus/experimental/audio-visual.json`** — Project file.
 - **`td_mcp/kb/corpus/experimental/generative-systems.json`** — Project file.
@@ -423,7 +423,7 @@ td-mcp/
 
 ### `td_mcp.egg-info/`
 
-- **`td_mcp.egg-info/PKG-INFO`** — Generated data artifact (25,055 bytes) — produced by the build/eval pipeline; not hand-edited.
+- **`td_mcp.egg-info/PKG-INFO`** — Generated data artifact (26,513 bytes) — produced by the build/eval pipeline; not hand-edited.
 
 ### `tests/`
 

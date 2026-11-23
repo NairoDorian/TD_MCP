@@ -182,3 +182,14 @@ class TestMisc:
         hint = br["recovery_hints"]("execute_python forbids the builtin(s) 'globals'. "
                                     "TouchDesigner methods like par.eval() are fine.")
         assert "blocks" in hint["cause"] and "parameter" not in hint["cause"].lower()
+
+
+class TestCaptureOnTheMainThread:
+    def test_non_top_in_batch_is_refused_not_saved_as_png(self, bridge):
+        """Inside `batch` (main thread) frames cannot pass, so the OP Viewer
+        route is unavailable; saving a CHOP itself would write a .bchan."""
+        br, td = bridge
+        td.make("lfo1", "lfoCHOP")
+        out = br["_do_batch"]([{"tool": "capture_viewport", "args": {"path": "/project1/lfo1"}}])
+        res = out["batch"][0]["result"]
+        assert res["ok"] is False and res["error_code"] == "needs_frames"

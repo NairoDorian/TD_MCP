@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.13.1] — 2026-11-23 — CI runs again; the suite is green with a local wiki
+
+### Fixed
+- **CI never ran the tests.** The workflow called `uv pip install` without an
+  environment and failed at the install step ("No virtual environment found")
+  on every push since at least v1.11.0. It now runs `uv venv` first; the exact
+  steps were reproduced in a fresh clone (944 passed) before pushing.
+- **`uv.lock` still recorded 1.12.0** after the 1.13.0 bump; re-locked.
+- **The suite failed on any machine with TouchDesigner installed.** With the
+  local OfflineHelp wiki in the KB, "feedback trails recipe" lost `level_top`
+  from the top five. Cause: the 40 experimental `technique` chunks (2026-09-14)
+  had their own per-category RRF voter, which votes on every query. They now
+  rank on merit only, like the parameter tables: wiki build recall@5
+  0.994 -> 1.000, nDCG 0.862 -> 0.866; the wiki-less (CI) build is unchanged.
+  Weighting all category voters down (0.75 / 0.5 / 0.35) was measured and
+  rejected: 0.5 cost recall@5 (0.994 -> 0.974).
+- **`capture_viewport` on a non-TOP inside `batch`** (main thread, so no
+  frames can pass) saved the operator itself -- a CHOP writes a channel file,
+  not a PNG. It now refuses with `error_code: needs_frames`; the `batch`
+  description no longer claims an undo behaviour that was never verified.
+- Removed a duplicate `unquote` import (bridge), an unused `suggest_repairs`
+  call in `auto_repair`, and a dead test helper.
+
+---
+
 ## [1.13.0] — 2026-11-22 — Wave 13: ground truth
 
 Parameter knowledge now comes from TouchDesigner itself, and every live

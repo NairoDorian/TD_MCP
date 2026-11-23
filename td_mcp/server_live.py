@@ -564,7 +564,8 @@ _TOOL_META = [
     ("get_resource", "Read a td:// resource (td://node/<path>).", {"uri": _S}),
     ("describe_td_tools", "Bridge manifest: tool list, exec gate, protected paths, version.", {}),
     ("batch", "Run several tool calls in one round-trip: [{'tool': 'set_parameters', "
-     "'args': {...}}, ...]. Each call keeps its own undo step and guards.",
+     "'args': {...}}, ...]. Each call is guarded exactly as a direct call. Not for "
+     "capturing a non-TOP: that needs frames, so call capture_viewport directly.",
      {"ops": _A}),
     ("observe", "Capture a still AND judge whether the render is moving. "
      "A network that renders a correct single frame and never changes is "
