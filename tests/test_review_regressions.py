@@ -49,8 +49,11 @@ def test_macro_non_dict_success_is_ok():
 
 
 def test_config_gen_not_hardcoded_path():
-    assert "C:/Users/Z/Downloads/PROJECTS/TOUCHDESIGNER/td-mcp" not in config_gen.PROJECT
+    """PROJECT is derived from where the package lives -- never a developer's
+    checkout path written into the source (one shipped that way once)."""
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     assert os.path.isabs(config_gen.PROJECT)
+    assert os.path.samefile(config_gen.PROJECT, repo)
 
 
 def test_risk_memory_save_is_write_additive():

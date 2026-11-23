@@ -1,6 +1,21 @@
 # Testing
 
-**803 tests, 803 passing.** `uv run pytest` on a fresh clone, after
+> **The major rule: verify in TouchDesigner, through the agent path.** The
+> suites below are fast and deterministic, but they run against a double. The
+> double is only as true as the probes behind it, and no unit test speaks MCP
+> the way an agent does. So, whenever a change touches TouchDesigner behaviour
+> or an agent-facing tool:
+>
+> ```bash
+> python scripts/td_live.py launch    # TEST-01, known token (or `deploy` after editing bridge/)
+> python scripts/live_smoke.py        # 17 agent-path checks via an MCP stdio client
+> ```
+>
+> Probe a fact live (`td_live.py py "..."`) **before** modelling it in
+> `tests/td_double.py`, and model what TouchDesigner actually did. See
+> [AGENTS.md](../AGENTS.md).
+
+**944+ tests.** `uv run pytest` on a fresh clone, after
 `uv run python -m td_mcp.kb.build_kb`.
 
 ```bash

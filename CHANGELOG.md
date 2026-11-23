@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.13.2] — 2026-11-23 — Tested the way an agent uses it
+
+New standing rule, recorded in `AGENTS.md`, the README, `docs/TESTING.md`,
+`COMMIT.md` and code comments: **verify in TouchDesigner — doing beats
+guessing** — and verify through the MCP path an agent actually uses.
+
+### Added
+- `scripts/td_live.py`: `launch` the TEST-01 project with a known token,
+  `status`, `deploy` the repo's bridge into it (deferred restart, version
+  confirmed), `call` any tool, `py` for one-off probes.
+- `scripts/live_smoke.py`: an MCP stdio client that drives `td-mcp-offline`
+  and `td-mcp-live` -> bridge -> TouchDesigner, building, inspecting,
+  capturing and cleaning up a scratch network (17 checks; `--offline-only`).
+- `AGENTS.md` (+ `CLAUDE.md` importing it): rules for agents working here.
+
+### Fixed — found only by testing as an agent
+- **`td_validate_build` / `td_validate_live` / `td_self_heal` hid their
+  findings.** Over MCP an agent got "1 error, 1 warning" but not which
+  operator, parameter or valid values. `validation.findings` now carries
+  severity, code, target and message.
+- **Validation recovery hints were generic** ("Unrecognized error from the
+  bridge") for every finding; each code now has a specific cause, action and
+  next tools.
+- **`server_live`'s docstring named the no-argument form as the stdio MCP
+  server.** That form is the legacy CLI and exits, so a client launched that
+  way gets "Connection closed" at initialize. Documented `--mcp`
+  (the shipped configs already used it).
+- **`client_configs/.mcp.json` held a developer's absolute path** (published
+  since 2026-08-16); now `<REPO_DIR>` placeholders like the README. A test
+  that asserted against that literal path now checks the derivation instead.
+
 ## [1.13.1] — 2026-11-23 — CI runs again; the suite is green with a local wiki
 
 ### Fixed

@@ -9,9 +9,12 @@ Implements the MCP Streamable HTTP + stdio spec (stateless, MCP SDK 2.0):
 - Talks to TD bridge at http://127.0.0.1:9980 (or TD_MCP_HOST:TD_MCP_PORT)
 
 CLI:
-  python -m td_mcp.server_live                 # stdio MCP (Claude Desktop)
+  python -m td_mcp.server_live --mcp           # stdio MCP (what agents/clients run)
   python -m td_mcp.server_live --http          # Streamable HTTP on 127.0.0.1:8765
   python -m td_mcp.server_live create ...      # legacy CLI against bridge
+  (TD_MCP_MODE=mcp also selects stdio MCP. With NO arguments this is the
+  legacy CLI, which exits asking for a subcommand -- an MCP client launched
+  that way sees "Connection closed" during initialize.)
 """
 
 import argparse

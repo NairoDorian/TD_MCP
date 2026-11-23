@@ -2,23 +2,14 @@
   "mcpServers": {
     "td-mcp-offline": {
       "command": "uv",
-      "args": [
-        "run",
-        "--project",
-        "C:\\Users\\Z\\Downloads\\PROJECTS\\TOUCHDESIGNER\\github-mcp\\TD_MCP",
-        "td-mcp-offline",
-        "--mcp"
-      ]
+      "args": ["run", "--project", "<REPO_DIR>", "td-mcp-offline", "--mcp"]
     },
     "td-mcp-live": {
       "command": "uv",
-      "args": [
-        "run",
-        "--project",
-        "C:\\Users\\Z\\Downloads\\PROJECTS\\TOUCHDESIGNER\\github-mcp\\TD_MCP",
-        "td-mcp-live",
-        "--mcp"
-      ]
+      "args": ["run", "--project", "<REPO_DIR>", "td-mcp-live", "--mcp"],
+      "env": {
+        "TD_MCP_AUTH_TOKEN": "YOUR_AUTO_GENERATED_TOKEN"
+      }
     }
   }
 }

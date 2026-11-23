@@ -48,6 +48,7 @@ Full docs live in **[`docs/`](docs/README.md)**.
 - [Project layout](#project-layout)
 - [Tool catalog](#tool-catalog)
 - [Documentation](#documentation)
+- [Verify in TouchDesigner — the major rule](#verify-in-touchdesigner--the-major-rule)
 - [Tests](#tests)
 - [License](#license)
 
@@ -461,6 +462,25 @@ attribute metadata free with value readback gated on point count. Pass
 | [`TouchDesigner_Links.md`](TouchDesigner_Links.md) | Curated official docs / Python API / curriculum links. |
 
 ---
+
+## Verify in TouchDesigner — the major rule
+
+**Doing beats guessing.** TD_MCP is built to be driven by an AI agent, so it is
+verified the way an agent uses it, against a real TouchDesigner. Anyone working
+on the project — human or agent — may open the test project at any moment to
+check a behaviour, a parameter name or a fix:
+
+```bash
+python scripts/td_live.py launch   # open ../TD_MCP_TESTS/TEST-01/NewProject.toe, known token
+python scripts/td_live.py deploy   # after editing bridge/: copy into TEST-01 + safe restart
+python scripts/live_smoke.py       # MCP stdio client -> td-mcp-live/offline -> bridge -> TD
+python scripts/td_live.py call describe_op_type '{"op_type": "lfoCHOP"}'
+```
+
+`live_smoke.py` builds, inspects, captures and cleans up a scratch network
+through the same MCP tools an agent calls (17 checks; `--offline-only` without
+TD). It found three bugs in 1.13 that the unit suite could not. Rules for
+agents working in this repo are in [AGENTS.md](AGENTS.md).
 
 ## Tests
 

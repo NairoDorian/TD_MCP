@@ -1,5 +1,10 @@
 """A deterministic TouchDesigner API double, and a loader for the whole bridge.
 
+Model only what TouchDesigner was SEEN to do: probe a behaviour live in the
+TEST-01 project first (`python scripts/td_live.py py "..."`, see AGENTS.md),
+then write it here. A double written from the code under test agrees with
+the code's bugs.
+
 Why this exists
 ---------------
 ``tests/bridge_pure.py`` execs only the block between ``# BEGIN PURE HELPERS``

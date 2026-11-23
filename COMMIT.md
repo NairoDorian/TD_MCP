@@ -80,7 +80,18 @@ it identical to the `pyproject.toml` version.
 
 ---
 
-## 5. Run the tests
+## 5. Verify live, then run the tests
+
+If the change touches the bridge, an MCP tool, or anything claimed about
+TouchDesigner behaviour, verify it in the TEST-01 project first — doing beats
+guessing (see `AGENTS.md`):
+
+```bash
+python scripts/td_live.py launch     # or: deploy, after editing bridge/
+python scripts/live_smoke.py         # must report every check passed
+```
+
+Then the unit suite:
 
 ```bash
 uv run pytest

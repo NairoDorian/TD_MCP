@@ -1,5 +1,10 @@
 """td_mcp_bridge — the MCP server that runs inside TouchDesigner.
 
+Verify every change here in a real TouchDesigner before trusting it:
+`python scripts/td_live.py deploy` then `python scripts/live_smoke.py`
+(AGENTS.md). Most of the defects fixed in this file were invisible to the
+unit suite and obvious in the first live call.
+
 Do not paste this by hand. Run the builder once in the Textport and it creates
 a `/td_mcp` component wired to load this file:
 
@@ -470,7 +475,7 @@ def _ws_push(event):
 # version lets the live server say so on the first call instead. Keep in sync
 # with pyproject.toml [project].version -- scripts/check_bridge_stale.py fails
 # CI when they diverge.
-BRIDGE_VERSION = "1.13.1"
+BRIDGE_VERSION = "1.13.2"
 
 TD_MCP_PORT = int(os.environ.get("TD_MCP_PORT", "9980"))
 

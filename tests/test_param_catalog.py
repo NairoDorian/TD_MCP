@@ -210,3 +210,22 @@ class TestCatalogHoldsNoMachineState:
         assert pc.sanitize_par(install) and install["default"] == "<td_install>/Samples/Map/Banana.tif"
         static = {"name": "clampinput", "menu": ["automatic", "clamp", "unclamped"]}
         assert not pc.sanitize_par(static) and static["menu"] == ["automatic", "clamp", "unclamped"]
+
+
+class TestValidatorOutputAnAgentCanAct:
+    """Found by driving td_validate_build over MCP (scripts/live_smoke.py):
+    the tool returned counts only, and MENU_INVALID's hint was the generic
+    "Unrecognized error from the bridge". Asserted at the tool, not at
+    validate_build, because the tool is what an agent reads."""
+
+    def test_findings_and_specific_hints_reach_the_agent(self):
+        from td_mcp.server_offline import td_validate_build
+        spec = {"operators": [{"name": "l", "type": "levelTOP",
+                               "parameters": {"clampinput": "bogus"}}]}
+        out = json.loads(td_validate_build(json.dumps(spec)))
+        findings = out["validation"]["findings"]
+        menu = [f for f in findings if f["code"] == "MENU_INVALID"]
+        assert menu and "automatic" in menu[0]["message"] and menu[0]["target"] == "l"
+        hint = [r for r in out["recovery"] if r["code"] == "MENU_INVALID"][0]["recovery"]
+        assert "Unrecognized" not in hint["cause"]
+        assert "td_describe_op_type" in hint["next_tools"]

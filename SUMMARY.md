@@ -86,7 +86,9 @@ td-mcp/
 │   ├── check_bridge_stale.py
 │   ├── generate_summary.py
 │   ├── install_all.py
-│   └── probe_param_catalog_td.py
+│   ├── live_smoke.py
+│   ├── probe_param_catalog_td.py
+│   └── td_live.py
 ├── skills
 │   ├── td-building
 │   │   └── SKILL.md
@@ -267,8 +269,10 @@ td-mcp/
 │   ├── test_wave7.py
 │   ├── test_wiki_ingest.py
 │   └── test_wiki_strategy.py
+├── AGENTS.md
 ├── ARCHITECTURE.md
 ├── CHANGELOG.md
+├── CLAUDE.md
 ├── COMMIT.md
 ├── CONTRIBUTING.md
 ├── HOW_TO_USE.md
@@ -315,7 +319,7 @@ td-mcp/
 - **`docs/README.md`** — td-mcp documentation — Start here.
 - **`docs/SECURITY.md`** — Security model — The bridge opens a port inside your TouchDesigner session and lets a language
 - **`docs/TDN_FORMAT.md`** — TDN — TouchDesigner Network format — Version **2.1**. A diffable YAML serialisation of a TouchDesigner network, so a
-- **`docs/TESTING.md`** — Testing — **803 tests, 803 passing.** `uv run pytest` on a fresh clone, after
+- **`docs/TESTING.md`** — Testing — **944+ tests.** `uv run pytest` on a fresh clone, after
 - **`docs/TOOLS.md`** — Tool reference — **108 tools across two servers.** They are deliberately split, because they
 - **`docs/TOUCHDESIGNER_COMPONENT.md`** — What goes *into* TouchDesigner — The MCP server runs *outside* TouchDesigner, as a normal Python process your AI
 - **`docs/TROUBLESHOOTING.md`** — Troubleshooting — Ordered by how often each one bites. Every symptom here has been seen.
@@ -326,7 +330,9 @@ td-mcp/
 - **`scripts/check_bridge_stale.py`** — Bridge staleness guard (quentinR2 generated-bridge + CI guard idea).
 - **`scripts/generate_summary.py`** — Generate a clean, code-free summary of the td-mcp repository.
 - **`scripts/install_all.py`** — One-command install (ai-brain / johnsabath / 8beeeaaat idea).
+- **`scripts/live_smoke.py`** — Use TD_MCP the way an agent does, and check that it works.
 - **`scripts/probe_param_catalog_td.py`** — Probe every operator type in a running TouchDesigner into a parameter catalog.
+- **`scripts/td_live.py`** — Drive the TEST-01 TouchDesigner project from the command line.
 
 ### `skills/`
 
@@ -423,7 +429,7 @@ td-mcp/
 
 ### `td_mcp.egg-info/`
 
-- **`td_mcp.egg-info/PKG-INFO`** — Generated data artifact (26,513 bytes) — produced by the build/eval pipeline; not hand-edited.
+- **`td_mcp.egg-info/PKG-INFO`** — Generated data artifact (27,611 bytes) — produced by the build/eval pipeline; not hand-edited.
 
 ### `tests/`
 
@@ -497,8 +503,10 @@ td-mcp/
 
 ### Repository root
 
+- **`AGENTS.md`** — Working on TD_MCP (for AI agents and humans) — TD_MCP exists to be driven by an AI agent, so verifying that it works *for an
 - **`ARCHITECTURE.md`** — Architecture & Developer Notes — TD_MCP — This document explains how the `td-mcp` codebase is put together: the two
 - **`CHANGELOG.md`** — Changelog — All notable changes to this project will be documented in this file.
+- **`CLAUDE.md`** — Project file.
 - **`COMMIT.md`** — Before You Commit — A short, repeatable checklist to run **before every `git commit`** so the
 - **`CONTRIBUTING.md`** — Contributing — Thanks for wanting to improve **td-mcp**. This is a local-first TouchDesigner
 - **`HOW_TO_USE.md`** — 1. Prerequisites — Make sure you have:
