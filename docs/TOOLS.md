@@ -1,12 +1,12 @@
 # Tool reference
 
-**105 tools across two servers.** They are deliberately split, because they
+**108 tools across two servers.** They are deliberately split, because they
 have different requirements and different risks.
 
 | Server | Tools | Needs TouchDesigner | What it is |
 |---|---|---|---|
-| `td-mcp-offline` | 58 | No | Documentation, RAG, network authoring, validation, scoring, planning |
-| `td-mcp-live` | 47 | Yes | Everything that touches a running session |
+| `td-mcp-offline` | 59 | No | Documentation, RAG, network authoring, validation, scoring, planning |
+| `td-mcp-live` | 49 | Yes | Everything that touches a running session |
 
 Register only the offline server if you want documentation and offline
 authoring without exposing a live session.
@@ -39,7 +39,7 @@ max-risk policy admit code it meant to block.
 
 ---
 
-## Live server — 47 tools
+## Live server — 49 tools
 
 Everything below requires the bridge component running inside TouchDesigner.
 See [TOUCHDESIGNER_COMPONENT.md](TOUCHDESIGNER_COMPONENT.md).
@@ -87,6 +87,8 @@ See [DIAGNOSTICS.md](DIAGNOSTICS.md) for the full story.
 | Tool | Risk | Notes |
 |---|---|---|
 | `get_parameters` | READ_ONLY | |
+| `describe_op_type` | READ_ONLY | Parameter names, labels, styles, creation defaults and menu tokens for an operator **type**, probed off a throwaway instance in `/sys/quiet`. Look before you guess. |
+| `pulse_parameter` | WRITE_ADDITIVE | Pulse a pulse parameter (reset, reload, start). Setting `true` on one does nothing in TD. |
 | `get_parameter_info` | READ_ONLY | Full schema: label, value, **expr**, mode, default, page, style, bounds, menu. The expression *is* the configuration; `value` is one reading of it. |
 | `get_non_default_params` | READ_ONLY | Only what differs from default — the token-efficient read for a large network. |
 | `set_parameters` | WRITE_ADDITIVE | Close-match suggestions on a misspelled name. |
@@ -162,6 +164,7 @@ the knowledge base.
 |---|---|
 | `td_docs_search` | Hybrid BM25 + optional dense + rerank, RRF-fused. The general entry point. |
 | `td_docs_operator` | Full parameter and connector spec for one operator, plus its Python class docs. |
+| `td_describe_op_type` | Offline twin of `describe_op_type`: exact names, menus and defaults from the live-probed catalog, filtered by name/label glob or page. |
 | `td_docs_parameter` | The parameter schema for one operator. **Call this before guessing a name.** |
 | `td_docs_family` | Every operator in a family, one line each. |
 | `td_docs_compare` | Shared / only-A / only-B parameters between two operators. |
@@ -225,7 +228,7 @@ four different operators.
 
 ## Two patterns worth internalising
 
-**Never guess a parameter name.** `td_docs_parameter` costs one call.
+**Never guess a parameter name.** `td_describe_op_type` / `describe_op_type` cost one call.
 `set_parameters` on a wrong name costs a failed write, a confusing error, and a
 retry — and if the name is close, the close-match suggestion still needs a
 round-trip. This is the single highest-value habit with this server.

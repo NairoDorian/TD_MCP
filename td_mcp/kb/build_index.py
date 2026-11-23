@@ -54,6 +54,12 @@ def main():
     if os.environ.get("TD_MCP_DENSE") == "1":
         print("building dense embeddings (all-MiniLM-L6-v2)...")
         print(f"embeddings: {build_dense(chunks)} -> {EMBED}")
+        # Re-pin the receipt so the dense path is integrity-protected. The
+        # offline retriever refuses to load a KB whose receipt no longer
+        # matches chunks.jsonl, so an unpinned embeddings file would be the
+        # one hole in the trust story.
+        from td_mcp.kb.build_kb import _write_receipt
+        _write_receipt(CHUNKS)
     else:
         print("skip dense: set TD_MCP_DENSE=1 to add MiniLM embeddings")
 

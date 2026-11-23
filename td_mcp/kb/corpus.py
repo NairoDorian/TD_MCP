@@ -17,6 +17,12 @@ EXPERIMENTAL_DIR = os.path.join(CORPUS_DIR, "experimental")
 _BUILD_RE = re.compile(r"(\d{4}(?:\.\d+)?)")
 
 
+def _clean(text):
+    # Collapse whitespace; mirrors build_kb._clean so technique chunks stay
+    # compact for BM25/TF-IDF tokenization.
+    return re.sub(r"\s+", " ", text.strip())
+
+
 def _load(path):
     if not os.path.exists(path):
         return None
@@ -98,11 +104,38 @@ def list_experimental_categories():
             for cat, rec in sorted(data.items())]
 
 
-def operator_record(name):
-    """Best operator record for a name/nickname (case-insensitive, slug-tolerant)."""
-    ops = load_operators()
-    if not ops:
+def op_type_of(rec):
+    """The opType ('levelTOP') a corpus record describes, via the live-probed
+    catalog; None when the catalog does not know it."""
+    if not rec:
         return None
+    from td_mcp.kb import param_catalog
+    for key in (rec.get("displayName"), rec.get("name"), rec.get("id")):
+        if key:
+            hit = param_catalog.resolve_op_type(key)
+            if hit:
+                return hit
+    return None
+
+
+def operator_record(name):
+    """Best operator record for a name/nickname (case-insensitive, slug-tolerant).
+
+    Accepts the opType ('levelTOP') too -- the spelling create_node and every
+    build spec use. Without that, validation reported every correctly typed
+    operator as UNKNOWN_TYPE.
+    """
+    ops = load_operators()
+    if not ops or not name:
+        return None
+    from td_mcp.kb import param_catalog
+    op_type = param_catalog.resolve_op_type(name)
+    if op_type:
+        display = (param_catalog.display_name(op_type) or "").lower()
+        for rec in ops.values():
+            if display in ((rec.get("displayName") or "").lower(),
+                           (rec.get("name") or "").lower()):
+                return rec
     q = name.strip().lower().replace(" ", "_")
     if q in ops:
         return ops[q]
@@ -335,7 +368,19 @@ def operator_spec_text(rec):
 
 
 def param_schema(rec, names=None):
-    """Return {param_name: {type, default, min, max, menu}} for an operator."""
+    """Return {param_name: {type, default, min, max, menu}} for an operator.
+
+    Keyed by the REAL parameter name ('brightness1') from the live-probed
+    catalog whenever it knows the operator. The scraped records key by label
+    ('Brightness 1') and type everything float; they are the fallback only.
+    """
+    from td_mcp.kb import param_catalog
+    op_type = op_type_of(rec)
+    if op_type:
+        schema = param_catalog.schema(op_type)
+        if names:
+            schema = {k: v for k, v in schema.items() if k in names}
+        return schema
     out = {}
     for p in rec.get("parameters") or []:
         nm = p.get("name")
@@ -462,6 +507,64 @@ def corpus_chunks():
                                rec.get("displayName", "").lower()}),
             "text": _class_spec_text(rec),
         })
+    chunks.extend(experimental_technique_chunks())
+    # Live-probed parameter tables are OPT-IN for the main index. Measured A/B
+    # (2026-11-22, k=5, CI-like wiki-less build): MRR 0.835 -> 0.857 but
+    # recall 1.000 -> 0.987, and not by taking slots -- 1,617 long chunks
+    # shift BM25 IDF and average length for every document, which reorders
+    # unrelated queries ("osc receive network"). Exact names reach agents
+    # deterministically through td_describe_op_type / td_docs_parameter and
+    # the resolver instead. TD_MCP_PARAM_CHUNKS=1 to index them anyway.
+    if os.environ.get("TD_MCP_PARAM_CHUNKS") == "1":
+        from td_mcp.kb import param_catalog
+        chunks.extend(param_catalog.catalog_chunks())
+    return chunks
+
+
+def experimental_technique_chunks():
+    """Index bottobot's experimental technique library so the techniques are no
+    longer siloed behind ``td_docs_experimental`` alone.
+
+    Each technique becomes a retriever chunk (category ``technique``) with the
+    same shape ``corpus_chunks`` emits, so it flows through RRF fusion, the
+    score-floor abstention, version reconciliation and ``kb_receipt`` together
+    with every other chunk. Techniques are authored content (not a TD version
+    snapshot), so ``min_version`` defaults to ``all``.
+    """
+    chunks = []
+    for cat, rec in (load_experimental_techniques() or {}).items():
+        if not isinstance(rec, dict):
+            continue
+        for tech in rec.get("techniques") or []:
+            tid = tech.get("id") or tech.get("name", "technique")
+            name = tech.get("name", "") or tid
+            parts = [f"{name}. [{cat}/{tid}]"]
+            if not isinstance(tech, dict):
+                continue
+            desc = tech.get("description") or ""
+            if desc:
+                parts.append(desc.strip())
+            ops = tech.get("operators") or []
+            if ops:
+                parts.append("Operators: " + ", ".join(ops) + ".")
+            notes = (tech.get("notes") or "").strip()
+            if notes:
+                parts.append(notes)
+            snippet = (tech.get("code") or {}).get("snippet") or ""
+            if snippet:
+                parts.append(snippet.strip())
+            chunks.append({
+                "id": f"tech_{cat}_{tid}",
+                "family": None,
+                "title": name,
+                "category": "technique",
+                "source": rec.get("url") or "github-mcp/tdmcp",
+                "url": rec.get("url"),
+                "min_version": "all",
+                "tags": [cat] + (tech.get("tags") or []),
+                "aliases": [tid, name.lower()],
+                "text": _clean(" ".join(p for p in parts if p)),
+            })
     return chunks
 
 

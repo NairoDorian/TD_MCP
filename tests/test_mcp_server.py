@@ -40,10 +40,14 @@ def test_fusion_strategies_wired():
     names = [s.name() for s in pr.strategies]
     assert "BM25Strategy" in names, names
     assert "TitleStrategy" in names, names
+    from td_mcp.rag.strategies import _NO_SOURCE_VOTER
     categories = {c.get("category") for c in pr.index.chunks if c.get("category")}
-    for cat in categories:
+    voted = categories - _NO_SOURCE_VOTER
+    for cat in voted:
         assert f"BM25[{cat}]" in names, (cat, names)
-    assert len(pr.strategies) == 2 + len(categories), names
+    for cat in categories & _NO_SOURCE_VOTER:
+        assert f"BM25[{cat}]" not in names, (cat, names)  # ranks on merit only
+    assert len(pr.strategies) == 2 + len(voted), names
     print(f"ok  {len(names)} fusion strategies wired:", names)
 
 

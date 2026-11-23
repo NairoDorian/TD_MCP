@@ -10,7 +10,7 @@ best ideas of the public TD‑MCP ecosystem into one cohesive package:
 
 - **Offline doc / RAG server** — version‑aware retrieval over a merged MIT corpus **plus the complete official documentation** (no TouchDesigner required, no network, no API keys). Several lexical + semantic backends run **in parallel** and fuse via Reciprocal Rank Fusion, with an optional CrossEncoder reranker and optional external RAG fusion.
 - **Eval harness** — recall@k / MRR / nDCG over a labelled query set, so retrieval quality is provable and regressions are caught. **k=5 recall 1.000** with the wiki KB (**0.991** curated‑only), zero version‑gating violations.
-- **Live bridge + MCP server** — control a running TouchDesigner session (create / wire / inspect / verify) over **Streamable HTTP + SSE**, WebSocket, or stdio. Exposes **47 live tools**; every mutation is wrapped in `ui.undo` so one Ctrl+Z reverts a whole agent batch.
+- **Live bridge + MCP server** — control a running TouchDesigner session (create / wire / inspect / verify) over **Streamable HTTP + SSE**, WebSocket, or stdio. Exposes **49 live tools**; every mutation is wrapped in `ui.undo` so one Ctrl+Z reverts a whole agent batch.
 - **All four of TouchDesigner's error surfaces** — cook errors, warnings, **script tracebacks** and **GLSL compile errors** (which appear on none of the API's error accessors). Most tooling reads one of the four and calls a visibly broken network clean. See **[docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md)**.
 - **Natively embedded chat UI** and a **zero‑dependency autonomous agent** that run *inside* TouchDesigner Text DATs.
 
@@ -26,7 +26,7 @@ Full docs live in **[`docs/`](docs/README.md)**.
 |---|---|
 | **[What goes into TouchDesigner](docs/TOUCHDESIGNER_COMPONENT.md)** | The `/td_mcp` component, drag-and-drop `.tox`, and how the other 30 projects do it |
 | **[Install](docs/INSTALL.md)** | Both halves, the lifecycle, environment variables |
-| **[Tools](docs/TOOLS.md)** | All 105 tools with risk classes |
+| **[Tools](docs/TOOLS.md)** | All 108 tools with risk classes |
 | **[Diagnostics](docs/DIAGNOSTICS.md)** | The four error surfaces — read this one |
 | **[Agent guide](docs/AGENT_GUIDE.md)** | How to sequence the tools |
 | **[Troubleshooting](docs/TROUBLESHOOTING.md)** | Symptom-first |
@@ -121,7 +121,7 @@ Optional extras:
 
 ```bash
 uv pip install -e ".[rag]"           # sentence-transformers + networkx (dense / rerank / graph-RAG)
-uv pip install -e ".[scrape]"        # requests + beautifulsoup4 (doc crawler)
+uv pip install -e ".[scrape]"        # DEPRECATED: legacy network doc crawler (wiki_ingest is now preferred)
 ```
 
 ### Install lifecycle (Install SOP v1)
@@ -337,8 +337,8 @@ td-mcp/
 ├── scripts/
 │   └── generate_summary.py   # generates SUMMARY.md (code-free file/architecture overview)
 ├── td_mcp/
-│   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (45 tools)
-│   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server for the bridge (47 tools)
+│   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (59 tools)
+│   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server for the bridge (49 tools)
 │   ├── heal.py                # self-healing orchestrator: validate → score → auto-repair → hints
 │   ├── validation.py          # 5-stage build validation + auto-repair (pure, TD-free)
 │   ├── scoring.py             # score_build (0..100 A–F) + repair_network
@@ -366,14 +366,16 @@ td-mcp/
 │   │   ├── logs.py            # token-efficient ring-buffer logs
 │   │   └── layout.py          # network layout lint (overlap / origin / dock)
 │   ├── rag/                   # retrieval: retriever (BM25+dense), strategies (RRF fusion), rerank, knowledge_graph, eval
-│   └── kb/                    # corpus records, build_kb, import_corpus, wiki_ingest, scrape, build_index, chunks.jsonl
+│   └── kb/                    # corpus records, build_kb, import_corpus, wiki_ingest, build_index (scrape.py deprecated)
 ├── bridge/
 │   ├── td_mcp_bridge.py       # paste into a Text DAT in TD (JSON-RPC/WS/SSE/chat UI server)
 │   ├── td_mcp_agent.py        # paste into a Text DAT (autonomous builder agent)
 │   ├── chat_ui.html           # glassmorphic chat panel served at GET /
 │   └── bootstrap.py           # builds the /td_mcp COMP inside TD; can emit td_mcp.tox
-├── skills/
-│   └── td-building/           # Claude Code / agent skill (SKILL.md)
+├── skills/                   # agent skills (SKILL.md each); start with td-workflow
+│   ├── td-workflow/  td-building/  td-top-family/  td-chop-family/
+│   ├── td-pop-family/  td-sop-render/  td-dat-python/  td-glsl/
+│   └── td-performance/  td-network-layout/
 └── tests/                     # pytest suite (RAG fusion, validation, scoring, heal, bridge, etc.)
 ```
 
@@ -381,7 +383,7 @@ td-mcp/
 
 ## Tool catalog
 
-**Offline server (45 tools)** — `td_docs_search`, `td_docs_operator`, `td_docs_python`,
+**Offline server (59 tools)** — `td_docs_search`, `td_docs_operator`, `td_docs_python`,
 `td_docs_glsl`, `td_docs_template`, `td_docs_version`, `td_docs_family`, `td_docs_parameter`,
 `td_docs_compare`, `td_docs_connections`, `td_docs_workflow`, `td_docs_version_info`,
 `td_docs_related`, `td_docs_glossary`, `td_build_network`, `td_showcontrol_plan`, `td_led_map`,
@@ -393,7 +395,8 @@ td-mcp/
 `td_scaffold_recipe`, `td_analyze_build`, `td_diff_networks`, `td_optimize_layout`,
 `td_resolve_params`, `td_docs_combos`.
 
-**Live server (47 tools)** — `create_node`, `delete_node`, `set_parameters`, `get_parameters`,
+**Live server (49 tools)** — `create_node`, `delete_node`, `set_parameters`, `get_parameters`,
+`describe_op_type`, `pulse_parameter`,
 `get_parameter_info`, `get_non_default_params`, `bind_parameter_expression`, `get_errors`,
 `clear_script_errors`, `execute_python`, `list_nodes`, `project_info`, `capture_viewport`,
 `observe`, `get_resource`, `describe_td_tools`, `batch`, `read_chop`, `diff_chop`, `read_pop`,
@@ -402,6 +405,23 @@ td-mcp/
 `map_network`, `disconnect_nodes`, `get_connections`, `exec_node_method`, `snapshot_network`,
 `restore_network`, `get_performance`, `validate_network`, `set_flags`, `find_nodes`,
 `set_node_position`, `timeline`, `export_recipe`, `import_recipe`, `save_tox`.
+
+**Ground truth (v1.13.0).** Parameter names now come from TouchDesigner
+itself. `scripts/probe_param_catalog_td.py` instantiates every operator class
+(659 on 2025.33230) in `/sys/quiet` and records each parameter's exact name,
+label, style, page, tuplet, menu tokens, clamps, creation default and help text
+(21,796 parameters) into `td_mcp/kb/corpus/param_catalog/`. The resolver,
+`td_validate_build`, `td_self_heal`, `td_docs_parameter` and the new
+`td_describe_op_type` / live `describe_op_type` all read it. Before this, they
+read a scrape keyed by *label* (`'Brightness 1'`), so the resolver rewrote
+correct names into labels, every correctly typed spec failed `UNKNOWN_TYPE`,
+and invalid menu values passed. On the live side, `get_parameters` returns
+`eval()` values with expression/bind/export modes (it returned the stale
+constant slot); `set_parameters` reads every write back (TD silently ignores a
+bad menu token and silently clamps); `capture_viewport` captures any operator
+family through a transient OP Viewer; `get_performance` marks stale cook times;
+and mutating tools refuse to touch the bridge's own component. Every one of
+these was verified live; see `UPSTREAM_SYNC_2026-11-22.md`.
 
 **Diagnostics (v1.12.0).** `get_errors` reads all four of TouchDesigner's
 diagnostic surfaces — cook errors, warnings, **script tracebacks**

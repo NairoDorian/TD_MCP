@@ -41,11 +41,18 @@ def test_glsl_top_dual_hit():
 
 
 def test_full_eval_recall():
-    """The complete labelled eval set must hit perfect recall at k=5."""
-    from td_mcp.rag.eval import QUERIES, _metrics
+    """The complete labelled eval set must hit perfect recall at k=5.
+
+    Wiki-coverage queries (the ``needs: "wiki"`` ones) are skipped here via
+    ``applicable_queries``: they only have an answer when ``build_kb`` found a
+    local wiki mirror, and on a wiki-less build (fresh clone, CI on Ubuntu)
+    they would fail for a reason that says nothing about retrieval quality.
+    When a wiki mirror IS present they run and are held to the same bar.
+    """
+    from td_mcp.rag.eval import QUERIES, _metrics, applicable_queries
     pr = _pr()
     bad = []
-    for q in QUERIES:
+    for q in applicable_queries(pr, QUERIES):
         res = pr.search(q["q"], version=q.get("version"), k=5)
         ids = [c["id"] for c, _ in res]
         rec, _, _, viol = _metrics(ids, q.get("exp", []), q.get("must_not"), 5)

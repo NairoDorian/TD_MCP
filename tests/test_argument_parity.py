@@ -9,9 +9,9 @@ against a live TouchDesigner (2026-08-26).
 
 Three checks, all static (AST), so nothing here needs TouchDesigner:
 
-1. MCP schema (`_TOOL_META`) ⇄ registry lambda (`TOOL_REGISTRY`): every
-   property the schema advertises is read by the lambda, and every key the
-   lambda reads is advertised.
+1. MCP schema (`_TOOL_META`) ⇄ bridge handler (`_DISPATCH`): since 1.13 the
+   registry forwards arguments unchanged, so every advertised property must
+   be read by the bridge, and every key the bridge reads must be advertised.
 2. Client payload (`TDClient` methods' `_call(tool, {...})`) ⊆ bridge handler
    (`_DISPATCH[tool]` lambda's `a.get(...)`): every key the client sends is a
    key the bridge reads, or it is silently dropped.
@@ -36,6 +36,8 @@ BRIDGE = ROOT / "bridge" / "td_mcp_bridge.py"
 KNOWN_EXCEPTIONS = {
     # Accepted for clients written against the old schema; `type` is primary.
     ("build_and_verify", "op_type"),
+    # `type` accepted as an alias so the create_node spelling also works.
+    ("describe_op_type", "type"),
 }
 
 
@@ -98,17 +100,60 @@ def _client_payload_keys() -> dict[str, set[str]]:
 SCHEMA = {name: set(props) for name, _desc, props in _TOOL_META}
 
 
-class TestSchemaMatchesRegistry:
-    @pytest.mark.parametrize("tool", sorted(SCHEMA))
-    def test_schema_properties_and_lambda_keys_agree(self, tool):
-        registry = _registry_keys()
-        assert tool in registry, f"{tool} advertised but not in TOOL_REGISTRY"
-        advertised = SCHEMA[tool]
-        read = registry[tool]
-        unread = {k for k in advertised - read if (tool, k) not in KNOWN_EXCEPTIONS}
-        unadvertised = {k for k in read - advertised if (tool, k) not in KNOWN_EXCEPTIONS}
-        assert not unread, f"{tool}: schema advertises {sorted(unread)} but the handler never reads them"
-        assert not unadvertised, f"{tool}: handler reads {sorted(unadvertised)} but the schema does not advertise them"
+#: The live registry forwards arguments unchanged (1.13), renaming only these.
+_FORWARD_RENAMES = {"detail": "detailLevel"}
+#: Tools answered on the client side, and keys consumed before dispatch.
+_CLIENT_ONLY = {"get_non_default_params"}
+_PRE_DISPATCH = {
+    # read by the bridge's multi-frame capture path (_capture_any_family),
+    # which runs before the single-frame handler is dispatched
+    ("capture_viewport", "width"),
+}
+
+
+class TestSchemaMatchesBridge:
+    """Since 1.13 the registry forwards every argument as-is, so the contract
+    is schema <-> bridge handler: an advertised key the bridge never reads is
+    silently dropped, and a key the bridge reads but the schema hides is a
+    feature no client can reach (create_node's nodeX/nodeY were exactly that)."""
+
+    @pytest.mark.parametrize("tool", sorted(set(SCHEMA) - _CLIENT_ONLY))
+    def test_schema_properties_and_bridge_keys_agree(self, tool):
+        bridge = _bridge_keys()
+        assert tool in bridge, f"{tool} advertised but the bridge does not dispatch it"
+        advertised = {_FORWARD_RENAMES.get(k, k) for k in SCHEMA[tool]}
+        read = bridge[tool]
+        unread = {k for k in advertised - read
+                  if (tool, k) not in KNOWN_EXCEPTIONS and (tool, k) not in _PRE_DISPATCH}
+        hidden = {k for k in read - advertised if (tool, k) not in KNOWN_EXCEPTIONS}
+        assert not unread, f"{tool}: schema advertises {sorted(unread)} but the bridge never reads them"
+        assert not hidden, f"{tool}: bridge reads {sorted(hidden)} but the schema does not advertise them"
+
+
+def test_registry_forwards_arguments_unchanged():
+    """The forwarding lambda passes every key through (detail renamed)."""
+    from td_mcp import server_live
+
+    seen = {}
+
+    class _Recorder:
+        def _call(self, tool, args=None):
+            seen[tool] = args
+            return {"ok": True}
+
+    orig = server_live._get_client
+    server_live._get_client = lambda: _Recorder()
+    try:
+        server_live.TOOL_REGISTRY["create_node"](
+            {"path": "/project1", "type": "noiseTOP", "nodeX": 200, "nodeY": -400})
+        server_live.TOOL_REGISTRY["get_parameters"](
+            {"path": "/project1/n", "names": "period", "non_default": True, "detail": "full"})
+    finally:
+        server_live._get_client = orig
+    assert seen["create_node"] == {"path": "/project1", "type": "noiseTOP",
+                                   "nodeX": 200, "nodeY": -400}
+    assert seen["get_parameters"] == {"path": "/project1/n", "names": "period",
+                                      "non_default": True, "detailLevel": "full"}
 
 
 class TestClientMatchesBridge:
@@ -123,6 +168,5 @@ class TestClientMatchesBridge:
 
 def test_the_extractor_sees_real_keys():
     """Guard against the AST helpers silently returning empty sets."""
-    assert _registry_keys()["get_errors"] >= {"path", "include_warnings"}
     assert _bridge_keys()["get_errors"] >= {"path", "recurse"}
     assert _client_payload_keys()["get_errors"] >= {"path", "recurse"}

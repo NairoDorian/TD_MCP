@@ -184,6 +184,32 @@ class TestClearScriptErrors:
         assert br["_do_clear_script_errors"]("/nope")["ok"] is False
 
 
+class TestSetFlags:
+    def test_allowCooking_false_on_a_non_comp_gets_guidance_not_a_raw_tderror(self, bridge):
+        # Verified 2025.33230: `allowCooking = False` raises on a non-COMP
+        # while `= True` is accepted anywhere — so a mixed-type gate passes
+        # its enable pass and aborts on disable. The bridge returns the fix
+        # instead of the exception text.
+        br, td = bridge
+        td.make("noise1", "noiseTOP")
+        out = br["_do_set_flags"]("/project1/noise1", {"allowCooking": False})
+        assert out["ok"] is True
+        assert "skipped" in out["applied"]["allowCooking"]
+        assert "bypass" in out["applied"]["allowCooking"]
+
+    def test_allowCooking_true_is_accepted_on_a_non_comp(self, bridge):
+        br, td = bridge
+        td.make("noise1", "noiseTOP")
+        out = br["_do_set_flags"]("/project1/noise1", {"allowCooking": True})
+        assert out["applied"]["allowCooking"] is True
+
+    def test_allowCooking_false_works_on_a_comp(self, bridge):
+        br, td = bridge
+        td.make("geo1", "geometryCOMP")
+        out = br["_do_set_flags"]("/project1/geo1", {"allowCooking": False})
+        assert out["applied"]["allowCooking"] is False
+
+
 # ---------------------------------------------------------------------------
 # The readers that used to swallow the same exception
 # ---------------------------------------------------------------------------

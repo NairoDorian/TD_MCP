@@ -13,6 +13,7 @@ import mcp.types as types
 from td_mcp.rag.retriever import build_retriever
 from td_mcp.rag.strategies import ParallelRetriever
 from td_mcp import __version__
+from td_mcp import instructions as _instructions
 from td_mcp.kb import corpus
 from td_mcp.kb.corpus import _str
 from td_mcp.tdn import export_network, new_network, operator as tdn_operator
@@ -204,9 +205,62 @@ def td_docs_family(family, version=None):
     return "\n".join(lines)
 
 
+def td_describe_op_type(op_type, pattern=None, page=None, include_menus=True,
+                        include_help=True, include_common=True):
+    """Parameter names, labels, styles, creation defaults and menu tokens for an
+    operator TYPE, from the catalog probed out of a running TouchDesigner.
+
+    The look-before-you-guess read (Embody ``describe_op_type``, Derivative
+    TDMCP ``get_help``): TD abbreviates names unpredictably -- Blur TOP's
+    amount is ``size``, Noise TOP's monochrome toggle is ``mono``, Lag CHOP has
+    ``lag1``/``lag2`` -- so one call here replaces a guess-and-error round trip.
+    """
+    from td_mcp.kb import param_catalog
+    return _json_dumps(param_catalog.describe(
+        op_type, pattern=pattern, page=page, include_menus=include_menus,
+        include_help=include_help, include_common=include_common))
+
+
+def _catalog_parameter_text(op_type, note=None):
+    """td_docs_parameter rendered from the live-probed catalog, page by page."""
+    from td_mcp.kb import param_catalog
+    info = param_catalog.op_info(op_type)
+    lines = [f"### {info['label']} {info['family']}  (`{op_type}`, "
+             f"inputs {info.get('min_inputs')}..{info.get('max_inputs')})",
+             f"_Parameter names probed from TouchDesigner {param_catalog.build()} "
+             "-- these are the exact names set_parameters accepts._", ""]
+    if note:
+        lines.append("> " + note)
+    by_page = {}
+    for p in info.get("pars") or []:
+        by_page.setdefault(p.get("page") or "?", []).append(p)
+    for pg, rows in by_page.items():
+        lines.append(f"**{pg}**")
+        for p in rows:
+            bits = [p.get("style") or "?"]
+            if p.get("menu"):
+                bits.append("menu=" + "|".join(p["menu"][:12])
+                            + ("|..." if len(p["menu"]) > 12 else ""))
+            if p.get("default") not in (None, ""):
+                bits.append(f"default={p['default']!r}")
+            if p.get("clamp"):
+                bits.append(f"clamp={p['clamp'][0]}..{p['clamp'][1]}")
+            line = f"- `{p['name']}` {p.get('label', '')} ({', '.join(bits)})"
+            if p.get("help") and pg != "Common":
+                line += f" -- {p['help'][:140]}"
+            lines.append(line)
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
 def td_docs_parameter(op_name, k=1):
-    """Return the parameter schema for one operator, merged from the 900+ operator corpus."""
+    """Return the parameter schema for one operator: exact names from the
+    live-probed catalog when it knows the type, else the scraped corpus."""
+    from td_mcp.kb import param_catalog
     note = knowledge_graph.family_disambiguation(op_name)
+    op_type = param_catalog.resolve_op_type(op_name)
+    if op_type:
+        return _catalog_parameter_text(op_type, note)
     rec = corpus.operator_record(op_name)
     if rec is None:
         msg = f"No operator matched {op_name!r}. Try td_docs_family for a list."
@@ -590,6 +644,7 @@ def td_kb_stats():
     stats = {
         "chunks": len(index.chunks),
         "operators": len(corpus.load_operators()),
+        "techniques": sum(1 for c in index.chunks if c.get("category") == "technique"),
         "families": {f: sum(1 for c in index.chunks if c.get("family") == f) for f in fams},
         "categories": {},
     }
@@ -649,7 +704,7 @@ def _register_offline():
     """Populate the offline tool dispatch used by ``td_tool_batch``."""
     for fn in (td_docs_search, td_docs_operator, td_docs_python, td_docs_glsl,
                td_docs_template, td_docs_version, td_docs_family, td_docs_parameter,
-               td_docs_compare, td_docs_connections, td_docs_workflow,
+               td_describe_op_type, td_docs_compare, td_docs_connections, td_docs_workflow,
                td_docs_version_info, td_docs_related, td_build_network,
                td_docs_glossary, td_glsl_pattern, td_network_template,
                td_expert_prompt, td_compat_check, td_score_build,
@@ -1047,8 +1102,22 @@ async def _offline_list_tools(ctx, params):
             _tool("td_docs_family", "List every operator in a family (TOP/CHOP/SOP/DAT/COMP/POP) with a one-line description.",
                    {"family": {"type": "string"}, "version": {"type": "string", "optional": True}},
                    annotations=read_only),
-            _tool("td_docs_parameter", "Return the full parameter schema for one operator, merged from the 900+ operator corpus.",
+            _tool("td_docs_parameter", "Every parameter of one operator, page by page, with the EXACT "
+                   "names set_parameters accepts (probed from a running TouchDesigner), style, "
+                   "menu tokens, default and help. Accepts 'Level TOP', 'levelTOP' or 'level'.",
                    {"op_name": {"type": "string"}, "k": {"type": "integer", "optional": True}},
+                   annotations=read_only),
+            _tool("td_describe_op_type", "Look before you guess: parameter names, labels, styles, "
+                   "creation defaults and menu tokens for an operator TYPE, filtered by a name/label "
+                   "glob (`pattern`, e.g. 'resol' or '*color*') or `page`. TD abbreviates names "
+                   "unpredictably (Blur TOP amount is `size`, Noise TOP monochrome is `mono`); one "
+                   "call here replaces a failed set_parameters. Ambiguous types list candidates.",
+                   {"op_type": {"type": "string"},
+                    "pattern": {"type": "string", "optional": True},
+                    "page": {"type": "string", "optional": True},
+                    "include_menus": {"type": "boolean", "optional": True},
+                    "include_help": {"type": "boolean", "optional": True},
+                    "include_common": {"type": "boolean", "optional": True}},
                    annotations=read_only),
             _tool("td_docs_compare", "Compare two operators: shared / only-A / only-B parameters. Use to choose between near-equivalents.",
                    {"a": {"type": "string"}, "b": {"type": "string"}},
@@ -1224,9 +1293,9 @@ async def _offline_call_tool(ctx, params):
         try:
             if name == "td_docs_search":
                 _max = 500 if a.get("detail") == "brief" else None
-                out = (_fmt(ret.search(a.get("query", ""), family=a.get("family"),
-                                       category=a.get("category"), version=a.get("version"), k=a.get("k", 5)),
-                         a.get("query", ""), max_chars=_max), "")
+                out = (td_docs_search(a.get("query", ""), family=a.get("family"),
+                                      category=a.get("category"), version=a.get("version"),
+                                      k=a.get("k", 5), max_chars=_max), "")
             elif name == "td_docs_operator":
                 out = (td_docs_operator(a.get("name", ""), a.get("k", 3)), "")
             elif name == "td_validate_live":
@@ -1244,6 +1313,10 @@ async def _offline_call_tool(ctx, params):
                 out = (td_docs_family(a.get("family", ""), a.get("version")), "")
             elif name == "td_docs_parameter":
                 out = (td_docs_parameter(a.get("op_name", ""), a.get("k", 1)), "")
+            elif name == "td_describe_op_type":
+                out = (td_describe_op_type(a.get("op_type", ""), a.get("pattern"), a.get("page"),
+                                           a.get("include_menus", True), a.get("include_help", True),
+                                           a.get("include_common", True)), "")
             elif name == "td_docs_compare":
                 out = (td_docs_compare(a.get("a", ""), a.get("b", "")), "")
             elif name == "td_docs_connections":
@@ -1433,6 +1506,7 @@ def create_server():
     app = Server(
         name="td-mcp-offline",
         version=__version__,
+        instructions=_instructions.OFFLINE,
         on_list_tools=_offline_list_tools,
         on_call_tool=_offline_call_tool,
         on_list_resources=_offline_list_resources,

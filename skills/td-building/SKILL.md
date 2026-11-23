@@ -1,18 +1,26 @@
+---
+name: td-building
+description: Cross-cutting TouchDesigner knowledge for any build through TD_MCP - pull-based cooking, Python essentials, the main-thread rule, and field-verified API traps (TD 2025.33230). Load alongside td-workflow.
+---
+
 # TouchDesigner building — AI assistant skill
 
 You are helping someone build a TouchDesigner (TD) network. TD is node-graph
 creative-coding software by Derivative. Operator families: TOP (images), CHOP
-(channels/animation), SOP (geometry), POP (particles, 2023+), DAT (data/text),
-COMP (containers/3D).
+(channels/animation), SOP (CPU geometry), POP (GPU points/particles), DAT
+(data/text), MAT (materials), COMP (containers/3D). Start from `td-workflow`.
 
 ## Philosophy
 
 - TD is **pull-based**: nodes cook only when their output is requested. Never
   force-cook unless you need a snapshot.
 - Prefer CHOPs + expressions over Python for time-varying values.
-- Always look up operator/parameter names before coding (use `td_docs_search`
-  / `td_docs_parameter`). Never guess a parameter code.
-- Wrap mutations in `ui.undo` for a single Ctrl+Z revert.
+- Always look up parameter names before setting them: `describe_op_type` (live)
+  or `td_describe_op_type` / `td_docs_parameter` (offline) return the exact names
+  probed from a running TouchDesigner. Never guess a parameter name.
+- TD_MCP already wraps each tool call in one undo step. In your own Python, the API
+  is `ui.undo.startBlock('name')` ... `ui.undo.endBlock()` -- `ui.undo` is NOT a
+  context manager.
 
 ## Operator families
 
@@ -84,9 +92,41 @@ lands — treat the warning as a defect to fix, not as noise.
   which reports eval errors.
 - Forgetting `ui.undo` around multi-step mutations.
 
+## Field-verified API traps (TD 2025.33230)
+
+- `Par.default` **never sets the value** — after `appendFloat` +
+  `p.default = 5.0` the par still evaluates 0.0, and a later `min`/`clampMin`
+  clamps it to the min, not the default. Set `p.val = p.default`, only on the
+  create branch of get-or-create.
+- The **Extension Object parameter is a constant-mode Str par** whose VALUE is
+  Python code. Never set its `.expr`: the extension comes back `None` with
+  `extensionsReady` True and `errors()` empty; the only trace is a
+  `SyntaxError ... Context:(Extension 1)` on `scriptErrors()` (kind `script`).
+- `findChildren(depth=N)` matches **exactly** depth N — `depth=8` returns
+  nothing for an op at depth 1, a silent all-clear. Walk a subtree with no
+  depth argument or `maxDepth=N`.
+- A **Timer CHOP** ships with `cycle` off and `cyclelimit` on at `maxcycles`
+  4 — a periodic timer stops after four ticks unless you turn `cycle` on and
+  clear the limit.
+- A **CHOP Execute DAT is a per-frame demand source**: its watched CHOP cooks
+  every frame whether or not anything else pulls it. Conversely, an Execute
+  DAT's `framestart` toggle is OFF by default — a frame driver that was never
+  enabled demands nothing.
+- `allowCooking = False` is **COMP-only** (it raises `tdError` on a
+  TOP/CHOP/SOP/MAT; `= True` is accepted anywhere, so a mixed-type gate passes
+  its enable pass and aborts on disable). Gate non-COMPs with `bypass`, or
+  remove the demand.
+- A custom **CPlusPlus operator** (compiled `.dll`) is the route when a Python
+  operator cannot hold real-time rates — see
+  [docs/CPP_CUSTOM_OPERATORS.md](../../docs/CPP_CUSTOM_OPERATORS.md) for the
+  full SDK pattern, threading model and PluginBuilder build workflow.
+
 ## Docs & references
 
 - Docs: https://docs.derivative.ca
 - Python: https://docs.derivative.ca/TouchDesigner_Python_Classes
-- Use `td_docs_search`, `td_docs_parameter`, `td_docs_version_compat`,
-  `td_docs_experimental` for grounded answers.
+- Use `td_docs_search`, `td_describe_op_type`, `td_docs_parameter`,
+  `td_docs_version_compat`, `td_docs_experimental` for grounded answers.
+- Family and workflow skills: `td-workflow` (start here), `td-top-family`,
+  `td-chop-family`, `td-pop-family`, `td-sop-render`, `td-dat-python`, `td-glsl`,
+  `td-performance`, `td-network-layout`.

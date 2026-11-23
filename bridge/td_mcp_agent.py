@@ -600,6 +600,189 @@ TOOLS_SCHEMA = [
             }
         }
     },
+    # ------------------------------------------------------------------
+    # Bridge tools the agent could previously not see/call.
+    # Argument names match the bridge _DISPATCH keys exactly so the
+    # LLM's args reach the handler unmodified.
+    # ------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "batch",
+            "description": "Execute multiple bridge tool calls in a single round-trip.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ops": {"type": "array", "description": "List of {tool, args} objects to run"}
+                },
+                "required": ["ops"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bind_parameter_expression",
+            "description": "Bind a parameter expression and report eval errors.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the node"},
+                    "param": {"type": "string", "description": "Parameter name"},
+                    "expression": {"type": "string", "description": "Python expression to bind"}
+                },
+                "required": ["path", "param", "expression"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clear_script_errors",
+            "description": "Clear a node's script errors. They persist until cleared, so call this after fixing code before re-verifying.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the node"},
+                    "recurse": {"type": "boolean", "description": "Recurse into children"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "describe_td_tools",
+            "description": "List bridge capabilities, version, and configuration.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "diff_chop",
+            "description": "Compare two CHOPs channel-by-channel and report min/max/mean/std deltas.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the first CHOP"},
+                    "other_path": {"type": "string", "description": "Path to the second CHOP"},
+                    "channel": {"type": "string", "description": "Optional channel name"}
+                },
+                "required": ["path", "other_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "describe_op_type",
+            "description": "Parameter names, styles, defaults and menu tokens for an operator TYPE "
+                           "before creating it. Call once per unfamiliar type instead of guessing "
+                           "names (Blur TOP amount is 'size', Noise TOP monochrome is 'mono').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "op_type": {"type": "string", "description": "TD class name, e.g. noiseTOP, lfoCHOP"},
+                    "pattern": {"type": "string", "description": "Optional name/label glob, e.g. 'resol' or '*color*'"},
+                    "page": {"type": "string", "description": "Optional parameter page, e.g. 'Noise'"}
+                },
+                "required": ["op_type"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pulse_parameter",
+            "description": "Pulse a pulse-type parameter (reset, reload, start).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the node"},
+                    "param": {"type": "string", "description": "Pulse parameter name, e.g. resetpulse"}
+                },
+                "required": ["path", "param"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_parameter_info",
+            "description": "Full per-parameter schema: label/value/mode/default/page/style/bounds/menu.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the node"},
+                    "names": {"type": "string", "description": "Comma-separated parameter names (empty = all)"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_resource",
+            "description": "Read a td:// resource (node, chop, errors, project).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "uri": {"type": "string", "description": "Resource URI, e.g. td://node/project1/foo"}
+                },
+                "required": ["uri"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "observe",
+            "description": "Capture a still AND judge whether the render is moving across frames (is_static verdict).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the node/viewer"},
+                    "frames": {"type": "integer", "description": "Frames to sample (default 3, max 12)"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_pop",
+            "description": "Read a POP: attribute metadata always; values only when point count is small enough.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the POP"},
+                    "attribute": {"type": "string", "description": "Optional attribute name"},
+                    "format": {"type": "string", "description": "stats (default), values, or meta"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_dat_text",
+            "description": "Set a DAT's text with optional SHA-256 optimistic concurrency guard.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the DAT"},
+                    "text": {"type": "string", "description": "Text to write"},
+                    "expected_sha256": {"type": "string", "description": "Optional SHA-256 of current text for CAS"}
+                },
+                "required": ["path", "text"]
+            }
+        }
+    },
     {
         "type": "function",
         "function": {
@@ -1094,7 +1277,7 @@ Active network context: {context or "No active network context"}"""
         return {"ok": False, "error": f"Planning failed: {e}"}
 
 
-def _ask_user(args):
+def _ask_clarification(args):
     """Ask the user a clarifying question (blocks until answer)."""
     question = args.get("question", "")
     options = args.get("options")  # optional list of options
@@ -1368,8 +1551,8 @@ def chat(prompt, provider="gemini", api_key=None, model=None, base_url=None,
                 res = _plan_task(args, port=port, auth_token=auth_token,
                                 provider=provider, api_key=api_key,
                                 base_url=base_url, model=model)
-            elif name == "ask_user":
-                res = _ask_user(args)
+            elif name == "ask_clarification":
+                res = _ask_clarification(args)
             elif name == "execute_parallel":
                 res = _execute_parallel(args, port=port, auth_token=auth_token)
             elif name == "save_session":

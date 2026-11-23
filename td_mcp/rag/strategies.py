@@ -102,6 +102,37 @@ class TitleStrategy(Strategy):
         return [LOCAL_PREFIX + self.index.chunks[i]["id"] for i in order[:k]]
 
 
+#: Categories that rank on merit only, without a per-category voter. A voter
+#: nominates its category's best chunk on EVERY query; for the 1,600-chunk
+#: live-probed `parameters` tables that bought a guaranteed RRF vote on
+#: questions that were not about parameters, and cost ~0.02 recall@5
+#: (measured A/B, 2026-11-22). They still surface through global BM25/title
+#: whenever a query names the parameters it wants.
+_NO_SOURCE_VOTER = {"parameters"}
+
+#: Query words that make a parameter table a fair answer (see
+#: ParallelRetriever._gate_parameter_tables).
+_PARAM_WORDS = {"parameter", "parameters", "param", "params", "par", "pars",
+                "setting", "settings", "menu", "default", "defaults", "toggle",
+                "value", "values"}
+
+
+def _named_op_types(tokens):
+    """opTypes whose label words and family all appear in ``tokens``."""
+    try:
+        from td_mcp.kb import param_catalog
+    except Exception:  # noqa: BLE001
+        return set()
+    out = set()
+    for op_type in param_catalog.op_types():
+        info = param_catalog.op_info(op_type) or {}
+        words = (info.get("label") or "").lower().split()
+        fam = (info.get("family") or "").lower()
+        if words and fam in tokens and all(w in tokens for w in words):
+            out.add(op_type)
+    return out
+
+
 class SourceBM25Strategy(Strategy):
     def __init__(self, index, source):
         self.index = index
@@ -317,7 +348,8 @@ class ParallelRetriever:
         self.score_floor = score_floor
 
         self.strategies = [BM25Strategy(self.index), TitleStrategy(self.index)]
-        sources = sorted({c.get("category") for c in self.index.chunks if c.get("category")})
+        sources = sorted({c.get("category") for c in self.index.chunks if c.get("category")}
+                         - _NO_SOURCE_VOTER)
         for src in sources:
             self.strategies.append(SourceBM25Strategy(self.index, src))
         self.hyde_strategy = None
@@ -437,6 +469,8 @@ class ParallelRetriever:
                     if "export" in text and ("chop" in text or "parameter" in text):
                         rrf[LOCAL_PREFIX + c["id"]] += self.operator_boost * 0.5
 
+        if category != "parameters":
+            self._gate_parameter_tables(rrf, qt)
         out = self._fuse(rrf, family, category, version, source, k)
 
         # Adaptive HyDE (wiki-rag): run the hypothetical-doc pass only when the
@@ -472,6 +506,28 @@ class ParallelRetriever:
         if self.score_floor and out and out[0][1] < self.score_floor:
             return []
         return out[:k]
+
+    def _gate_parameter_tables(self, rrf, qt):
+        """Drop live-probed parameter tables a query did not ask for.
+
+        A table is the right answer to "which parameter / what is it called"
+        and noise everywhere else: "particle simulation with pops" ranked the
+        Particle POP Particles-page table third and pushed the POP solver out
+        of the top five. A table stays when the query uses a parameter word,
+        or names its operator outright (label words + family: "blur top").
+        """
+        tokens = set(qt)
+        if tokens & _PARAM_WORDS:
+            return
+        allowed = None
+        for key in list(rrf):
+            if not key.startswith(LOCAL_PREFIX + "params_"):
+                continue
+            if allowed is None:
+                allowed = _named_op_types(tokens)
+            op_type = key[len(LOCAL_PREFIX + "params_"):].split("_", 1)[0]
+            if op_type not in allowed:
+                del rrf[key]
 
     def _operator_chunk_uris(self, query):
         """Return local chunk URIs for any operator named in ``query``.

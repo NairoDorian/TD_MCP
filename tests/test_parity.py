@@ -72,6 +72,49 @@ def test_bridge_dispatch_has_new_safety_tool():
     assert "set_dat_text" in {name for name, *_ in _TOOL_META}
 
 
+def test_bridge_handlers_have_docstrings():
+    """Every ``_do_*`` handler backing a dispatch key has a docstring.
+
+    ``_tool_description`` extracts the first line of each handler's docstring for
+    the JSON-RPC ``tools/list`` surface; an empty docstring means a tool is
+    advertised with a placeholder description instead of a real one.
+    """
+    import ast
+    text = open(BRIDGE_PATH, encoding="utf-8").read()
+    tree = ast.parse(text)
+    undocumented = sorted(
+        node.name for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("_do_")
+        and not ast.get_docstring(node)
+    )
+    assert not undocumented, f"_do_* handlers without docstrings: {undocumented}"
+
+
+def test_bridge_handlers_have_first_line():
+    """The first docstring line must be non-empty (it becomes the tool
+    description visible to MCP clients connecting directly to the bridge)."""
+    import ast
+    text = open(BRIDGE_PATH, encoding="utf-8").read()
+    tree = ast.parse(text)
+    empty_first_line = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("_do_"):
+            doc = ast.get_docstring(node)
+            if doc and not doc.strip().split("\n", 1)[0].strip():
+                empty_first_line.append(node.name)
+    assert not empty_first_line, f"handlers with empty first docstring line: {empty_first_line}"
+
+
+def test_bridge_jsonrpc_tools_list_uses_real_descriptions():
+    """The bridge JSON-RPC tools/list must call ``_tool_description`` and must
+    not inline the ``f"Bridge tool: {name}"`` placeholder."""
+    text = open(BRIDGE_PATH, encoding="utf-8").read()
+    idx = text.index('method == "tools/list"')
+    section = text[idx:idx + 400]
+    assert "_tool_description(name)" in section
+    assert 'f"Bridge tool: {name}"' not in section
+
+
 def test_tool_meta_schemas_have_real_types():
     """Every advertised tool has an inputSchema with typed properties."""
     for name, desc, props in _TOOL_META:

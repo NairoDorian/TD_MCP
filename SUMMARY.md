@@ -30,7 +30,7 @@ td-mcp is built around **two cooperating servers that share one authoring brain*
 | Module | `td_mcp/server_offline.py` | `td_mcp/server_live.py` + `bridge/td_mcp_bridge.py` |
 | Needs TouchDesigner? | **No** | **Yes** (running instance) |
 | Role | Doc/RAG answers, network *generation* (YAML, not live nodes), validation, scoring, self-heal | Create / delete / wire / inspect a live TD document over HTTP / stdio |
-| Tools | 1 (`td_*`) | 47 (`create_node`, `set_parameters`, …) |
+| Tools | 1 (`td_*`) | 49 (`create_node`, `set_parameters`, …) |
 
 The offline side owns the *intelligence*: `generators` -> `validation` ->
 `scoring` -> `heal` produce a diffable network description (**TDN** YAML) that the
@@ -69,6 +69,7 @@ td-mcp/
 │   └── CLAUDE.md
 ├── docs
 │   ├── AGENT_GUIDE.md
+│   ├── CPP_CUSTOM_OPERATORS.md
 │   ├── DIAGNOSTICS.md
 │   ├── ECOSYSTEM.md
 │   ├── INSTALL.md
@@ -84,9 +85,28 @@ td-mcp/
 │   ├── bump_version.py
 │   ├── check_bridge_stale.py
 │   ├── generate_summary.py
-│   └── install_all.py
+│   ├── install_all.py
+│   └── probe_param_catalog_td.py
 ├── skills
-│   └── td-building
+│   ├── td-building
+│   │   └── SKILL.md
+│   ├── td-chop-family
+│   │   └── SKILL.md
+│   ├── td-dat-python
+│   │   └── SKILL.md
+│   ├── td-glsl
+│   │   └── SKILL.md
+│   ├── td-network-layout
+│   │   └── SKILL.md
+│   ├── td-performance
+│   │   └── SKILL.md
+│   ├── td-pop-family
+│   │   └── SKILL.md
+│   ├── td-sop-render
+│   │   └── SKILL.md
+│   ├── td-top-family
+│   │   └── SKILL.md
+│   └── td-workflow
 │       └── SKILL.md
 ├── td_mcp
 │   ├── kb
@@ -99,6 +119,14 @@ td-mcp/
 │   │   │   │   ├── machine-learning.json
 │   │   │   │   ├── networking.json
 │   │   │   │   └── python-advanced.json
+│   │   │   ├── param_catalog
+│   │   │   │   ├── CHOP.json
+│   │   │   │   ├── COMP.json
+│   │   │   │   ├── DAT.json
+│   │   │   │   ├── MAT.json
+│   │   │   │   ├── POP.json
+│   │   │   │   ├── SOP.json
+│   │   │   │   └── TOP.json
 │   │   │   ├── versions
 │   │   │   │   ├── experimental-builds.json
 │   │   │   │   ├── operator-compatibility.json
@@ -114,6 +142,7 @@ td-mcp/
 │   │   ├── import_corpus.py
 │   │   ├── kb_receipt.json
 │   │   ├── offline_import.py
+│   │   ├── param_catalog.py
 │   │   ├── scrape.py
 │   │   └── wiki_ingest.py
 │   ├── led_mapping
@@ -151,6 +180,7 @@ td-mcp/
 │   ├── glsl_patterns.py
 │   ├── heal.py
 │   ├── install.py
+│   ├── instructions.py
 │   ├── macro.py
 │   ├── memory.py
 │   ├── observability.py
@@ -175,10 +205,12 @@ td-mcp/
 │   ├── fake_remote_mcp.py
 │   ├── td_double.py
 │   ├── test_agent.py
+│   ├── test_agent_parity.py
 │   ├── test_argument_parity.py
 │   ├── test_bootstrap.py
 │   ├── test_bridge_handlers.py
 │   ├── test_bridge_readers.py
+│   ├── test_bridge_wave13.py
 │   ├── test_bundle.py
 │   ├── test_codeguard.py
 │   ├── test_compat.py
@@ -204,6 +236,7 @@ td-mcp/
 │   ├── test_observability.py
 │   ├── test_offline_more_tools.py
 │   ├── test_offline_new_tools.py
+│   ├── test_param_catalog.py
 │   ├── test_parity.py
 │   ├── test_perf.py
 │   ├── test_progress.py
@@ -220,6 +253,7 @@ td-mcp/
 │   ├── test_scan_ws.py
 │   ├── test_scoring.py
 │   ├── test_showcontrol.py
+│   ├── test_skills.py
 │   ├── test_spatial.py
 │   ├── test_stdio_utf8.py
 │   ├── test_tdn.py
@@ -249,6 +283,8 @@ td-mcp/
 ├── TouchDesigner_Links.md
 ├── TouchDesigner_MCP_Servers.md
 ├── UPSTREAM_SYNC_2026-08-26.md
+├── UPSTREAM_SYNC_2026-09-14.md
+├── UPSTREAM_SYNC_2026-11-22.md
 └── uv.lock
 ```
 
@@ -271,6 +307,7 @@ td-mcp/
 ### `docs/`
 
 - **`docs/AGENT_GUIDE.md`** — Using td-mcp as an agent — Written for the model driving these tools, and for whoever is writing its system
+- **`docs/CPP_CUSTOM_OPERATORS.md`** — Custom C++ operators — the PluginBuilder knowledge base — TouchDesigner can load compiled `.dll` operators (CPlusPlus CHOP / TOP / DAT /
 - **`docs/DIAGNOSTICS.md`** — The four error surfaces — This is the single most important thing to understand about automating
 - **`docs/ECOSYSTEM.md`** — The TouchDesigner MCP ecosystem — A survey of **30 public TouchDesigner + MCP projects**, mirrored side by side in
 - **`docs/INSTALL.md`** — Installing td-mcp — There are **two halves**, and they fail independently:
@@ -279,7 +316,7 @@ td-mcp/
 - **`docs/SECURITY.md`** — Security model — The bridge opens a port inside your TouchDesigner session and lets a language
 - **`docs/TDN_FORMAT.md`** — TDN — TouchDesigner Network format — Version **2.1**. A diffable YAML serialisation of a TouchDesigner network, so a
 - **`docs/TESTING.md`** — Testing — **803 tests, 803 passing.** `uv run pytest` on a fresh clone, after
-- **`docs/TOOLS.md`** — Tool reference — **105 tools across two servers.** They are deliberately split, because they
+- **`docs/TOOLS.md`** — Tool reference — **108 tools across two servers.** They are deliberately split, because they
 - **`docs/TOUCHDESIGNER_COMPONENT.md`** — What goes *into* TouchDesigner — The MCP server runs *outside* TouchDesigner, as a normal Python process your AI
 - **`docs/TROUBLESHOOTING.md`** — Troubleshooting — Ordered by how often each one bites. Every symptom here has been seen.
 
@@ -289,10 +326,20 @@ td-mcp/
 - **`scripts/check_bridge_stale.py`** — Bridge staleness guard (quentinR2 generated-bridge + CI guard idea).
 - **`scripts/generate_summary.py`** — Generate a clean, code-free summary of the td-mcp repository.
 - **`scripts/install_all.py`** — One-command install (ai-brain / johnsabath / 8beeeaaat idea).
+- **`scripts/probe_param_catalog_td.py`** — Probe every operator type in a running TouchDesigner into a parameter catalog.
 
 ### `skills/`
 
 - **`skills/td-building/SKILL.md`** — TouchDesigner building — AI assistant skill — You are helping someone build a TouchDesigner (TD) network. TD is node-graph
+- **`skills/td-chop-family/SKILL.md`** — CHOP networks — - Source -> shaping -> `nullCHOP` named for its role (`null_audio`, `null_ctrl`).
+- **`skills/td-dat-python/SKILL.md`** — DATs and Python — - A new `textDAT` holds `language` = `text` (its declared default is `input`, which
+- **`skills/td-glsl/SKILL.md`** — GLSL in TouchDesigner — - `glslTOP` creates `<name>_pixel`, `<name>_compute` and `<name>_info` DATs beside it.
+- **`skills/td-network-layout/SKILL.md`** — Network layout — - Signal flows left to right: every wire goes forward (positive X). Parallel chains
+- **`skills/td-performance/SKILL.md`** — Performance — - TouchDesigner cooks on demand: an operator cooks when something downstream (a
+- **`skills/td-pop-family/SKILL.md`** — POP networks — - A POP is points (plus primitives) with attributes -- `P` position, `N`, `Color`,
+- **`skills/td-sop-render/SKILL.md`** — Geometry, materials, instancing, render — - `geometryCOMP` (with a SOP or POP inside, render flag on) + `cameraCOMP` +
+- **`skills/td-top-family/SKILL.md`** — TOP chains — - Generator -> processing -> `nullTOP` named for its role (`null_out`, `null_mask`).
+- **`skills/td-workflow/SKILL.md`** — TouchDesigner work through TD_MCP — Two servers, one loop. The **offline** server (`td_*` tools) answers from docs, a
 
 ### `td_mcp/`
 
@@ -308,10 +355,11 @@ td-mcp/
 - **`td_mcp/glsl_patterns.py`** — Named GLSL patterns + ready-to-paste network templates.
 - **`td_mcp/heal.py`** — Self-healing build orchestrator (capstone of the self-healing theme).
 - **`td_mcp/install.py`** — Install SOP v1 — an install lifecycle designed for an agent to drive.
+- **`td_mcp/instructions.py`** — MCP ``instructions`` served at initialize by both TD_MCP servers.
 - **`td_mcp/kb/__init__.py`** — KB subpackage marker (runtime corpus access lives in `corpus.py`).
 - **`td_mcp/kb/build_index.py`** — Build a (optionally dense) index over the KB chunks.
 - **`td_mcp/kb/build_kb.py`** — Build the ultimate local TouchDesigner knowledge base.
-- **`td_mcp/kb/chunks.jsonl`** — Generated data artifact (10,213,821 bytes) — produced by the build/eval pipeline; not hand-edited.
+- **`td_mcp/kb/chunks.jsonl`** — Generated data artifact (1,014,779 bytes) — produced by the build/eval pipeline; not hand-edited.
 - **`td_mcp/kb/corpus.py`** — Runtime access to the merged MIT corpus (operators, Python API, versions).
 - **`td_mcp/kb/corpus/experimental/audio-visual.json`** — Project file.
 - **`td_mcp/kb/corpus/experimental/generative-systems.json`** — Project file.
@@ -321,6 +369,13 @@ td-mcp/
 - **`td_mcp/kb/corpus/experimental/networking.json`** — Project file.
 - **`td_mcp/kb/corpus/experimental/python-advanced.json`** — Project file.
 - **`td_mcp/kb/corpus/operators.json`** — Project file.
+- **`td_mcp/kb/corpus/param_catalog/CHOP.json`** — Project file.
+- **`td_mcp/kb/corpus/param_catalog/COMP.json`** — Project file.
+- **`td_mcp/kb/corpus/param_catalog/DAT.json`** — Project file.
+- **`td_mcp/kb/corpus/param_catalog/MAT.json`** — Project file.
+- **`td_mcp/kb/corpus/param_catalog/POP.json`** — Project file.
+- **`td_mcp/kb/corpus/param_catalog/SOP.json`** — Project file.
+- **`td_mcp/kb/corpus/param_catalog/TOP.json`** — Project file.
 - **`td_mcp/kb/corpus/python_api.json`** — Project file.
 - **`td_mcp/kb/corpus/versions/experimental-builds.json`** — Project file.
 - **`td_mcp/kb/corpus/versions/operator-compatibility.json`** — Project file.
@@ -329,7 +384,8 @@ td-mcp/
 - **`td_mcp/kb/import_corpus.py`** — Import the merged MIT operator / Python-API / version corpora.
 - **`td_mcp/kb/kb_receipt.json`** — Project file.
 - **`td_mcp/kb/offline_import.py`** — Local OfflineHelp ingestion — thin wrapper over the structured pipeline.
-- **`td_mcp/kb/scrape.py`** — Scrape docs.derivative.ca into KB chunks (optional deps: requests, beautifulsoup4).
+- **`td_mcp/kb/param_catalog.py`** — Ground-truth operator/parameter catalog, probed from a running TouchDesigner.
+- **`td_mcp/kb/scrape.py`** — DEPRECATED — kept for backwards compatibility only.
 - **`td_mcp/kb/wiki_ingest.py`** — Structured ingestion of a local TouchDesigner wiki mirror into the KB.
 - **`td_mcp/led_mapping/__init__.py`** — LED / pixel mapping (wall / strip / voxel grid + DMX channel export).
 - **`td_mcp/macro.py`** — Macro recorder / replay (tdmcp macroRecorder / runMacroScript).
@@ -367,7 +423,7 @@ td-mcp/
 
 ### `td_mcp.egg-info/`
 
-- **`td_mcp.egg-info/PKG-INFO`** — Generated data artifact (18,037 bytes) — produced by the build/eval pipeline; not hand-edited.
+- **`td_mcp.egg-info/PKG-INFO`** — Generated data artifact (25,055 bytes) — produced by the build/eval pipeline; not hand-edited.
 
 ### `tests/`
 
@@ -376,10 +432,12 @@ td-mcp/
 - **`tests/fake_remote_mcp.py`** — Minimal stdio MCP doc-RAG server used by the integration tests to prove multi-process RAG fusion. Returns a synthetic remote doc so RemoteMCPStrategy can be exercised without a real external server.
 - **`tests/td_double.py`** — A deterministic TouchDesigner API double, and a loader for the whole bridge.
 - **`tests/test_agent.py`** — Test agent script compilation and schemas.
+- **`tests/test_agent_parity.py`** — Agent↔bridge tool-surface parity.
 - **`tests/test_argument_parity.py`** — Argument-name parity across the three surfaces a tool call crosses.
 - **`tests/test_bootstrap.py`** — The TouchDesigner component builder (`bridge/bootstrap.py`).
 - **`tests/test_bridge_handlers.py`** — Handler-level tests for the in-TD bridge, run against a TD API double.
 - **`tests/test_bridge_readers.py`** — Reader reduction contract (Wave 12, Embody's "never a blind dump").
+- **`tests/test_bridge_wave13.py`** — Wave 13 bridge behaviour, each case verified live on TouchDesigner 2025.33230 before it was modelled in the double (see UPSTREAM_SYNC_2026-11-22.md).
 - **`tests/test_bundle.py`** — Tests for td_mcp.bundle (.mcpb packaging).
 - **`tests/test_codeguard.py`** — Bridge hardening absorbed from the ecosystem's last-15-days commits.
 - **`tests/test_compat.py`** — Tests for td_mcp.compat (version compat + error cache).
@@ -405,6 +463,7 @@ td-mcp/
 - **`tests/test_observability.py`** — Tests for td_mcp.observability (TraceLog SQLite span recorder).
 - **`tests/test_offline_more_tools.py`** — Tests for new offline tools: discover / memory / scaffold_recipe.
 - **`tests/test_offline_new_tools.py`** — Tests for showcontrol media-server connectors + offline tool wiring.
+- **`tests/test_param_catalog.py`** — The live-probed parameter catalog and everything that now reads it.
 - **`tests/test_parity.py`** — Schema↔handler parity tests (TDPilot_deepseekv4 strongest regression guard).
 - **`tests/test_perf.py`** — Tests for td_mcp.perf (performance analyzer).
 - **`tests/test_progress.py`** — Tests for td_mcp.progress (progress reporting).
@@ -421,6 +480,7 @@ td-mcp/
 - **`tests/test_scan_ws.py`** — Tests for scan_network tool and WebSocket frame helpers.
 - **`tests/test_scoring.py`** — Tests for td_mcp.scoring (scoreBuild + repair_network loop).
 - **`tests/test_showcontrol.py`** — Tests for show-control + LED mapping modules.
+- **`tests/test_skills.py`** — The shipped skills stay true to the tools and to TouchDesigner.
 - **`tests/test_spatial.py`** — Tests for td_mcp.spatial (*here / *this resolver).
 - **`tests/test_stdio_utf8.py`** — UTF-8 stdio pinning (Wave 12, Embody v6.0.264).
 - **`tests/test_tdn.py`** — Tests for TDN serialization/diff and the knowledge graph.
@@ -450,10 +510,12 @@ td-mcp/
 - **`TouchDesigner_Links.md`** — TouchDesigner — Documentation & Useful Links — ---
 - **`TouchDesigner_MCP_Servers.md`** — TouchDesigner MCP Servers — Catalog & Brainstorm — ---
 - **`UPSTREAM_SYNC_2026-08-26.md`** — Upstream sync — 2026-08-26 — Every repo under `github-mcp/` was fetched from its GitHub upstream and
+- **`UPSTREAM_SYNC_2026-09-14.md`** — Upstream sync — 2026-09-14 — All 31 sibling repos fetched from origin. Three had moved since the last sync
+- **`UPSTREAM_SYNC_2026-11-22.md`** — Upstream sync — 2026-11-22 — All sibling repos pulled; three new ones cloned. Everything below that is
 - **`pyproject.toml`** — Python project metadata: dependencies, optional extras (mcp/rag/scrape) and console entry points (td-mcp-offline, td-mcp-live).
 - **`repomix.config.json`** — Repomix configuration (include/exclude + output style) for emitting a full source pack.
 - **`setup_env.ps1`** — One-shot PowerShell bootstrap that pins Python 3.11.10 (TD's interpreter) via uv and installs td-mcp.
-- **`uv.lock`** — Generated data artifact (435,405 bytes) — produced by the build/eval pipeline; not hand-edited.
+- **`uv.lock`** — Generated data artifact (436,024 bytes) — produced by the build/eval pipeline; not hand-edited.
 
 ---
 

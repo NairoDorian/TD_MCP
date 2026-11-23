@@ -53,6 +53,60 @@ touchdesigner-mcp-wangpolanshan, touchdesigner-mcp, touchdesigner-wiki-rag,
 touchdesigner_agent_mcp, touchdesigner_mcp (dependency bumps only),
 touchdesigner_mcp_server, twozero_td_mcp.
 
+## Sweep of 2026-09-14 — Embody v6.0.280 → v6.2.51
+
+All 31 repos re-fetched. Embody had moved 162 commits; hermes-skill (docs
+package) and 8beeeaaat/touchdesigner_mcp (dep bump) had nothing to take. Full
+account: `UPSTREAM_SYNC_2026-09-14.md`.
+
+| Reference repo | Commit (date) | What was picked | Where it lives |
+|---|---|---|---|
+| **dylanroscover/Embody** | `c5d2991` *Agent rules: seven TD gotchas verified live* (09-13) | Six live-verified (2025.33230) API traps we did not already hold: `Par.default` never sets a value; Extension Object par is constant-mode Str (never `.expr` — the only trace is a `SyntaxError ... Context:(Extension 1)` on `scriptErrors()`); Timer CHOP ships `cyclelimit` on / `maxcycles` 4; CHOP Execute DAT demands its CHOP every frame (and Execute DAT `framestart` defaults off); `allowCooking=False` is COMP-only | `skills/td-building/SKILL.md` (§ Field-verified API traps) |
+| **dylanroscover/Embody** | `c5d2991` (same finding, applied to code) | `_do_set_flags` now returns actionable guidance for `allowCooking=False` on a non-COMP instead of a raw `tdError`; the API double models the raising behavior per the "model the awkward parts" rule | `bridge/td_mcp_bridge.py` (`_do_set_flags`), `tests/td_double.py`, `tests/test_bridge_handlers.py` |
+| **Plugin_FFT / PluginBuilder_V2** (local `TD_PROJECTS/PluginBuilder`, not a repo) | — | Complete custom C++ operator SDK knowledge: C-ABI plugin exports, `CHOP_CPlusPlusBase` overrides, one-eval-per-cook parameter snapshots, CHOP/TOP-CPU/CUDA buffer patterns, TripleBuffer hard-real-time cook-thread architecture, FFTW planner hazards, CMake/Ninja build + DLL rename-in-place hot reload | `docs/CPP_CUSTOM_OPERATORS.md` |
+
+## Learned / deferred — 2026-09-14 feature hunt (still to take)
+
+A codebase-wide comparison of TD_MCP's 47 live tools + 44 offline doc tools
+against Embody v6.2.19, johnsabath/touchdesigner-mcp, twozero_td_mcp and
+8beeeaaat/touchdesigner_mcp. The following were confirmed as *real* gaps by
+reading each repo's bridge code, but are deferred (not taken this pass) —
+they require a live TouchDesigner host to verify and are logged here per the
+"backlog, not relitigated" rule from `UPSTREAM_SYNC_2026-09-14.md`:
+
+| Priority | Feature | Source | Why take | TD_MCP gap |
+|---|---|---|---|---|
+| High | Any-family `capture` (CHOP/SOP/COMP/MAT via a transient `opviewerTOP`) | Embody `envoy_read.py:1113-1235` | `capture_viewport` is TOP-only today; non-TOP ops can't be read as images | `capture_viewport` (`bridge/td_mcp_bridge.py:2506`) calls `node.save()`/`numpyArray()` (TOP methods only) |
+| High | `list_dialogs`/`dismiss_dialog` while TD's main thread is hung | Embody `envoy_bridge.py:5007-5069` (host-side Win32 `PostMessageW` WM_CLOSE/WM_KEYDOWN) | A frozen modal (`ui.messageBox`/native) times out every MCP tool with no recovery | No dialog enumeration or dismissal anywhere |
+| High | `render` MP4 + synchronized audio (MovieFileOut + AudioFileOut, PNG-seq→H.264 via ffmpeg) | johnsabath `td_mcp_server.py:662-913` | Video capture is entirely absent; only `capture_viewport` PNG stills exist | No video recording tool |
+| Medium | Project-wide `get_project_performance` with hotspots | Embody `EnvoyExt.py:3505-3524` | `get_performance` walks one op's children only; no project-wide aggregation | `get_performance` (`2082`) is per-op only |
+| Medium | `save_project` as an idempotent background job with log capture | Embody `EnvoyExt.py:4292-4332` | `save_tox` saves one COMP; no project-level save/job tracking | `save_tox` (`1905`) is COMP-only |
+| Low | Stable machine-readable `error_code` on every error envelope | Embody `EnvoyExt.py:108-249` | TD_MCP already has recovery hints (`RECOVERY_HINT_RULES`); the delta is a stable `error_code` field | `_wrap()`/`recovery_hints()` attach text only, no `error_code` |
+| Low | Animated-GIF mode on `observe` (two-pass ffmpeg palette) | johnsabath `td_mcp_server.py:462-627` | Nice-to-have; TD_MCP's motion-detect `observe` is non-redundant | `observe` (`2585`) returns metadata + still PNG, no GIF/base64 |
+
+Skipped in this hunt (confirmed non-take): `map` (TD_MCP already has DOT graphs, `map_network`); twozero_td_mcp (server is proprietary inside twozero.tox, no repo code); touchdesigner_mcp/8beeeaaat (14 tools, strict subset of TD_MCP — only Python-class introspection missing, cosmetic).
+
+## Sweep of 2026-11-22 — three new repos, Embody v6.3.8, TDPilot 2.6
+
+New: TouchDesigner/TDMCP, TouchDesigner/TDMCPSkills (Derivative),
+eviscerations/touchdesigner-bridge-mcp. Ideas only -- their licences
+(Derivative Shared Use, PolyForm-NC) are not MIT; every fact was re-derived
+from TouchDesigner 2025.33230. Full account: `UPSTREAM_SYNC_2026-11-22.md`.
+
+| Reference repo | What was picked (idea) | Where it lives |
+|---|---|---|
+| **eviscerations/touchdesigner-bridge-mcp** | A parameter catalog probed from the running build (theirs not used; ours generated live) | `scripts/probe_param_catalog_td.py`, `td_mcp/kb/param_catalog.py`, `corpus/param_catalog/` |
+| **TouchDesigner/TDMCP** 1.1.57 | Mutating tools refuse the server's own component (`self_path`) | `bridge/td_mcp_bridge.py` (`_self_guard`, `_SELF_GUARDED`) |
+| **TouchDesigner/TDMCP** #13 | Type-level parameter help from the live build, not a lagging JSON | `describe_op_type`, `td_describe_op_type` |
+| **TouchDesigner/TDMCP** #14 | Stale cook times marked and ranked last; CPU+GPU budget | `_do_get_performance` |
+| **TouchDesigner/TDMCP** | `pulse_parameter`; MCP `instructions` at initialize | bridge, `td_mcp/instructions.py` |
+| **TouchDesigner/TDMCPSkills** 1.4.3 | Skill coverage (family / workflow / cross-cutting split) -- no text | `skills/td-*` (own words, catalog-checked) |
+| **dylanroscover/Embody** v6.2.65 / v6.3.8 | `describe_op_type` via `/sys/quiet`; get_parameter reads bind/export/broken-expression modes | bridge `_do_describe_op_type`, `_par_reading` |
+| **dylanroscover/Embody** v6.2.19 | Non-TOP capture through a transient OP Viewer TOP across frames | `_capture_any_family`, `_MULTI_FRAME_TOOLS` |
+
+Closed from the 2026-09-14 backlog: any-family `capture` (High), project-wide
+performance with stale detection (Medium, partially: COMP-wide with depth).
+
 ## Deliberately skipped (too complex / useless for TD_MCP)
 
 - **ChromaDB + OpenAI embeddings**: too heavy for a stdlib-first offline tool. TF-IDF cosine + BM25 is enough; dense opt-in via `TD_MCP_DENSE=1`.

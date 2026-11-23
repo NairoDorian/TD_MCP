@@ -110,31 +110,62 @@ def test_spread_positions_removes_overlaps():
 
 
 # ----------------------------------------------------------- param resolver
-def test_resolve_parameters_maps_friendly_name():
-    # 'frequency' is the real code for a Noise CHOP's 'freq' friendly name.
-    resolved, warnings, ok = param_resolver.resolve_parameters(
-        "Noise CHOP", {"freq": 2.0})
-    # Either it maps to the real code, or it warns unknown; assert no crash and
-    # that a friendly->code mapping is attempted when the corpus is present.
-    assert isinstance(resolved, dict)
-    assert "freq" in resolved or any("freq" in w["message"] for w in warnings)
+# Facts below are from the live-probed catalog (TouchDesigner 2025.33230).
+# The old tests here accepted "maps OR warns" and could not fail; the resolver
+# they covered was rewriting correct names into labels ('brightness1' ->
+# 'Brightness 1') the whole time.
+def test_resolve_parameters_maps_abbreviation_to_real_name():
+    resolved, warnings, ok = param_resolver.resolve_parameters("lfoCHOP", {"freq": 2.0})
+    assert resolved == {"frequency": 2.0} and ok
 
 
-def test_resolve_parameters_normalizes_menu_value():
-    # TOP 'antialias' menu often takes 'on'/'off'; an int 1 should normalize.
+def test_resolve_parameters_keeps_correct_names_untouched():
+    for op_type in ("levelTOP", "Level TOP", "level"):
+        resolved, warnings, ok = param_resolver.resolve_parameters(
+            op_type, {"brightness1": 1.2, "clampinput": "clamp"})
+        assert resolved == {"brightness1": 1.2, "clampinput": "clamp"}, op_type
+        assert ok and not warnings, (op_type, warnings)
+
+
+def test_resolve_parameters_maps_ui_labels_and_menu_labels():
+    resolved, _, ok = param_resolver.resolve_parameters(
+        "noiseTOP", {"Monochrome": True, "Amplitude": 0.5})
+    assert resolved == {"mono": True, "amp": 0.5} and ok
+    resolved, _, ok = param_resolver.resolve_parameters(
+        "levelTOP", {"clampinput": "Clamp [0-1]"})
+    assert resolved == {"clampinput": "clamp"} and ok
+
+
+def test_resolve_parameters_rejects_bad_menu_and_unknown_name():
     resolved, warnings, ok = param_resolver.resolve_parameters(
-        "Null TOP", {"antialias": 1})
-    if "antialias" in resolved:
-        # value normalized to a menu string, or flagged if not in menu
-        assert resolved["antialias"] in ("on", 1) or any(
-            "antialias" in w["message"] for w in warnings)
+        "levelTOP", {"clampinput": "on"})
+    assert not ok and any("not in menu" in w["message"] for w in warnings)
+    resolved, warnings, ok = param_resolver.resolve_parameters("levelTOP", {"zzz": 1})
+    assert not ok and resolved == {"zzz": 1}
+
+
+def test_resolve_parameters_expands_tuplets():
+    resolved, _, ok = param_resolver.resolve_parameters(
+        "noiseTOP", {"resolution": [640, 360], "t": [0, 0.5, 1]})
+    assert resolved == {"resolutionw": 640, "resolutionh": 360,
+                        "tx": 0, "ty": 0.5, "tz": 1} and ok
+
+
+def test_resolve_parameters_picks_family_for_ambiguous_short_type():
+    resolved, warnings, _ = param_resolver.resolve_parameters(
+        "noise", {"roughness": 0.4, "channelname": "chan1"})
+    assert resolved == {"rough": 0.4, "channelname": "chan1"}
+    assert any("ambiguous" in w["message"] and "noiseCHOP" in w["message"] for w in warnings)
 
 
 def test_resolve_build_roundtrip():
     spec = {"operators": [
         {"name": "n", "type": "Noise TOP", "parameters": {"resx": 128}, "inputs": [None]}]}
     resolved, warnings, ok = param_resolver.resolve_build(spec)
-    assert resolved["operators"][0]["parameters"]["resx"] == 128
+    # resx is not a Noise TOP parameter; it is the commonest foreign spelling
+    # of resolutionw.
+    assert resolved["operators"][0]["parameters"] == {"resolutionw": 128}
+    assert ok
 
 
 # ----------------------------------------------------------- kg co-occurrence

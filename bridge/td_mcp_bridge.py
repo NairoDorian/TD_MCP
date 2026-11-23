@@ -371,18 +371,80 @@ def pump():
     return ran
 
 
+#: Mutating tools and the argument naming what they change. ``True`` also
+#: fences the bridge's ancestors (deleting /project1 deletes the bridge).
+#: Cosmetic tools (position, colour, comment, layout) are deliberately absent.
+_SELF_GUARDED = {
+    "create_node": ("path", False),
+    "delete_node": ("path", True),
+    "set_parameters": ("path", False),
+    "pulse_parameter": ("path", False),
+    "bind_parameter_expression": ("path", False),
+    "set_dat_text": ("path", False),
+    "rename_node": ("path", False),
+    "set_flags": ("path", True),
+    "exec_node_method": ("path", True),
+    "copy_node": ("new_parent", False),
+    "connect_nodes": ("to_path", False),
+    "disconnect_nodes": ("to_path", False),
+    "import_recipe": ("target_parent", False),
+    "restore_network": ("target_parent", False),
+    "edit_custom_parameters": ("path", False),
+}
+
+
+def _guard_call(tool, args):
+    spec = _SELF_GUARDED.get(tool)
+    if spec is None:
+        return None
+    key, ancestors = spec
+    target = (args or {}).get(key)
+    if not target:
+        return None  # path-less defaults never resolve into the bridge
+    return _self_guard(target, tool, ancestors=ancestors)
+
+
 def _run_tool(tool, args):
     """Execute one tool inside its undo block. Main thread only."""
     fn = _DISPATCH.get(tool)
     if fn is None:
         return {"ok": False, "error": f"unknown tool: {tool}"}
+    refused = _guard_call(tool, args)
+    if refused is not None:
+        return _wrap(refused)
     with _undo_block(tool):
         return _wrap(fn(args or {}))
 
 
 def _invoke(tool, args):
-    """Run a tool on the main thread, whatever thread this is called from."""
+    """Run a tool on the main thread, whatever thread this is called from.
+
+    A multi-frame tool (non-TOP capture) instead runs here on the calling
+    thread and marshals each step itself -- it has to let frames pass.
+    """
+    multi = _MULTI_FRAME_TOOLS.get(tool)
+    if multi is not None and not on_main_thread():
+        return multi(args or {})
     return _call_on_main(_run_tool, tool, args or {})
+
+
+def _tool_description(name):
+    """First-line docstring of the ``_do_*`` handler backing dispatch key *name*.
+
+    The dispatch lambdas each call a single ``_do_*`` function; we find it by
+    scanning the lambda's ``co_names`` for a ``_do_`` global, then read that
+    function's docstring.  This keeps descriptions in one place (the handler
+    docstrings) instead of a second hardcoded table that drifts.  Falls back to
+    a placeholder when no docstring is found.
+    """
+    lam = _DISPATCH.get(name)
+    if lam is not None:
+        for ref in lam.__code__.co_names:
+            if ref.startswith("_do_"):
+                fn = globals().get(ref)
+                if fn is not None and fn.__doc__:
+                    return fn.__doc__.strip().split("\n", 1)[0].strip()
+    return "Bridge tool: " + name
 
 
 def _ws_push(event):
@@ -408,7 +470,7 @@ def _ws_push(event):
 # version lets the live server say so on the first call instead. Keep in sync
 # with pyproject.toml [project].version -- scripts/check_bridge_stale.py fails
 # CI when they diverge.
-BRIDGE_VERSION = "1.12.0"
+BRIDGE_VERSION = "1.13.0"
 
 TD_MCP_PORT = int(os.environ.get("TD_MCP_PORT", "9980"))
 
@@ -1071,7 +1133,8 @@ def normalize_op_type(op_type):
         return "".join(parts)
     for family in _OP_FAMILIES:
         if text.upper().endswith(family) and len(text) > len(family):
-            return text[:-len(family)] + family
+            # TD class names have an all-lowercase prefix: 'NoiseTOP' -> 'noiseTOP'.
+            return text[:-len(family)].lower().replace("_", "") + family
     return text
 
 
@@ -1154,6 +1217,26 @@ def server_capabilities(protocol_version=None):
 
 # Recovery-hint rules (Embody-style): (compiled regex, cause, action, next_tools)
 RECOVERY_HINT_RULES = [
+    # Specific rules first: matching is first-hit, and the generic `par\b`
+    # rule below used to claim the forbidden-builtin error because its text
+    # mentions `par.eval()`.
+    (re.compile(r"forbids the builtin", re.I),
+     "execute_python refused a builtin it blocks (open/eval/exec/compile/"
+     "globals/locals/__import__).",
+     "Use import statements, pathlib.Path(...).read_text()/write_text(), and "
+     "TD's own methods (op(), par.eval()); set optional inputs with try/except "
+     "NameError instead of globals().",
+     ["execute_python"]),
+    (re.compile(r"TD_MCP_ALLOW_EXEC|TD_MCP_EXEC_MODE|code-bearing", re.I),
+     "This bridge runs with code execution disabled.",
+     "Use the typed tools (create_node, set_parameters, connect_nodes) or ask "
+     "the user to enable exec on the td_mcp component.",
+     ["describe_td_tools", "set_parameters"]),
+    (re.compile(r"protected|bridge component|self[_ ]path", re.I),
+     "The target is the TD_MCP bridge itself (or a protected path).",
+     "Work in /project1 or another COMP; the bridge refuses edits that would "
+     "cut the connection you are using.",
+     ["list_nodes"]),
     (re.compile(r"cook|not cooked|invalid operation", re.I),
      "The operator could not cook or the operation was invalid.",
      "Check the operator exists and is cooked; verify parameter names with td_docs_parameter.",
@@ -1164,8 +1247,9 @@ RECOVERY_HINT_RULES = [
      ["list_nodes", "td_docs_family"]),
     (re.compile(r"parameter|par\b", re.I),
      "A parameter name was invalid for this operator.",
-     "Inspect the operator schema before setting values.",
-     ["td_docs_parameter", "get_parameters"]),
+     "Read the exact names with describe_op_type (type) or "
+     "get_parameter_info (existing node) before setting values.",
+     ["describe_op_type", "get_parameter_info"]),
     (re.compile(r"python|exec|syntax", re.I),
      "The Python snippet failed to execute.",
      "Fix the Python (check op() paths and imports) and retry.",
@@ -1231,8 +1315,26 @@ def _current_parent():
     for the whole function, so the fallback call raised UnboundLocalError.
     Only on the error path -- a valid path short-circuits the ``or`` -- which
     is how it survived. A bad parent path now says "parent not found".
+
+    And not ``parent()`` itself: evaluated in this DAT that is the bridge's own
+    COMP (``/project1/td_mcp``), so every path-less ``create_node`` landed
+    inside the bridge. The default is the network the user is looking at
+    (``*here``), never the bridge, else ``/project1``.
     """
-    return parent()
+    home = _bridge_home()
+    node = _op("*here")
+    if node is not None and _inside_bridge(node.path, home):
+        node = None
+    if node is None:
+        node = op("/project1")  # noqa: F821 - TD global
+    return node if node is not None else parent()  # noqa: F821
+
+
+def _inside_bridge(path, home=None):
+    home = _bridge_home() if home is None else home
+    if not home or home == "/" or not path:
+        return False
+    return path == home or path.startswith(home + "/")
 
 
 def _op_type(node):
@@ -1305,6 +1407,46 @@ def _is_protected(path):
     return False
 
 
+def _bridge_home():
+    """Path of the COMP this bridge DAT lives in (``/project1/td_mcp``), or None
+    outside TouchDesigner."""
+    try:
+        home = me.parent()  # noqa: F821 - TD global: the bridge Text DAT
+        return home.path if home is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _self_guard(path, tool, ancestors=False):
+    """Refuse a mutation aimed at the bridge itself.
+
+    Derivative's TDMCP 1.1.57 fences every mutating tool off its own component
+    after finding `set_parameters` could switch its authentication off; Embody
+    v6.2.49 refuses a call that would destroy its own host. Same rule here: the
+    connection the agent is using must not be editable through itself.
+    ``ancestors=True`` (delete) also refuses a parent of the bridge -- deleting
+    ``/project1`` deletes the server answering the call. Read-only tools are not
+    fenced; ``execute_python`` is not either, and is documented as such.
+    """
+    home = _bridge_home()
+    if home == "/":
+        home = None  # a bridge loaded bare (no component) has no home to fence
+    node = _op(path) if path else None
+    target = node.path if node is not None else (path or "")
+    if home and target:
+        inside = _inside_bridge(target, home)
+        above = ancestors and (target == "/" or home.startswith(target.rstrip("/") + "/"))
+        if inside or above:
+            return {"ok": False, "error_code": "self_path",
+                    "error": "%s refused: %s %s the TD_MCP bridge component (%s); "
+                             "editing it would cut this connection"
+                             % (tool, target, "contains" if above and not inside else "is inside", home)}
+    if _is_protected(target or path):
+        return {"ok": False, "error_code": "protected",
+                "error": "%s refused: path is protected: %s" % (tool, target or path)}
+    return None
+
+
 def _family_of(node):
     try:
         return node.family
@@ -1332,6 +1474,7 @@ def _auto_position(parent_node, family):
 
 
 def _do_create(path, type, name=None, nodeX=None, nodeY=None):
+    """Create a node of the given operator type at ``path`` (or *here*)."""
     if not ALLOW_EXEC:
         sources = code_bearing_sources(op_type=type)
         if sources:
@@ -1359,6 +1502,7 @@ def _do_create(path, type, name=None, nodeX=None, nodeY=None):
 
 
 def _do_delete(path):
+    """Delete the node at ``path`` (refuses protected paths)."""
     if _is_protected(path):
         return {"ok": False, "error": f"path is protected from deletion: {path}"}
     node = _op(path)
@@ -1422,16 +1566,91 @@ def _serialize_exec_result(value):
     }
 
 
-def _do_get_parameters(path, detail="normal"):
+def _par_mode_name(par):
+    mode = getattr(par, "mode", None)
+    name = getattr(mode, "name", None) or str(mode or "")
+    return name.split(".")[-1].upper()
+
+
+def _par_reading(par):
+    """``(value, mode_info_or_None)`` for one parameter, read the way TD shows it.
+
+    ``Par.val`` is the CONSTANT slot only: verified on 2025.33230, a parameter
+    whose expression is ``1.5 + 1.5`` reads ``val`` 1.0 and ``eval()`` 3.0, and
+    a bound one reads its stale constant instead of its master. So the value is
+    ``eval()``; the mode, expression, bind master or export source ride along
+    for anything not CONSTANT (Embody v6.3.8, issue #201); and an expression
+    that cannot evaluate reports ``<eval error: ...>`` instead of failing the
+    whole read.
+    """
+    mode = _par_mode_name(par)
+    info = None
+    try:
+        value = _json_safe(par.eval())
+    except Exception as exc:  # noqa: BLE001 - a broken expression is data
+        value = "<eval error: %s>" % str(exc)[:160]
+        info = {"mode": mode, "eval_error": True}
+    if mode and mode != "CONSTANT":
+        info = dict(info or {}, mode=mode)
+        if mode == "EXPRESSION":
+            info["expr"] = str(getattr(par, "expr", "") or "")
+        elif mode == "BIND":
+            info["bindExpr"] = str(getattr(par, "bindExpr", "") or "")
+            master = getattr(par, "bindMaster", None)
+            if master is not None:
+                owner = getattr(master, "owner", None)
+                info["bindMaster"] = ("%s:%s" % (owner.path, master.name)
+                                      if owner is not None and hasattr(master, "name")
+                                      else str(master))
+        elif mode == "EXPORT":
+            src = getattr(par, "exportSource", None)
+            if src is not None:
+                info["exportSource"] = _json_safe(src)
+            exp_op = getattr(par, "exportOP", None)
+            if exp_op is not None:
+                info["exportOP"] = getattr(exp_op, "path", str(exp_op))
+    return value, info
+
+
+def _do_get_parameters(path, detail="normal", names=None, non_default=False):
+    """Read a node's parameter values as TD shows them (eval, not the constant slot).
+
+    ``names``: comma list or glob(s) to filter; ``non_default``: only values
+    that differ from the operator's defaults (the token-efficient read). Up to
+    40 by default; all on detailLevel='full'. Non-constant parameters are also
+    described under ``modes`` (expression / bind master / export source).
+    """
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
-    params = {p.name: p.val for p in node.par}
+    pars = list(node.par)
+    if names:
+        pats = [n.strip() for n in (names.split(",") if isinstance(names, str) else names)
+                if str(n).strip()]
+        pars = [p for p in pars if any(fnmatch.fnmatchcase(p.name, pat) for pat in pats)]
+    if non_default:
+        pars = [p for p in pars if not getattr(p, "isDefault", False)]
+    params, modes = {}, {}
+    for p in pars:
+        value, info = _par_reading(p)
+        params[p.name] = value
+        if info:
+            modes[p.name] = info
+    total = len(params)
     if detail == "brief":
-        return {"ok": True, "count": len(params)}
-    if detail == "full":
-        return {"ok": True, "params": params}
-    return {"ok": True, "params": dict(list(params.items())[:40])}
+        return {"ok": True, "count": total, "non_constant": len(modes)}
+    if detail != "full" and total > 40:
+        keep = list(params)[:40]
+        params = {k: params[k] for k in keep}
+        modes = {k: v for k, v in modes.items() if k in params}
+    out = {"ok": True, "params": params}
+    if modes:
+        out["modes"] = modes
+    if len(params) < total:
+        out["truncated"] = True
+        out["total"] = total
+        out["hint"] = "pass detailLevel='full', a names filter, or non_default=true"
+    return out
 
 
 def _do_get_parameter_info(path, names=None):
@@ -1678,6 +1897,7 @@ def _do_clear_script_errors(path, recurse=False):
 
 
 def _do_execute_python(code):
+    """Execute arbitrary Python in the TouchDesigner main thread (gated by the exec flag)."""
     if not ALLOW_EXEC:
         return {"ok": False, "error": "execute_python is disabled (TD_MCP_ALLOW_EXEC=0 / TD_MCP_EXEC_MODE=off)"}
     try:
@@ -1705,6 +1925,7 @@ def _do_execute_python(code):
 
 
 def _do_list_nodes(path, detail="normal"):
+    """List the children of a node (defaults to the root COMP when path is empty)."""
     node = _op(path) or root
     if node is None:
         return {"ok": False, "error": "not found"}
@@ -1716,6 +1937,7 @@ def _do_list_nodes(path, detail="normal"):
 
 
 def _do_scan_network(path, depth=3):
+    """Traverse a subnetwork: every node, connection, and non-default parameter."""
     start_node = _op(path) or root
     if start_node is None:
         return {"ok": False, "error": "not found"}
@@ -1851,17 +2073,28 @@ def _do_get_node(path):
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
-    non_defaults = {}
+    non_defaults, modes = {}, {}
     try:
         for p in node.par:
             if not p.isDefault:
-                non_defaults[p.name] = p.val
-    except Exception:
+                # eval(), not val: val is the stale constant slot (see _par_reading)
+                non_defaults[p.name], info = _par_reading(p)
+                if info:
+                    modes[p.name] = info
+    except Exception:  # noqa: BLE001
         pass
     inputs = [src.path for _i, src, _o in _input_sources(node)]
     outputs = [dst.path for _o, dst, _i in _output_targets(node)]
     errors = _node_errors(node)
-    return {
+    flags = {}
+    for flag in ("display", "render", "bypass", "lock", "viewer", "allowCooking"):
+        try:
+            value = getattr(node, flag)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(value, bool):
+            flags[flag] = value
+    out = {
         "ok": True,
         "name": node.name,
         "type": node.type,
@@ -1872,7 +2105,14 @@ def _do_get_node(path):
         "params": non_defaults,
         "errors": errors,
         "position": [getattr(node, 'nodeX', 0), getattr(node, 'nodeY', 0)],
+        # Layout needs the real tile size: spacing by a fixed step overlaps
+        # wide tiles (COMPs), so placement is nodeX + nodeWidth + gap.
+        "size": [getattr(node, 'nodeWidth', None), getattr(node, 'nodeHeight', None)],
+        "flags": flags,
     }
+    if modes:
+        out["modes"] = modes
+    return out
 
 
 def _do_set_node_color(path, r, g, b):
@@ -1929,6 +2169,7 @@ def _force_cook(node):
 
 
 def _do_set_parameters(path, params, detail="normal"):
+    """Set one or more parameters on a node; reports unknown params and suggestions."""
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
@@ -1942,19 +2183,40 @@ def _do_set_parameters(path, params, detail="normal"):
         if sources:
             return code_route_denied("set_parameters", sources)
     applied = {}
+    notes = {}
     # An unknown parameter used to be a silent `continue`, so a misspelling
     # came back as {"ok": true, "applied": {}} and the caller carried on
     # believing the network was configured. Report it, and say what was meant.
     unknown = {}
-    available = [p.name for p in node.par]
+    all_pars = list(node.par)
+    available = [p.name for p in all_pars]
+    tuplets = {}
+    for p in all_pars:
+        tn = getattr(p, "tupletName", None)
+        if tn and tn != p.name:
+            tuplets.setdefault(tn, []).append(p)
+    # A tuplet name with a list value: resolution=[1280, 720] -> resolutionw/h.
+    # (2025.33230 has no OP.parTuple; Par.tuplet/tupletName carry the grouping.)
+    expanded = {}
+    for k, v in params.items():
+        if node.par[k] is None and k in tuplets and isinstance(v, (list, tuple)):
+            for comp, cv in zip(tuplets[k], v):
+                expanded[comp.name] = cv
+            notes[k] = "tuplet expanded to %s" % ", ".join(
+                c.name for c in tuplets[k][:len(v)])
+        else:
+            expanded[k] = v
+    params = expanded
     for k in params:
         if node.par[k] is None:
             unknown[k] = suggest_parameter(k, available)
+    invalid = {}
     for k, v in params.items():
         if node.par[k] is None:
             continue
         par = node.par[k]
         try:
+            was_mode = _par_mode_name(par)
             if isinstance(v, dict):
                 if "expr" in v:
                     par.expr = v["expr"]
@@ -1963,11 +2225,35 @@ def _do_set_parameters(path, params, detail="normal"):
                 if "val" in v:
                     par.val = v["val"]
                 applied[k] = v
+            elif getattr(par, "isPulse", False):
+                # Writing True to a pulse par is accepted and does nothing.
+                if v:
+                    par.pulse()
+                applied[k] = "pulsed" if v else "not pulsed (false)"
             else:
+                token = _menu_token(par, v)
+                if token is not None and token != v:
+                    notes[k] = {"menu_label": "%r -> token %r" % (v, token)}
+                    v = token
                 par.val = v
                 applied[k] = v
+                note = _write_readback(par, v, was_mode)
+                if note is not None:
+                    if note.pop("invalid", False):
+                        invalid[k] = note
+                    else:
+                        notes[k] = note
         except Exception as e:  # noqa: BLE001
             applied[k] = f"error: {e}"
+    if invalid:
+        # TD does not raise on a bad menu token: the parameter just keeps its
+        # old value. Treated as the failure it is, with the valid tokens.
+        return {"ok": False,
+                "error": "invalid menu value(s) on %s: %s" % (
+                    getattr(node, "OPType", node.type),
+                    "; ".join("%s=%r (valid: %s)" % (k, params[k], ", ".join(n["menu"][:12]))
+                              for k, n in invalid.items())),
+                "invalid": invalid, "applied": applied}
     if unknown:
         # Partial application is a failure, not a success with a footnote: the
         # caller has to know the network is not in the state it asked for.
@@ -1986,8 +2272,180 @@ def _do_set_parameters(path, params, detail="normal"):
             out["available"] = sorted(available)
         return out
     if detail == "brief":
-        return {"ok": True, "applied_count": len(applied)}
-    return {"ok": True, "applied": applied}
+        out = {"ok": True, "applied_count": len(applied)}
+    else:
+        out = {"ok": True, "applied": applied}
+    if notes:
+        out["notes"] = notes
+    return out
+
+
+def _menu_token(par, value):
+    """A menu *label* ('Clamp [0-1]') or case variant mapped to its token
+    ('clamp'); None when ``par`` is not a menu or nothing matches."""
+    if not getattr(par, "isMenu", False) or not isinstance(value, str):
+        return None
+    names = [str(n) for n in (getattr(par, "menuNames", None) or [])]
+    if value in names:
+        return value
+    labels = [str(n) for n in (getattr(par, "menuLabels", None) or [])]
+    low = value.strip().lower()
+    for i, name in enumerate(names):
+        if name.lower() == low or (i < len(labels) and labels[i].strip().lower() == low):
+            return name
+    return None
+
+
+def _write_readback(par, requested, was_mode):
+    """What TD actually did with a plain-value write, when it is not what was
+    asked. Verified on 2025.33230: a bad menu token is silently ignored; a
+    value past a hard clamp is silently clamped (resolutionw=-5 -> 1); a write
+    to an EXPRESSION/BIND parameter switches it to CONSTANT and drops the
+    expression. Returns None when the write landed as asked."""
+    try:
+        got = par.eval()
+    except Exception:  # noqa: BLE001
+        return None
+    if getattr(par, "isMenu", False):
+        names = [str(n) for n in (getattr(par, "menuNames", None) or [])]
+        if isinstance(requested, str) and names and requested not in names:
+            return {"invalid": True, "kept": _json_safe(got), "menu": names}
+        return None
+    note = {}
+    if was_mode not in ("", "CONSTANT"):
+        note["mode_changed"] = "%s -> CONSTANT (the old expression/bind was discarded)" % was_mode
+    if (isinstance(requested, (int, float)) and not isinstance(requested, bool)
+            and isinstance(got, (int, float)) and not isinstance(got, bool)
+            and abs(float(got) - float(requested)) > 1e-9):
+        note["clamped_to"] = _json_safe(got)
+    return note or None
+
+
+_OPTYPE_CACHE = {}
+_DESCRIBE_NUMERIC = {"Float", "Int", "XY", "XYZ", "XYZW", "WH", "UV", "UVW", "RGB", "RGBA"}
+_DESCRIBE_REFS = {"OP", "COMP", "OBJ", "PanelCOMP", "TOP", "CHOP", "SOP", "DAT",
+                  "MAT", "POP", "Object", "Python"}
+
+
+def _describe_par(p):
+    style = str(getattr(p, "style", ""))
+    try:
+        created = p.val if style in _DESCRIBE_REFS else p.eval()
+    except Exception:  # noqa: BLE001
+        created = p.val
+    row = {"name": p.name, "label": getattr(p, "label", p.name), "style": style,
+           "page": p.page.name if getattr(p, "page", None) is not None else None,
+           "default": _json_safe(created)}
+    try:
+        declared = _json_safe(p.default)
+        if declared != row["default"]:
+            row["declared_default"] = declared
+    except Exception:  # noqa: BLE001
+        pass
+    tn = getattr(p, "tupletName", None)
+    if tn and tn != p.name:
+        row["tuplet"] = tn
+    if getattr(p, "isMenu", False):
+        row["menu"] = [str(n) for n in (p.menuNames or [])]
+        labels = [str(n) for n in (p.menuLabels or [])]
+        if labels and labels != row["menu"]:
+            row["menu_labels"] = labels
+    if style in _DESCRIBE_NUMERIC:
+        lo = _json_safe(p.min) if getattr(p, "clampMin", False) else None
+        hi = _json_safe(p.max) if getattr(p, "clampMax", False) else None
+        if lo is not None or hi is not None:
+            row["clamp"] = [lo, hi]
+    if getattr(p, "readOnly", False):
+        row["read_only"] = True
+    return row
+
+
+def _do_describe_op_type(op_type, pattern=None, page=None, include_menus=True):
+    """Parameter names, labels, styles, creation defaults and menus of an
+    operator TYPE, read off a throwaway instance in /sys/quiet (cooking off,
+    outside the project) and cached per type for the session.
+
+    The look-before-you-guess read (Embody v6.2.65, Derivative TDMCP
+    ``get_help``). ``default`` is the value a fresh operator holds, because
+    ``Par.default`` lies for some menus (Text DAT ``language`` declares
+    ``input``, a new DAT holds ``text`` -- verified 2025.33230).
+    """
+    name = normalize_op_type(op_type or "")
+    cls = None
+    try:
+        import td as _td
+        cls = getattr(_td, name, None) if name[:1].islower() else None
+    except Exception:  # noqa: BLE001 - outside TD (the double)
+        _td = None
+    if cls is None and _td is not None:
+        known = [n for n in dir(_td) if n[:1].islower()
+                 and n.endswith(("TOP", "CHOP", "SOP", "POP", "DAT", "MAT", "COMP"))]
+        return {"ok": False, "error": "unknown operator type %r" % op_type,
+                "did_you_mean": difflib.get_close_matches(name, known, n=5, cutoff=0.6),
+                "hint": "Use the TD class name: noiseTOP, lfoCHOP, gridPOP, textDAT."}
+    cached = name in _OPTYPE_CACHE
+    if not cached:
+        quiet = op("/sys/quiet")  # noqa: F821 - TD global
+        if quiet is None:
+            return {"ok": False, "error": "/sys/quiet is not available; create the "
+                    "operator and use get_parameter_info instead"}
+        probe = None
+        try:
+            probe = quiet.create(cls if cls is not None else name, "td_mcp_describe")
+            _OPTYPE_CACHE[name] = {
+                "family": getattr(probe, "family", ""),
+                "label": getattr(probe, "label", ""),
+                "inputs": [_int_of(probe, "minInputs"), _int_of(probe, "maxInputs")],
+                "pages": [pg.name for pg in getattr(probe, "pages", [])],
+                "parameters": [_describe_par(p) for p in probe.par
+                               if not (p.name == "pageindex" and getattr(p, "page", None) is None)],
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": "could not instantiate %s: %s" % (name, exc)}
+        finally:
+            if probe is not None:
+                try:
+                    probe.destroy()
+                except Exception:  # noqa: BLE001
+                    pass
+    entry = _OPTYPE_CACHE[name]
+    rows = entry["parameters"]
+    if page:
+        rows = [r for r in rows if (r.get("page") or "").lower() == page.lower()]
+    if pattern:
+        pat = pattern.lower()
+        if not any(ch in pat for ch in "*?["):
+            pat = "*%s*" % pat
+        rows = [r for r in rows if fnmatch.fnmatchcase(r["name"].lower(), pat)
+                or fnmatch.fnmatchcase((r.get("label") or "").lower(), pat)]
+    if not include_menus:
+        rows = [{k: v for k, v in r.items() if k not in ("menu", "menu_labels")} for r in rows]
+    out = {"ok": True, "op_type": name, "family": entry["family"],
+           "display_name": ("%s %s" % (entry["label"], entry["family"])).strip(),
+           "inputs": entry["inputs"], "pages": entry["pages"], "count": len(rows),
+           "total": len(entry["parameters"]), "parameters": rows, "cached": cached}
+    if (pattern or page) and not rows:
+        out["hint"] = ("No parameter matched -- the name guess is wrong, not the "
+                       "operator. Retry without filters and match by label.")
+    return out
+
+
+def _do_pulse_parameter(path, param):
+    """Pulse a pulse-type parameter (reset, reload, start...). Setting True on
+    one is accepted by TD and does nothing; this calls ``par.pulse()``."""
+    node = _op(path)
+    if node is None:
+        return {"ok": False, "error": "not found"}
+    par = node.par[param] if param else None
+    if par is None:
+        pulses = [p.name for p in node.par if getattr(p, "isPulse", False)]
+        return {"ok": False, "error": "unknown parameter %r on %s" % (param, node.path),
+                "pulse_parameters": pulses}
+    if not getattr(par, "isPulse", False) and not getattr(par, "isMomentary", False):
+        return {"ok": False, "error": "%s.%s is a %s parameter, not a pulse"
+                % (node.path, param, getattr(par, "style", "?"))}
+    par.pulse()
+    return {"ok": True, "path": node.path, "pulsed": param}
 
 
 def _do_disconnect_nodes(from_path, to_path, to_input=0):
@@ -2079,22 +2537,64 @@ def _do_restore_network(snapshot, target_parent="*here"):
         return {"ok": False, "error": str(e)}
 
 
-def _do_get_performance(path):
-    """Rank child cook times to surface performance hotspots (Embody)."""
-    node = _op(path) or root
-    if node is None:
-        return {"ok": False, "error": "not found"}
-    rows = []
+def _now_abs_frame():
     try:
-        for c in node.children:
-            rows.append({"path": c.path, "type": c.type,
-                         "cook_time": round(float(getattr(c, "cookTime", 0) or 0), 4),
-                         "cpu": round(float(getattr(c, "cpuCookTime", 0) or 0), 4),
-                         "gpu": round(float(getattr(c, "gpuCookTime", 0) or 0), 4)})
+        return int(absTime.frame)  # noqa: F821 - TD global
     except Exception:  # noqa: BLE001
-        pass
-    rows.sort(key=lambda r: r["cook_time"], reverse=True)
-    return {"ok": True, "fps": project.cookRate, "cooks": rows, "hotspots": rows[:5]}
+        return None
+
+
+def _do_get_performance(path, max_age_frames=10, depth=1, limit=25):
+    """Rank cook times (ms, CPU+GPU) to find what is slowing a network down.
+
+    ``cookTime`` is the duration of the LAST cook, however long ago: an
+    operator that cooked once at creation would top the list forever
+    (Derivative TDMCP #14). Anything that has not cooked within
+    ``max_age_frames`` (from ``cookAbsFrame`` vs ``absTime.frame``) is marked
+    ``stale``, gets no budget share and sorts after the live cooks.
+    ``budget_pct`` is CPU+GPU against one frame at the project cook rate.
+    A non-COMP path profiles that one operator.
+    """
+    start = _op(path) if path else root  # noqa: F821
+    if start is None:
+        return {"ok": False, "error": "not found"}
+    try:
+        fps = float(project.cookRate) or 60.0  # noqa: F821
+    except Exception:  # noqa: BLE001
+        fps = 60.0
+    frame_ms = 1000.0 / fps
+    now = _now_abs_frame()
+    if getattr(start, "isCOMP", False):
+        depth = max(1, min(int(depth or 1), MAX_DEPTH))
+        try:
+            nodes = start.findChildren(maxDepth=depth)
+        except Exception:  # noqa: BLE001 - older doubles: direct children only
+            nodes = list(getattr(start, "children", []))
+    else:
+        nodes = [start]
+    rows, stale = [], 0
+    for c in nodes:
+        cpu = float(getattr(c, "cpuCookTime", 0) or 0)
+        gpu = float(getattr(c, "gpuCookTime", 0) or 0)
+        last = float(getattr(c, "cookTime", 0) or 0)
+        row = {"path": c.path, "type": _op_type(c), "cpu_ms": round(cpu, 4),
+               "gpu_ms": round(gpu, 4), "cook_ms": round(last, 4)}
+        cooked_at = getattr(c, "cookAbsFrame", None)
+        if now is not None and isinstance(cooked_at, (int, float)):
+            age = int(now - cooked_at)
+            row["frames_since_cook"] = age
+            if age > int(max_age_frames):
+                row["stale"] = True
+                stale += 1
+        if not row.get("stale"):
+            row["budget_pct"] = round(100.0 * (cpu + gpu) / frame_ms, 2)
+        rows.append(row)
+    rows.sort(key=lambda r: (bool(r.get("stale")), -(r["cpu_ms"] + r["gpu_ms"])))
+    live = [r for r in rows if not r.get("stale")]
+    return {"ok": True, "fps": fps, "frame_budget_ms": round(frame_ms, 3),
+            "units": "ms", "count": len(rows), "stale_count": stale,
+            "live_total_budget_pct": round(sum(r.get("budget_pct", 0) for r in live), 2),
+            "hotspots": live[:5], "cooks": rows[:int(limit or 25)]}
 
 
 def _do_validate_network(path, depth=2):
@@ -2135,8 +2635,12 @@ def _do_validate_network(path, depth=2):
 
 
 # TouchDesigner node flag attributes that can be toggled from the server.
+#: Settable OP flags. `display`/`render` (what the network background and the
+#: render show) and `lock` were missing, so the commonest flag change in a
+#: build -- "turn the output's display flag on" -- was impossible.
 _NODE_FLAGS = ("bypass", "viewer", "excludeFromCook", "allowCooking",
-               "forceCooking", "cloneImmune", "pickable")
+               "forceCooking", "cloneImmune", "pickable", "display", "render",
+               "lock", "expose", "activeViewer", "current", "selected")
 
 
 def _do_set_flags(path, flags=None):
@@ -2148,6 +2652,15 @@ def _do_set_flags(path, flags=None):
     applied = {}
     for k, v in flags.items():
         if k in _NODE_FLAGS:
+            # Verified on TD 2025.33230: allowCooking=False raises on a
+            # non-COMP (=True is accepted anywhere), so a mixed-type gate
+            # would pass its enable pass and abort on disable. Gate a
+            # non-COMP with the bypass flag or remove its demand instead.
+            if k == "allowCooking" and not bool(v) and not node.isCOMP:
+                applied[k] = ("skipped: allowCooking is COMP-only; gate a "
+                              "non-COMP with the bypass flag or remove its "
+                              "demand")
+                continue
             try:
                 setattr(node, k, bool(v))
                 applied[k] = bool(v)
@@ -2480,6 +2993,7 @@ def _do_import_recipe(recipe, target_parent="*here"):
 
 
 def _do_project_info():
+    """Report the TouchDesigner build, bridge version, FPS, and project name."""
     # app.version still reports the legacy generation ("099"); the public
     # year.build identifier lives on app.build (dcc-mcp #5). Version-compat
     # checks compare against "2023.11000"-style builds, so they need the
@@ -2492,6 +3006,142 @@ def _do_project_info():
             "fps": project.cookRate,
             "file": project.name}
 
+
+
+# --- Any-family capture through a transient OP Viewer TOP ------------------
+# A CHOP/SOP/POP/DAT/COMP has no pixels of its own; its network-editor viewer
+# does. Verified 2025.33230: an OP Viewer TOP aimed with a RELATIVE path and
+# outputresolution='custom' renders within ~40 frames and is all-zero before
+# that -- so the capture cannot be same-frame. It runs on the HTTP thread
+# (see _invoke), polling the main thread between frames, and the viewer is
+# always destroyed. Undo is suspended so no helper operator lands in the
+# user's Ctrl+Z history. Technique after Embody `capture_op` (v6.2.19).
+VIEWER_PREFIX = "td_mcp_viewer_"
+VIEWER_WAIT_SECONDS = float(os.environ.get("TD_MCP_VIEWER_WAIT", "4"))
+
+
+class _undo_off:
+    def __enter__(self):
+        self._prev = None
+        try:
+            self._prev = ui.undo.state  # noqa: F821 - TD global
+            ui.undo.state = False  # noqa: F821
+        except Exception:  # noqa: BLE001
+            self._prev = None
+        return self
+
+    def __exit__(self, *exc):
+        if self._prev is not None:
+            try:
+                ui.undo.state = self._prev  # noqa: F821
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+
+
+def _viewer_host():
+    home = _bridge_home()
+    host = op(home) if home and home != "/" else None  # noqa: F821
+    return host if host is not None else op("/project1")  # noqa: F821
+
+
+def _viewer_prepare(path, width=960):
+    """Main thread: ``{'is_top': True}``, ``{'viewer': path, ...}`` or an error."""
+    node = _op(path)
+    if node is None:
+        return {"ok": False, "error": "not found: %s" % path}
+    if _family_of(node) == "TOP":
+        return {"ok": True, "is_top": True}
+    host = _viewer_host()
+    if host is None:
+        return {"ok": False, "error": "no COMP to host a viewer in"}
+    with _undo_off():
+        for child in list(getattr(host, "children", [])):
+            if str(child.name).startswith(VIEWER_PREFIX):
+                try:
+                    child.destroy()  # a capture interrupted mid-wait
+                except Exception:  # noqa: BLE001
+                    pass
+        viewer = host.create("opviewerTOP", VIEWER_PREFIX + secrets.token_hex(3))
+        try:
+            viewer.nodeX, viewer.nodeY = -4000, -4000
+            try:
+                viewer.par.opviewer = viewer.relativePath(node)
+            except Exception:  # noqa: BLE001 - older builds: absolute path
+                viewer.par.opviewer = node.path
+            w = max(320, int(width or 960))
+            viewer.par.outputresolution = "custom"
+            viewer.par.resolutionw = w
+            viewer.par.resolutionh = int(round(w * 9 / 16))
+            try:
+                viewer.par.outputaspect = "resolution"
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception as exc:  # noqa: BLE001
+            viewer.destroy()
+            return {"ok": False, "error": "could not aim a viewer at %s: %s" % (node.path, exc)}
+    return {"ok": True, "viewer": viewer.path, "family": _family_of(node),
+            "op_type": _op_type(node)}
+
+
+def _viewer_has_content(viewer_path):
+    try:
+        arr = op(viewer_path).numpyArray()  # noqa: F821
+        return arr is not None and arr.size > 0 and float(arr.max()) > 0.0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _viewer_destroy(viewer_path):
+    with _undo_off():
+        try:
+            node = op(viewer_path)  # noqa: F821
+            if node is not None:
+                node.destroy()
+        except Exception:  # noqa: BLE001
+            pass
+    return True
+
+
+def _capture_any_family(args):
+    """HTTP thread: capture a TOP directly, anything else through a viewer."""
+    path = args.get("path")
+    prep = _call_on_main(_viewer_prepare, path, args.get("width", 960))
+    if not prep.get("ok"):
+        return _wrap(prep)
+    if prep.get("is_top"):
+        return _call_on_main(_run_tool, "capture_viewport", args)
+    viewer = prep["viewer"]
+    waited, rendered = 0.0, False
+    try:
+        start = time.time()
+        while time.time() - start < VIEWER_WAIT_SECONDS:
+            time.sleep(0.05)
+            if _call_on_main(_viewer_has_content, viewer):
+                rendered = True
+                break
+        waited = round(time.time() - start, 2)
+        res = _call_on_main(_run_tool, "capture_viewport", dict(args, path=viewer))
+    finally:
+        _call_on_main(_viewer_destroy, viewer)
+    if isinstance(res, dict):
+        res = dict(res)
+        res.update({"source": path, "captured_via": "opviewerTOP",
+                    "family": prep.get("family"), "op_type": prep.get("op_type"),
+                    "viewer_wait_s": waited})
+        if not rendered:
+            res["warning"] = ("the viewer had not rendered after %.1fs; the image "
+                              "is probably blank (is the timeline playing?)" % waited)
+        else:
+            res["note"] = ("viewer capture: is_black/is_flat judge the editor's "
+                           "viewer (a CHOP graph or SOP viewport), not a render")
+    return res
+
+
+#: Tools that must span frames. They run on the HTTP thread and marshal each
+#: step to the main thread themselves; called ON the main thread (a batch, the
+#: Textport) they fall back to the single-frame handler.
+_MULTI_FRAME_TOOLS = {"capture_viewport": _capture_any_family}
 
 
 def _do_capture_viewport(path, detail="normal"):
@@ -2683,6 +3333,10 @@ def _do_batch(ops):
         if fn is None:
             results.append({"tool": tool, "ok": False, "error": "unknown tool"})
             continue
+        refused = _guard_call(tool, call.get("args", {}))
+        if refused is not None:
+            results.append({"tool": tool, "result": _wrap(refused)})
+            continue
         try:
             with _undo_block(tool):
                 results.append({"tool": tool, "result": fn(call.get("args", {}))})
@@ -2869,6 +3523,7 @@ def _do_read_pop(path, attribute=None, format="stats", max_points=None):
 
 
 def _do_read_top(path, detail="brief"):
+    """Read a TOP's pixel dimensions (and aspect ratio when detail != 'brief')."""
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
@@ -2972,7 +3627,12 @@ _DISPATCH = {
                                          a.get("nodeX"), a.get("nodeY")),
     "delete_node": lambda a: _do_delete(a.get("path")),
     "set_parameters": lambda a: _do_set_parameters(a.get("path"), a.get("params", {}), a.get("detailLevel", "normal")),
-    "get_parameters": lambda a: _do_get_parameters(a.get("path"), a.get("detailLevel", "normal")),
+    "get_parameters": lambda a: _do_get_parameters(a.get("path"), a.get("detailLevel", "normal"),
+                                                   a.get("names"), a.get("non_default", False)),
+    "pulse_parameter": lambda a: _do_pulse_parameter(a.get("path"), a.get("param")),
+    "describe_op_type": lambda a: _do_describe_op_type(a.get("op_type") or a.get("type"),
+                                                       a.get("pattern"), a.get("page"),
+                                                       a.get("include_menus", True)),
     "get_parameter_info": lambda a: _do_get_parameter_info(a.get("path"), a.get("names")),
     "bind_parameter_expression": lambda a: _do_bind_parameter_expression(a.get("path"), a.get("param"), a.get("expression")),
     "get_errors": lambda a: _do_get_errors(a.get("path"), a.get("include_warnings", True),
@@ -3010,7 +3670,8 @@ _DISPATCH = {
     "exec_node_method": lambda a: _do_exec_node_method(a.get("path"), a.get("method"), a.get("args")),
     "snapshot_network": lambda a: _do_snapshot_network(a.get("path")),
     "restore_network": lambda a: _do_restore_network(a.get("snapshot"), a.get("target_parent", "*here")),
-    "get_performance": lambda a: _do_get_performance(a.get("path")),
+    "get_performance": lambda a: _do_get_performance(a.get("path"), a.get("max_age_frames", 10),
+                                                     a.get("depth", 1), a.get("limit", 25)),
     "validate_network": lambda a: _do_validate_network(a.get("path"), a.get("depth", 2)),
     "set_flags": lambda a: _do_set_flags(a.get("path"), a.get("flags")),
     "find_nodes": lambda a: _do_find_nodes(a.get("path"), a.get("query"), a.get("type"), _cap(a.get("depth", 4), MAX_DEPTH)),
@@ -3255,7 +3916,7 @@ class _Handler(BaseHTTPRequestHandler):
             tools = [
                 {
                     "name": name,
-                    "description": f"Bridge tool: {name}",
+                    "description": _tool_description(name),
                     "inputSchema": {
                         "type": "object",
                         "properties": {},

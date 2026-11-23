@@ -29,6 +29,7 @@ Start here.
 | **[TESTING.md](TESTING.md)** | The TouchDesigner API double, and the guards that catch drift. |
 | **[SECURITY.md](SECURITY.md)** | The exec gate, auth, protected paths, bounded ops, the threading hazard. |
 | **[ECOSYSTEM.md](ECOSYSTEM.md)** | 30 projects surveyed: what they do and what is worth taking. |
+| **[CPP_CUSTOM_OPERATORS.md](CPP_CUSTOM_OPERATORS.md)** | The compiled custom-operator SDK (CPlusPlus CHOP/TOP/DAT/SOP/POP): C-ABI exports, cook callbacks, buffers, the hard-real-time threading pattern, and the PluginBuilder build/hot-reload workflow. |
 
 ## Project-level
 

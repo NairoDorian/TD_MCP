@@ -83,14 +83,57 @@ class FakePar:
         # Set by the double when an expression should raise on eval, so tests
         # can exercise the "bad expression" path the way TD does.
         self.eval_error: Optional[Exception] = None
+        self._init_done = True
 
     # `par.val` in TD is a live read of the parameter's constant value.
     @property
     def val(self):
         return self._val
 
+    @property
+    def expr(self):
+        return self._expr
+
+    @expr.setter
+    def expr(self, text):
+        # Verified on 2025.33230: assigning an expression switches the
+        # parameter to EXPRESSION mode (probe: `period.expr = '1.5 + 1.5'`).
+        self._expr = text
+        if text and getattr(self, "_init_done", False):
+            self.mode = FakeParMode.EXPRESSION
+
+    @property
+    def isMenu(self) -> bool:
+        return bool(self.menuNames)
+
+    @property
+    def isPulse(self) -> bool:
+        return self.style == "Pulse"
+
+    @property
+    def isMomentary(self) -> bool:
+        return self.style == "Momentary"
+
+    @property
+    def tupletName(self) -> str:
+        return getattr(self, "_tuplet_name", None) or self.name
+
+    def pulse(self):
+        self.pulses = getattr(self, "pulses", 0) + 1
+
     @val.setter
     def val(self, v):
+        # Verified on 2025.33230: a menu ignores a token it does not have --
+        # no exception, the old value stays -- and an int selects by index.
+        if self.menuNames:
+            if isinstance(v, int) and not isinstance(v, bool) and 0 <= v < len(self.menuNames):
+                v = self.menuNames[v]
+            elif isinstance(v, str) and v not in self.menuNames:
+                return
+        # Verified on 2025.33230: writing the value switches an EXPRESSION or
+        # BIND parameter to CONSTANT; the expression is dropped.
+        if self.mode != FakeParMode.CONSTANT:
+            self.mode = FakeParMode.CONSTANT
         self._val = v
         # Let the owning operator react, the way TouchDesigner does when a
         # parameter changes (a Text DAT reloads when Sync to File turns on).
@@ -387,6 +430,25 @@ class FakeOP:
         self._warnings = warnings
         self._scriptErrors = scriptErrors
         self.saved_to: Optional[str] = None
+        self._allowCooking = True
+
+    @property
+    def isCOMP(self) -> bool:
+        return self.family == "COMP"
+
+    @property
+    def allowCooking(self) -> bool:
+        return self._allowCooking
+
+    @allowCooking.setter
+    def allowCooking(self, v: bool):
+        # Verified 2025.33230: `allowCooking = False` raises on a non-COMP
+        # while `= True` is accepted anywhere — so a mixed-type gate passes
+        # its enable pass and aborts on disable. Model the awkward part.
+        if not v and self.family != "COMP":
+            raise ValueError("tdError: allowCooking can only be set False on "
+                             "COMPs")
+        self._allowCooking = bool(v)
 
     @property
     def inputs(self):

@@ -1,12 +1,15 @@
-"""Scrape docs.derivative.ca into KB chunks (optional deps: requests, beautifulsoup4).
+"""DEPRECATED — kept for backwards compatibility only.
 
-Run:  uv run python -m td_mcp.kb.scrape
-Then: uv run python -m td_mcp.kb.build_index
+Network scraping of ``docs.derivative.ca`` is no longer the supported path:
+``build_kb`` uses ``wiki_ingest.py`` against a local TouchDesigner OfflineHelp
+mirror (or any ``TD_MCP_WIKI_ROOT`` dump), which is deterministic, receipt-safe
+and dependency-free. This module appends directly to ``chunks.jsonl`` and
+regenerates nothing else, so running it would silently invalidate the KB
+integrity receipt pinned by ``build_kb._write_receipt``.
 
-Three stages, resumable (existing chunks are skipped):
-  1. operator category index pages (TOPs/CHOPs/DATs/SOPs/POPs/MATs/COMPs)
-  2. Python base classes index
-  3. operator-specific Python classes (BlurTOP_Class ...)
+Do not use for new installs. ``uv pip install -e ".[scrape]"`` and
+``python -m td_mcp.kb.scrape`` still work but are intentionally not wired into
+``build_kb`` or CI.
 """
 
 import json

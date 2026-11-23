@@ -24,6 +24,7 @@ import urllib.request
 import urllib.error
 
 from td_mcp import __version__
+from td_mcp import instructions as _instructions
 from td_mcp.util import _json_safe
 
 try:
@@ -232,8 +233,11 @@ class TDClient:
     def project_info(self):
         return self._call("project_info", {})
 
-    def capture_viewport(self, path, detail="normal"):
-        result = self._call("capture_viewport", {"path": path, "detailLevel": detail})
+    def capture_viewport(self, path, detail="normal", width=None):
+        args = {"path": path, "detailLevel": detail}
+        if width:
+            args["width"] = width
+        result = self._call("capture_viewport", args)
         # Image-block feedback (mintiasaikoh): when the bridge returns a PNG
         # file, attach base64 image content so MCP clients can render it
         # directly instead of only seeing the verdict text.
@@ -354,8 +358,13 @@ class TDClient:
         return self._call("get_node", {"path": path})
 
     def get_non_default_params(self, path):
-        """Token-efficient read (vedant1317): non-default params only."""
-        result = self.get_node(path)
+        """Token-efficient read (vedant1317): non-default params only.
+
+        Uses the bridge's own ``non_default`` filter. It used to call get_node
+        and return *its* params -- every parameter, default or not.
+        """
+        result = self._call("get_parameters", {"path": path, "non_default": True,
+                                               "detailLevel": "full"})
         if not result.get("ok"):
             return result
         params = result.get("params", {})
@@ -434,73 +443,39 @@ def _wrap_tool(fn):
     return wrapper
 
 
-# Register all bridge tools
-TOOL_REGISTRY = {
-    "create_node": _wrap_tool(lambda c, a: c.create_node(a.get("path"), a.get("type"), a.get("name"))),
-    "delete_node": _wrap_tool(lambda c, a: c.delete_node(a.get("path"))),
-    "set_parameters": _wrap_tool(lambda c, a: c.set_parameters(a.get("path"), a.get("params", {}))),
-    "get_parameters": _wrap_tool(lambda c, a: c.get_parameters(a.get("path"))),
-    "get_parameter_info": _wrap_tool(lambda c, a: c.get_parameter_info(a.get("path"), a.get("names"))),
-    "bind_parameter_expression": _wrap_tool(lambda c, a: c.bind_parameter_expression(a.get("path"), a.get("param"), a.get("expression"))),
-    "get_errors": _wrap_tool(lambda c, a: c.get_errors(
-        a.get("path"), a.get("include_warnings", True),
-        a.get("include_shader", True), a.get("recurse", False))),
-    "clear_script_errors": _wrap_tool(lambda c, a: c.clear_script_errors(
-        a.get("path"), a.get("recurse", False))),
-    "execute_python": _wrap_tool(lambda c, a: c.execute_python(a.get("code"))),
-    "list_nodes": _wrap_tool(lambda c, a: c.list_nodes(a.get("path"))),
-    "project_info": _wrap_tool(lambda c, a: c.project_info()),
-    "capture_viewport": _wrap_tool(lambda c, a: c.capture_viewport(a.get("path"), a.get("detail", "normal"))),
-    "get_resource": _wrap_tool(lambda c, a: c.get_resource(a.get("uri"))),
-    "describe_td_tools": _wrap_tool(lambda c, a: c.describe_td_tools()),
-    "batch": _wrap_tool(lambda c, a: c.batch(a.get("ops", []))),
-    "observe": _wrap_tool(lambda c, a: c.observe(a.get("path"), a.get("frames", 3),
-                                                 a.get("detail", "normal"))),
-    "read_chop": _wrap_tool(lambda c, a: c.read_chop(a.get("path"), a.get("channel"),
-                                                     a.get("samples", 10),
-                                                     a.get("format", "stats"))),
-    "read_top": _wrap_tool(lambda c, a: c.read_top(a.get("path"), a.get("detail", "brief"))),
-    "read_dat": _wrap_tool(lambda c, a: c.read_dat(a.get("path"), a.get("rows", 10),
-                                                   a.get("format", "stats"))),
-    "diff_chop": _wrap_tool(lambda c, a: c.diff_chop(a.get("path"), a.get("other_path"),
-                                                     a.get("channel"))),
-    "read_pop": _wrap_tool(lambda c, a: c.read_pop(a.get("path"), a.get("attribute"),
-                                                   a.get("format", "stats"),
-                                                   a.get("max_points"))),
-    "set_dat_text": _wrap_tool(lambda c, a: c.set_dat_text(a.get("path"), a.get("text", ""), a.get("expected_sha256"))),
-    "scan_network": _wrap_tool(lambda c, a: c.scan_network(a.get("path"), a.get("depth", 3))),
+# Register all bridge tools.
+#
+# Every tool FORWARDS its arguments to the bridge unchanged. The registry used
+# to name each argument by hand, and quietly dropped the ones nobody listed:
+# create_node lost nodeX/nodeY, list_nodes and set_parameters lost
+# detailLevel, get_parameters and get_performance lost every filter -- so a
+# feature added to a bridge handler could not be reached through MCP at all.
+# Only tools that do real work on this side of the wire are written out.
+def _forward(name):
+    def call(c, a):
+        a = dict(a or {})
+        if "detail" in a and "detailLevel" not in a:
+            a["detailLevel"] = a.pop("detail")
+        if name == "build_and_verify" and "op_type" in a and "type" not in a:
+            a["type"] = a.pop("op_type")
+        return c._call(name, a)
+    return _wrap_tool(call)
+
+
+_CLIENT_SIDE = {
+    # attaches the PNG as an MCP image block
+    "capture_viewport": _wrap_tool(lambda c, a: c.capture_viewport(
+        a.get("path"), a.get("detail") or a.get("detailLevel", "normal"),
+        width=a.get("width"))),
     # `type` for consistency with create_node (and with the bridge's own
     # handler); `op_type` still accepted for clients written against the old
     # schema. A test pins that the schema and this lambda name the same keys.
     "build_and_verify": _wrap_tool(lambda c, a: c.build_and_verify(
         a.get("path"), a.get("type") or a.get("op_type"), a.get("params"), a.get("name"))),
-    "connect_nodes": _wrap_tool(lambda c, a: c.connect_nodes(a.get("from_path"), a.get("to_path"),
-                                                              a.get("from_output", 0), a.get("to_input", 0))),
-    "rename_node": _wrap_tool(lambda c, a: c.rename_node(a.get("path"), a.get("new_name"))),
-    "copy_node": _wrap_tool(lambda c, a: c.copy_node(a.get("path"), a.get("new_parent"), a.get("new_name"))),
-    "auto_layout": _wrap_tool(lambda c, a: c.auto_layout(a.get("path"), a.get("direction", "left-right"),
-                                                          a.get("spacing_x", 200), a.get("spacing_y", 200))),
-    "get_node": _wrap_tool(lambda c, a: c.get_node(a.get("path"))),
     "get_non_default_params": _wrap_tool(lambda c, a: c.get_non_default_params(a.get("path"))),
-    "set_node_color": _wrap_tool(lambda c, a: c.set_node_color(a.get("path"), a.get("r"), a.get("g"), a.get("b"))),
-    "set_node_comment": _wrap_tool(lambda c, a: c.set_node_comment(a.get("path"), a.get("comment"), a.get("tags"))),
-    "map_network": _wrap_tool(lambda c, a: c.map_network(a.get("path"), a.get("depth", 2))),
-    "disconnect_nodes": _wrap_tool(lambda c, a: c.disconnect_nodes(a.get("from_path"), a.get("to_path"), a.get("to_input", 0))),
-    "get_connections": _wrap_tool(lambda c, a: c.get_connections(a.get("path"))),
-    "exec_node_method": _wrap_tool(lambda c, a: c.exec_node_method(a.get("path"), a.get("method"), a.get("args"))),
-    "snapshot_network": _wrap_tool(lambda c, a: c.snapshot_network(a.get("path"))),
-    "restore_network": _wrap_tool(lambda c, a: c.restore_network(a.get("snapshot"), a.get("target_parent", "*here"))),
-    "get_performance": _wrap_tool(lambda c, a: c.get_performance(a.get("path"))),
-    "validate_network": _wrap_tool(lambda c, a: c.validate_network(a.get("path"), a.get("depth", 2))),
-    "set_flags": _wrap_tool(lambda c, a: c.set_flags(a.get("path"), a.get("flags", {}))),
-    "find_nodes": _wrap_tool(lambda c, a: c.find_nodes(a.get("path"), a.get("query"), a.get("type"), a.get("depth", 4))),
-    "set_node_position": _wrap_tool(lambda c, a: c.set_node_position(a.get("path"), a.get("x"), a.get("y"))),
-    "timeline": _wrap_tool(lambda c, a: c.timeline(a.get("action"), a.get("value"),
-                                                   a.get("force", False))),
-    "export_recipe": _wrap_tool(lambda c, a: c.export_recipe(a.get("path"), a.get("depth", 3))),
-    "import_recipe": _wrap_tool(lambda c, a: c.import_recipe(a.get("recipe"), a.get("target_parent", "*here"))),
-    "save_tox": _wrap_tool(lambda c, a: c.save_tox(a.get("path"), a.get("file_path"))),
 }
+
+TOOL_REGISTRY = {}  # filled from _TOOL_META below, so the two cannot drift
 
 
 # ---------------------------------------------------------------------------
@@ -509,97 +484,226 @@ TOOL_REGISTRY = {
 # both surfaces share identical descriptions / schemas / risk annotations).
 # ---------------------------------------------------------------------------
 # (name, description, properties) — annotations are derived from risk_class().
+_S = {"type": "string"}
+_I = {"type": "integer"}
+_B = {"type": "boolean"}
+_N = {"type": "number"}
+_O = {"type": "object"}
+_A = {"type": "array"}
+_PATH = {"type": "string", "description": "Operator path, e.g. /project1/noise1. *here = the "
+         "network the user is viewing, *this = the selected operator."}
+_DETAIL = {"type": "string", "enum": ["brief", "normal", "full"],
+           "description": "Output size: brief < normal (default) < full."}
+
 _TOOL_META = [
-    ("create_node", "Create a TouchDesigner node.", {"path": {"type": "string"}, "type": {"type": "string"}, "name": {"type": "string"}}),
-    ("delete_node", "Delete a node.", {"path": {"type": "string"}}),
-    ("set_parameters", "Set parameters.", {"path": {"type": "string"}, "params": {"type": "object"}}),
-    ("get_parameters", "Get parameters.", {"path": {"type": "string"}}),
-    ("get_parameter_info", "Full per-parameter schema: label/value/mode/default/page/style/bounds/menu.", {"path": {"type": "string"}, "names": {"type": "string"}}),
-    ("bind_parameter_expression", "Bind a parameter expression with eval-error reporting.", {"path": {"type": "string"}, "param": {"type": "string"}, "expression": {"type": "string"}}),
+    ("create_node", "Create one operator. `type` is the TD class name (noiseTOP, lfoCHOP, "
+     "gridPOP, textDAT, baseCOMP); display names ('Noise TOP') are normalized. Without "
+     "`path` it lands in the network the user is viewing (never inside the TD_MCP "
+     "component); without nodeX/nodeY it is auto-placed in a family lane. Look up "
+     "parameter names first with describe_op_type, then set them with set_parameters.",
+     {"path": dict(_PATH, description="Parent COMP to create in."), "type": _S,
+      "name": _S, "nodeX": _I, "nodeY": _I}),
+    ("delete_node", "Delete one operator (one undo step). Refuses the TD_MCP component, "
+     "its ancestors and TD_MCP_PROTECTED_PATHS.",
+     {"path": _PATH}),
+    ("set_parameters", "Set parameters by their exact name: {'period': 2, 'mono': true}. "
+     "Tuplets take a list ({'resolution': [1280, 720]}, {'t': [0, 0, 1]}); menus take "
+     "the token or its label; a pulse parameter set to true is pulsed. Every write is read "
+     "back: unknown names fail with did-you-mean, an invalid menu token FAILS (TD itself "
+     "ignores it silently), and silent clamps or a discarded expression come back under "
+     "`notes`. For an expression pass {'name': {'expr': 'absTime.seconds'}}.",
+     {"path": _PATH, "params": _O, "detailLevel": _DETAIL}),
+    ("get_parameters", "Read parameter values as TouchDesigner shows them (eval(), not the "
+     "constant slot -- an expression-mode par's `val` is stale). Non-constant pars are "
+     "described under `modes` (expression text, bind master, export source). Filter with "
+     "`names` (comma list or globs: 'resolution*,period') or non_default=true.",
+     {"path": _PATH, "names": _S, "non_default": _B, "detailLevel": _DETAIL}),
+    ("get_parameter_info", "Full schema of an existing operator's parameters: label, value, "
+     "mode, expression, default, page, style, bounds, menu tokens. For a type you have not "
+     "created yet use describe_op_type.",
+     {"path": _PATH, "names": _S}),
+    ("describe_op_type", "Look before you guess: parameter names, labels, styles, creation "
+     "defaults and menu tokens for an operator TYPE, from a throwaway instance (cached per "
+     "session). TD abbreviates unpredictably -- Blur TOP amount is `size`, Noise TOP "
+     "monochrome is `mono`, Lag CHOP has lag1/lag2 -- so call this once per unfamiliar type "
+     "instead of a failed set_parameters. Filter with `pattern` (name/label glob) or `page`.",
+     {"op_type": _S, "pattern": _S, "page": _S, "include_menus": _B}),
+    ("pulse_parameter", "Pulse a pulse-type parameter (reset, reload, start, cook). Lists the "
+     "operator's pulse parameters when the name is wrong.",
+     {"path": _PATH, "param": _S}),
+    ("bind_parameter_expression", "Put a parameter in expression mode and report whether the "
+     "expression evaluates (eval error + the operator's errors come back).",
+     {"path": _PATH, "param": _S, "expression": _S}),
     ("get_errors", "All four TouchDesigner diagnostic surfaces for a node: cook "
      "errors, warnings, script tracebacks (scriptErrors) and GLSL compile "
      "errors (from the docked Info DAT). Tagged by kind and severity; "
-     "errorCount/hasErrors mean what the network shows red.",
-     {"path": {"type": "string"},
-      "include_warnings": {"type": "boolean"},
-      "include_shader": {"type": "boolean"},
-      "recurse": {"type": "boolean"}}),
+     "errorCount/hasErrors mean what the network shows red. Call after every build "
+     "step, with recurse=true on a COMP.",
+     {"path": _PATH,
+      "include_warnings": _B,
+      "include_shader": _B,
+      "recurse": _B}),
     ("clear_script_errors", "Clear a node's script errors. They persist until "
      "cleared, so a transient failure keeps badging an operator whose code is "
      "already correct -- call this after fixing one, before re-verifying.",
-     {"path": {"type": "string"}, "recurse": {"type": "boolean"}}),
-    ("execute_python", "Execute Python in TD.", {"code": {"type": "string"}}),
-    ("list_nodes", "List child nodes.", {"path": {"type": "string"}}),
-    ("project_info", "Project info.", {}),
-    ("capture_viewport", "Capture viewport + verdict.", {"path": {"type": "string"}, "detail": {"type": "string"}}),
-    ("get_resource", "Read td:// resource.", {"uri": {"type": "string"}}),
-    ("describe_td_tools", "List bridge capabilities.", {}),
-    ("batch", "Batch multiple ops.", {"ops": {"type": "array"}}),
+     {"path": _PATH, "recurse": _B}),
+    ("execute_python", "Run Python on TouchDesigner's main thread; set `result` to return a "
+     "value. Blocked builtins: open/eval/exec/compile/globals/locals/__import__ (use import "
+     "statements and pathlib). Not fenced off the TD_MCP component -- prefer the typed "
+     "tools, which are. Disabled when the bridge runs with TD_MCP_ALLOW_EXEC=0.",
+     {"code": _S}),
+    ("list_nodes", "List an operator's children (name, type, opType, path).",
+     {"path": _PATH, "detailLevel": _DETAIL}),
+    ("project_info", "Project file, TouchDesigner build, fps and bridge version: the first "
+     "call of a session.", {}),
+    ("capture_viewport", "Capture ANY operator as a PNG plus an is_black/is_flat verdict. A "
+     "TOP is captured directly; a CHOP/SOP/POP/DAT/COMP through a transient OP Viewer "
+     "(its network-editor viewer: graph, viewport or text), which needs ~0.5-1 s of "
+     "frames. Judge a visual result on this, never on a clean error list.",
+     {"path": _PATH, "detail": _DETAIL, "width": _I}),
+    ("get_resource", "Read a td:// resource (td://node/<path>).", {"uri": _S}),
+    ("describe_td_tools", "Bridge manifest: tool list, exec gate, protected paths, version.", {}),
+    ("batch", "Run several tool calls in one round-trip: [{'tool': 'set_parameters', "
+     "'args': {...}}, ...]. Each call keeps its own undo step and guards.",
+     {"ops": _A}),
     ("observe", "Capture a still AND judge whether the render is moving. "
      "A network that renders a correct single frame and never changes is "
      "structurally valid, visually plausible and broken; no single-frame "
      "verdict can see it. Returns is_static (None when undecidable).",
-     {"path": {"type": "string"}, "frames": {"type": "integer"},
-      "detail": {"type": "string"}}),
+     {"path": _PATH, "frames": _I,
+      "detail": _DETAIL}),
     ("read_chop", "Read a CHOP. format='stats' (default) reduces each channel to "
      "count/min/max/mean/std -- what the chain did to the data, in four numbers. "
      "format='values' returns raw samples.",
-     {"path": {"type": "string"}, "channel": {"type": "string"},
-      "samples": {"type": "integer"}, "format": {"type": "string"}}),
+     {"path": _PATH, "channel": _S,
+      "samples": _I, "format": _S}),
     ("diff_chop", "Compare two CHOPs channel by channel and report min/max/mean/std "
      "deltas -- the read to make after inserting a filter.",
-     {"path": {"type": "string"}, "other_path": {"type": "string"},
-      "channel": {"type": "string"}}),
+     {"path": _PATH, "other_path": _S,
+      "channel": _S}),
     ("read_pop", "Read a POP. Attribute metadata is always free; values are read "
      "only under a point-count ceiling, because POP.points() accepts start/count "
      "and ignores them -- there is no cheap partial read.",
-     {"path": {"type": "string"}, "attribute": {"type": "string"},
-      "format": {"type": "string"}, "max_points": {"type": "integer"}}),
-    ("read_top", "Read TOP metadata.", {"path": {"type": "string"}, "detail": {"type": "string"}}),
+     {"path": _PATH, "attribute": _S,
+      "format": _S, "max_points": _I}),
+    ("read_top", "Read TOP metadata: resolution, pixel format, GPU memory.",
+     {"path": _PATH, "detail": _DETAIL}),
     ("read_dat", "Read a DAT table. format='stats' (default) returns per-column "
      "stats plus the first and last rows, ~17x smaller than a dump; "
      "format='rows' returns the rows verbatim.",
-     {"path": {"type": "string"}, "rows": {"type": "integer"},
-      "format": {"type": "string"}}),
-    ("set_dat_text", "Set a DAT's text with optional SHA-256 optimistic concurrency guard.", {"path": {"type": "string"}, "text": {"type": "string"}, "expected_sha256": {"type": "string"}}),
-    ("scan_network", "Scan network topology.", {"path": {"type": "string"}, "depth": {"type": "integer"}}),
+     {"path": _PATH, "rows": _I,
+      "format": _S}),
+    ("set_dat_text", "Replace a DAT's text (Python, GLSL, a table as tab/newline text). Pass "
+     "the sha256 from the previous write as expected_sha256 to refuse clobbering a "
+     "concurrent edit. Python that calls run() from a thread comes back with a "
+     "THREADING WARNING.",
+     {"path": _PATH, "text": _S, "expected_sha256": _S}),
+    ("scan_network", "Topology of a COMP down to `depth`: operators, types, wiring.",
+     {"path": _PATH, "depth": _I}),
     ("build_and_verify", "Create -> set -> all four error surfaces -> viewport verdict "
      "-> offline validate/score/heal, in one call. `type` as in create_node "
      "(`op_type` still accepted).",
-     {"path": {"type": "string"}, "type": {"type": "string"}, "op_type": {"type": "string"},
-      "name": {"type": "string"}, "params": {"type": "object"}}),
-    ("connect_nodes", "Wire nodes.", {"from_path": {"type": "string"}, "to_path": {"type": "string"}, "from_output": {"type": "integer"}, "to_input": {"type": "integer"}}),
-    ("rename_node", "Rename node.", {"path": {"type": "string"}, "new_name": {"type": "string"}}),
-    ("copy_node", "Copy node.", {"path": {"type": "string"}, "new_parent": {"type": "string"}, "new_name": {"type": "string"}}),
-    ("auto_layout", "Auto-arrange nodes.", {"path": {"type": "string"}, "direction": {"type": "string"}, "spacing_x": {"type": "integer"}, "spacing_y": {"type": "integer"}}),
-    ("get_node", "Get detailed node info.", {"path": {"type": "string"}}),
-    ("get_non_default_params", "Token-efficient read: non-default params only.", {"path": {"type": "string"}}),
-    ("set_node_color", "Set node color (RGB 0..1).", {"path": {"type": "string"}, "r": {"type": "number"}, "g": {"type": "number"}, "b": {"type": "number"}}),
-    ("set_node_comment", "Annotate node.", {"path": {"type": "string"}, "comment": {"type": "string"}, "tags": {"type": "string"}}),
-    ("map_network", "Emit Graphviz DOT.", {"path": {"type": "string"}, "depth": {"type": "integer"}}),
-    ("disconnect_nodes", "Break wire.", {"from_path": {"type": "string"}, "to_path": {"type": "string"}, "to_input": {"type": "integer"}}),
-    ("get_connections", "Get wiring map.", {"path": {"type": "string"}}),
-    ("exec_node_method", "Call node method.", {"path": {"type": "string"}, "method": {"type": "string"}, "args": {"type": "array"}}),
-    ("snapshot_network", "Save .tox checkpoint.", {"path": {"type": "string"}}),
-    ("restore_network", "Restore .tox checkpoint.", {"snapshot": {"type": "string"}, "target_parent": {"type": "string"}}),
-    ("get_performance", "Profile cook times.", {"path": {"type": "string"}}),
-    ("validate_network", "Scene contract check.", {"path": {"type": "string"}, "depth": {"type": "integer"}}),
-    ("set_flags", "Toggle node flags.", {"path": {"type": "string"}, "flags": {"type": "object"}}),
+     {"path": _PATH, "type": _S, "op_type": _S,
+      "name": _S, "params": _O}),
+    ("connect_nodes", "Wire from_path's output `from_output` into to_path's input "
+     "`to_input` (both 0-based). Replaces whatever fed that input.",
+     {"from_path": _S, "to_path": _S, "from_output": _I, "to_input": _I}),
+    ("rename_node", "Rename an operator. Paths in other operators' parameters and "
+     "expressions do NOT follow a rename -- search for them afterwards.",
+     {"path": _PATH, "new_name": _S}),
+    ("copy_node", "Copy an operator (and a COMP's contents) into new_parent.",
+     {"path": _PATH, "new_parent": _S, "new_name": _S}),
+    ("auto_layout", "Re-arrange a COMP's children on a grid, left to right by signal flow.",
+     {"path": _PATH, "direction": _S, "spacing_x": _I, "spacing_y": _I}),
+    ("get_node", "One operator in detail: type, position, flags, connections, "
+     "non-default parameters, errors.",
+     {"path": _PATH}),
+    ("get_non_default_params", "Token-efficient read: only the parameters that differ "
+     "from the operator's defaults, with their modes.", {"path": _PATH}),
+    ("set_node_color", "Tile colour of an operator (RGB 0..1) -- group related operators.",
+     {"path": _PATH, "r": _N, "g": _N, "b": _N}),
+    ("set_node_comment", "Attach a comment and tags to an operator.",
+     {"path": _PATH, "comment": _S, "tags": _S}),
+    ("map_network", "Graphviz DOT of a COMP's wiring and positions, for spatial reasoning.",
+     {"path": _PATH, "depth": _I}),
+    ("disconnect_nodes", "Break the wire from from_path into to_path's input `to_input`.",
+     {"from_path": _S, "to_path": _S, "to_input": _I}),
+    ("get_connections", "Inputs and outputs of an operator, or the signal flow of a COMP.",
+     {"path": _PATH}),
+    ("exec_node_method", "Call a method on an operator (e.g. cook, par reset). Refuses the "
+     "TD_MCP component and its ancestors.",
+     {"path": _PATH, "method": _S, "args": _A}),
+    ("snapshot_network", "Save a COMP to a temporary .tox checkpoint that survives the undo "
+     "stack; returns the snapshot path for restore_network.",
+     {"path": _PATH}),
+    ("restore_network", "Load a snapshot_network checkpoint into target_parent.",
+     {"snapshot": _S, "target_parent": _S}),
+    ("get_performance", "What is slowing a network down: cook time per operator in ms "
+     "(CPU+GPU), budget_pct of one frame, hotspots. An operator that has not cooked "
+     "within max_age_frames is marked stale and ranked last (its cook time is history). "
+     "A non-COMP path profiles that one operator.",
+     {"path": _PATH, "max_age_frames": _I, "depth": _I, "limit": _I}),
+    ("validate_network", "Scene contract check: unplaced/overlapping nodes and cook errors.",
+     {"path": _PATH, "depth": _I}),
+    ("set_flags", "Set operator flags: display, render, bypass, lock, viewer, "
+     "allowCooking (COMPs only), excludeFromCook, forceCooking, cloneImmune, pickable, "
+     "expose, activeViewer, current, selected. E.g. {'display': true}.",
+     {"path": _PATH, "flags": _O}),
     ("find_nodes", "Search descendants. `query` is a substring, or a glob when it contains * ? [ (e.g. 'noise*'); "
      "`type` matches the short type ('noise') or the OPType ('noiseTOP').",
-     {"path": {"type": "string"}, "query": {"type": "string"}, "type": {"type": "string"}, "depth": {"type": "integer"}}),
-    ("set_node_position", "Move node to (x,y).", {"path": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"}}),
+     {"path": _PATH, "query": _S, "type": _S, "depth": _I}),
+    ("set_node_position", "Move an operator to (x, y) in network units (Y grows upward).",
+     {"path": _PATH, "x": _I, "y": _I}),
     ("timeline", "Global timeline: status | play | pause | frame | seek | rate. "
      "PAUSING IS REFUSED by default -- the bridge's main-thread pump runs on "
      "Frame Start, so a pause stops this server answering at all, including "
      "the call that would resume it. Pass force=true only if a human is at the "
      "TouchDesigner keyboard.",
-     {"action": {"type": "string"}, "value": {"type": "number"},
-      "force": {"type": "boolean"}}),
-    ("export_recipe", "Export recipe JSON.", {"path": {"type": "string"}, "depth": {"type": "integer"}}),
-    ("import_recipe", "Import recipe JSON.", {"recipe": {"type": "object"}, "target_parent": {"type": "string"}}),
-    ("save_tox", "Save COMP as .tox.", {"path": {"type": "string"}, "file_path": {"type": "string"}}),
+     {"action": _S, "value": _N,
+      "force": _B}),
+    ("export_recipe", "Serialize a COMP's operators, parameters and wiring to a JSON "
+     "recipe (import_recipe rebuilds it).",
+     {"path": _PATH, "depth": _I}),
+    ("import_recipe", "Rebuild an export_recipe blueprint inside target_parent; reports "
+     "any wire it could not reconnect under `unwired`.",
+     {"recipe": _O, "target_parent": _S}),
+    ("save_tox", "Save a COMP as a .tox file.", {"path": _PATH, "file_path": _S}),
 ]
+
+#: Arguments a call cannot do without. Advertised as JSON-Schema `required`,
+#: so a client validates before the round trip instead of after it.
+_REQUIRED = {
+    "create_node": ["type"], "delete_node": ["path"], "set_parameters": ["path", "params"],
+    "get_parameters": ["path"], "get_parameter_info": ["path"],
+    "describe_op_type": ["op_type"], "pulse_parameter": ["path", "param"],
+    "bind_parameter_expression": ["path", "param", "expression"],
+    "get_errors": ["path"], "clear_script_errors": ["path"], "execute_python": ["code"],
+    "capture_viewport": ["path"], "get_resource": ["uri"], "batch": ["ops"],
+    "observe": ["path"], "read_chop": ["path"], "diff_chop": ["path", "other_path"],
+    "read_pop": ["path"], "read_top": ["path"], "read_dat": ["path"],
+    "set_dat_text": ["path", "text"], "build_and_verify": ["path"],
+    "connect_nodes": ["from_path", "to_path"], "rename_node": ["path", "new_name"],
+    "copy_node": ["path", "new_parent"], "get_node": ["path"],
+    "get_non_default_params": ["path"], "set_node_color": ["path", "r", "g", "b"],
+    "set_node_comment": ["path"], "disconnect_nodes": ["from_path", "to_path"],
+    "get_connections": ["path"], "exec_node_method": ["path", "method"],
+    "snapshot_network": ["path"], "restore_network": ["snapshot"],
+    "set_flags": ["path", "flags"], "set_node_position": ["path", "x", "y"],
+    "timeline": ["action"], "export_recipe": ["path"], "import_recipe": ["recipe"],
+    "save_tox": ["path"],
+}
+
+
+def _input_schema(name, props):
+    schema = {"type": "object", "properties": props}
+    req = [k for k in _REQUIRED.get(name, []) if k in props]
+    if req:
+        schema["required"] = req
+    return schema
+
+
+TOOL_REGISTRY.update({name: _CLIENT_SIDE.get(name) or _forward(name)
+                      for name, *_ in _TOOL_META})
 
 
 def _http_tool_meta():
@@ -609,7 +713,7 @@ def _http_tool_meta():
         out.append({
             "name": name,
             "description": desc,
-            "inputSchema": {"type": "object", "properties": props},
+            "inputSchema": _input_schema(name, props),
             "annotations": tool_annotations(name),
         })
     return out
@@ -624,7 +728,7 @@ async def _live_list_tools(ctx, params):
     return types.ListToolsResult(
         tools=[
             types.Tool(name=name, description=desc,
-                       inputSchema={"type": "object", "properties": props},
+                       inputSchema=_input_schema(name, props),
                        annotations=tool_annotations(name))
             for name, desc, props in _TOOL_META
         ],
@@ -737,6 +841,7 @@ def _run_stdio_server(auth_token=None, anchor=False):
     app = Server(
         name="td-mcp-live",
         version=__version__,
+        instructions=_instructions.LIVE,
         on_list_tools=_live_list_tools,
         on_call_tool=_live_call_tool,
         on_list_resources=_live_list_resources,

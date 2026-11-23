@@ -56,7 +56,7 @@ QUERIES = [
     {"q": "feedback trails recipe", "exp": ["feedback_top", "feedback_trails_recipe", "level_top"]},
     {"q": "wire operators together in python", "exp": ["connecting_operators_in_python"]},
     {"q": "render a 3d scene with camera and light",
-     "exp": ["render_top", "camera_comp", "light_comp"]},
+     "exp": ["render_top", "camera_comp", "render_pipeline_recipe"]},
     {"q": "gpu instancing thousands of copies", "exp": ["instancing_recipe"]},
     {"q": "call a rest api from touchdesigner", "exp": ["web_api_request_recipe"]},
     {"q": "particle simulation with pops", "exp": ["pops_family_overview", "pop_solver", "particle_render_recipe_pops"]},
@@ -90,7 +90,20 @@ QUERIES = [
     {"q": "box sop size center divisions parameters", "exp": ["box_sop", "corpus_box_sop"]},
     {"q": "phong mat color diffuse specular parameters", "exp": ["phong_mat", "corpus_phong_mat"]},
     {"q": "osc in chop network address port", "exp": ["osc_in_chop", "corpus_osc_in_chop"]},
+    # --- parameter-name lookups (1.13): the question an agent asks right
+    # before set_parameters. Phrased with the UI word, not the par name, so a
+    # hit needs the label->name knowledge the live-probed tables carry.
+    {"q": "which noise top parameter makes the output monochrome", "exp": ["noise_top"]},
+    {"q": "lag chop separate lag for rising and falling values", "exp": ["lag_chop"]},
+    {"q": "level top clamp input unclamped float pixels", "exp": ["level_top"]},
+    {"q": "blur top filter size in pixels", "exp": ["blur_top"]},
+    {"q": "timer chop cycle limit maximum cycles", "exp": ["timer_chop"]},
+    {"q": "text dat content language python glsl json", "exp": ["text_dat"]},
 ]
+
+#: Size of the query set before the parameter-lookup block above, so the
+#: pre-1.13 baseline can be reproduced: QUERIES[:ORIGINAL_QUERY_COUNT].
+ORIGINAL_QUERY_COUNT = 46
 
 
 def _dcg(rels):
@@ -114,7 +127,20 @@ def _same_doc(rid, exp_id):
     if rid in ("corpus_" + exp_id, "corpus_py_" + exp_id):
         return True
     wiki_base = "wiki_" + exp_id
-    return rid == wiki_base or rid.startswith(wiki_base + "__")
+    if rid == wiki_base or rid.startswith(wiki_base + "__"):
+        return True
+    # A live-probed parameter table (`params_<opType>_<page>`) is the same
+    # subject as its operator, exactly as a wiki section is.
+    if rid.startswith("params_"):
+        return _params_subject(rid) == exp_id
+    return False
+
+
+def _params_subject(rid):
+    from td_mcp.kb import param_catalog
+    op_type = rid[len("params_"):].split("_", 1)[0]
+    display = param_catalog.display_name(op_type)
+    return display.lower().replace(" ", "_") if display else None
 
 
 def _metrics(retrieved_ids, exp, must_not, k):
@@ -122,14 +148,31 @@ def _metrics(retrieved_ids, exp, must_not, k):
     # contributes many section chunks that all satisfy the same expectation;
     # counting each of them as a separate relevant result would inflate nDCG
     # above 1.0 and hide real ranking regressions.
-    rel = [0.0] * len(retrieved_ids[:k])
-    matched = set()              # indices into exp (entries may be OR-lists)
-    for i, rid in enumerate(retrieved_ids[:k]):
+    #
+    # The assignment is a maximum bipartite matching (Kuhn, in rank order), not
+    # first-come greedy. Greedy let `corpus_render_top` at rank 1 claim the
+    # `render_top` expectation, after which `render_top` at rank 2 could not
+    # satisfy `corpus_render_top` -- so recall depended on how two equally
+    # relevant chunks happened to tie, and flipped whenever BM25 statistics moved.
+    top = retrieved_ids[:k]
+    rel = [0.0] * len(top)
+    owner = {}                   # exp index -> retrieved index holding it
+
+    def _augment(i, seen):
         for j, e in enumerate(exp):
-            if j not in matched and _same_doc(rid, e):
-                matched.add(j)
-                rel[i] = 1.0
-                break
+            if j in seen or not _same_doc(top[i], e):
+                continue
+            seen.add(j)
+            if j not in owner or _augment(owner[j], seen):
+                owner[j] = i
+                return True
+        return False
+
+    for i in range(len(top)):
+        _augment(i, set())
+    for i in owner.values():
+        rel[i] = 1.0
+    matched = set(owner)
     rec = (len(matched) / len(exp)) if exp else 1.0
     rank = next((i + 1 for i, r in enumerate(rel) if r), None)
     mrr = (1.0 / rank) if rank else 0.0

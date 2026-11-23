@@ -52,6 +52,7 @@ RISK_CLASS = {
     "td_docs_experimental":  "READ_ONLY",
     "td_docs_version_compat": "READ_ONLY",
     "td_kb_stats":           "READ_ONLY",
+    "td_describe_op_type":   "READ_ONLY",
     "td_build_feedback":     "READ_ONLY",
     "td_build_audio_reactive": "READ_ONLY",
     "td_build_particle":     "READ_ONLY",
@@ -86,6 +87,7 @@ RISK_CLASS = {
 
     # Live bridge tools — read-only inspectors
     "get_parameters":        "READ_ONLY",
+    "describe_op_type":      "READ_ONLY",   # probes in /sys/quiet, destroyed
     "get_parameter_info":    "READ_ONLY",
     "get_non_default_params":"READ_ONLY",
     "get_errors":            "READ_ONLY",
@@ -114,6 +116,7 @@ RISK_CLASS = {
     # Live bridge tools — additive writers
     "create_node":           "WRITE_ADDITIVE",
     "set_parameters":        "WRITE_ADDITIVE",
+    "pulse_parameter":       "WRITE_ADDITIVE",
     "batch":                 "WRITE_ADDITIVE",  # mixed, but creates more than deletes
     "build_and_verify":      "WRITE_ADDITIVE",
     "connect_nodes":         "WRITE_ADDITIVE",

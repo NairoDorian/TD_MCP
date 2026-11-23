@@ -41,8 +41,21 @@ except Exception:  # noqa: BLE001
     _CORPUS_OK = False
 
 
+from td_mcp.kb import param_catalog as _catalog
+
+#: Reference parameters an operator is useless without, when they ship empty.
+_REQUIRED_REFS = ("file", "top", "chop", "sop", "dat", "pop")
+
+
 def _family_of(op_type: Optional[str]) -> Optional[str]:
     """Resolve an operator type to its family (TOP/CHOP/SOP/DAT/POP/COMP)."""
+    info = _catalog.op_info(op_type) if op_type else None
+    if info:
+        return info.get("family")
+    if op_type and op_type[-3:] in ("TOP", "SOP", "DAT", "POP", "MAT") and op_type[:-3].islower():
+        return op_type[-3:]
+    if op_type and op_type[-4:] in ("CHOP", "COMP") and op_type[:-4].islower():
+        return op_type[-4:]
     if not op_type or not _CORPUS_OK:
         # Heuristic fallback from a type suffix like "Noise TOP".
         if op_type and op_type.split()[-1] in ("TOP", "CHOP", "SOP", "DAT", "POP", "COMP"):
@@ -56,6 +69,11 @@ def _family_of(op_type: Optional[str]) -> Optional[str]:
 
 def _operator_records() -> Any:
     return _corpus if _CORPUS_OK else None
+
+
+def _resolver():
+    from td_mcp import param_resolver  # local: param_resolver imports nothing from here
+    return param_resolver
 
 
 def validate_build(desc: Dict[str, Any], strict: bool = False) -> Dict[str, Any]:
@@ -107,40 +125,69 @@ def validate_build(desc: Dict[str, Any], strict: bool = False) -> Dict[str, Any]
         if not tp:
             findings.append(_f("schema", "error", "TYPE_MISSING",
                                f"operator {nm!r} has no type", target=nm))
+        elif _catalog.available():
+            options = _catalog.candidates(tp)
+            if len(options) > 1:
+                findings.append(_f("schema", "warning", "AMBIGUOUS_TYPE",
+                                   f"operator type {tp!r} exists in several families "
+                                   f"({', '.join(options)}); use the opType", target=nm))
+            elif not options:
+                sev = "error" if strict else "warning"
+                findings.append(_f("schema", sev, "UNKNOWN_TYPE",
+                                   f"operator type {tp!r} is not a TouchDesigner "
+                                   f"{_catalog.build()} operator", target=nm))
         elif _CORPUS_OK and _operator_records().operator_record(tp) is None:
             sev = "error" if strict else "warning"
             findings.append(_f("schema", sev, "UNKNOWN_TYPE",
                               f"operator type {tp!r} not in corpus", target=nm))
 
-    # ---- Stage 2: semantic ----------------------------------------------
+    # ---- Stage 2: semantic (against the live-probed catalog) -------------
     for op in ops:
         nm = op.get("name")
         tp = op.get("type")
-        if not (tp and _CORPUS_OK):
+        ot = _catalog.resolve_op_type(tp) if tp else None
+        if not ot:
             continue
-        rec = _operator_records().operator_record(tp)
-        if not rec:
-            continue
-        schema = _operator_records().param_schema(rec) or {}
+        schema = _catalog.schema(ot)
+        tuplets = _catalog.tuplets(ot)
         params = op.get("parameters") or {}
-        for pname, info in schema.items():
-            # Treat a param as 'required' if it is commonly needed and unset.
-            if pname in ("file", "dat", "top", "op") and pname not in params:
-                findings.append(_f("semantic", "warning", "PARAM_UNSET",
-                                   f"{nm}: suggests setting {pname!r}", target=nm))
-            if pname in params and info.get("menu") and params[pname] not in info["menu"]:
-                findings.append(_f("semantic", "error", "MENU_INVALID",
-                                   f"{nm}.{pname} = {params[pname]!r} not in menu "
-                                   f"{info['menu'][:6]}", target=nm))
-            if pname in params and info.get("min") is not None and info.get("max") is not None:
-                try:
-                    v = float(params[pname])
-                    if v < info["min"] or v > info["max"]:
+        for pname, val in params.items():
+            if pname in schema:
+                info = schema[pname]
+                menu = info.get("menu") or []
+                if menu and val not in menu:
+                    findings.append(_f("semantic", "error", "MENU_INVALID",
+                                       f"{nm}.{pname} = {val!r} not in menu {menu[:10]}",
+                                       target=nm))
+                lo, hi = info.get("min"), info.get("max")
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    if (lo is not None and val < lo) or (hi is not None and val > hi):
                         findings.append(_f("semantic", "warning", "RANGE_OOB",
-                                           f"{nm}.{pname}={v} outside "
-                                           f"{info['min']}..{info['max']}", target=nm))
-                except (TypeError, ValueError):
-                    pass
+                                           f"{nm}.{pname}={val} outside the hard clamp "
+                                           f"{lo}..{hi}; TD will clamp it", target=nm))
+                if info.get("read_only"):
+                    findings.append(_f("semantic", "error", "PARAM_READ_ONLY",
+                                       f"{nm}.{pname} is read-only", target=nm))
+                continue
+            if pname in tuplets and isinstance(val, (list, tuple)):
+                continue  # expanded by the resolver at build time
+            _, w, _ = _resolver().resolve_parameters(ot, {pname: val})
+            renamed = [x for x in w if "resolved parameter name" in x["message"]]
+            if renamed:
+                findings.append(_f("semantic", "warning", "PARAM_RENAMED",
+                                   f"{nm}: {renamed[0]['message']}", target=nm))
+            else:
+                hint = _catalog.suggest(ot, pname)
+                findings.append(_f("semantic", "error", "PARAM_UNKNOWN",
+                                   f"{nm}: {ot} has no parameter {pname!r}"
+                                   + (f" (did you mean {', '.join(hint)}?)" if hint else ""),
+                                   target=nm))
+        for ref in _REQUIRED_REFS:
+            info = schema.get(ref)
+            if info and info.get("default") in ("", None) and ref not in params:
+                findings.append(_f("semantic", "warning", "PARAM_UNSET",
+                                   f"{nm}: {ot}.{ref} is empty by default -- set it",
+                                   target=nm))
 
     # ---- Stage 3: reference ---------------------------------------------
     for e in edge_list:
@@ -205,6 +252,12 @@ def suggest_repairs(report: Dict[str, Any]) -> List[Dict[str, Any]]:
         elif code == "MENU_INVALID":
             repairs.append({"target": f["target"], "action": "reset_param",
                             "detail": "clear invalid menu value to default"})
+        elif code == "PARAM_RENAMED":
+            repairs.append({"target": f["target"], "action": "rename_param",
+                            "detail": f["message"]})
+        elif code == "PARAM_UNKNOWN":
+            repairs.append({"target": f["target"], "action": "review_param",
+                            "detail": f["message"]})
         elif code == "SELF_LOOP":
             repairs.append({"target": f["target"], "action": "allow_self_loop",
                             "detail": "permitted for Feedback-class operators"})
@@ -252,6 +305,7 @@ def auto_repair(desc: Dict[str, Any], report: Optional[Dict[str, Any]] = None
     for op in kept:
         # Repair inline inputs: drop dangling sources.
         op["inputs"] = [s for s in op.get("inputs", []) or [] if s in kept_names or s is None]
+        _repair_params(op)
     desc["operators"] = kept
 
     # Repair explicit connections: drop dangling edges.
@@ -262,6 +316,24 @@ def auto_repair(desc: Dict[str, Any], report: Optional[Dict[str, Any]] = None
             kept_c.append(c)
     desc["connections"] = kept_c
     return desc
+
+
+def _repair_params(op: Dict[str, Any]) -> None:
+    """Rename friendly keys, expand tuplets, normalize menu values, and reset a
+    menu value nothing can rescue to the operator's creation default. Keys that
+    match no parameter are kept: dropping them would hide intent, and the bridge
+    reports them with did-you-mean at build time."""
+    ot = _catalog.resolve_op_type(op.get("type")) if op.get("type") else None
+    params = op.get("parameters")
+    if not (ot and params):
+        return
+    resolved, _, _ = _resolver().resolve_parameters(ot, params)
+    schema = _catalog.schema(ot)
+    for name, val in list(resolved.items()):
+        menu = (schema.get(name) or {}).get("menu") or []
+        if menu and val not in menu:
+            resolved[name] = schema[name].get("default")
+    op["parameters"] = resolved
 
 
 def _f(stage: str, severity: str, code: str, message: str, target: Any) -> Dict[str, Any]:
