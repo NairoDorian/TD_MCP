@@ -32,6 +32,17 @@ The **live** bridge acts inside a running TouchDesigner, one undo step per call.
    (TD is pull-based), so stale readings there are the truth, not a fault.
 5. **Tidy** -- see `td-network-layout`.
 
+## See and show
+
+- **Judge content from pixels**: `capture_viewport` returns an operator's own
+  image (any family). A viewer window can apply a display mode, so colours in a
+  screenshot are not the data.
+- **See what the user sees**: `ui_state` (their network, selection, the node
+  under the mouse) first; `screenshot(path=...)` for an operator's viewer window.
+- **Show, don't describe**: `show_in_editor` moves their editor to an operator,
+  selects and frames it, and writes a status-bar line; `open_viewer` opens the
+  result in its own window. Guiding a user: load `td-guide-user`.
+
 ## Done means evidence
 
 - Visual work is done when a captured frame shows the intended result -- not when the
@@ -63,3 +74,4 @@ The **live** bridge acts inside a running TouchDesigner, one undo step per call.
 - `td-glsl` -- GLSL TOP / MAT / POP
 - `td-performance` -- cook model, budgets, profiling with `get_performance`
 - `td-network-layout` -- placement, colour, comments, final tidy
+- `td-guide-user` -- helping a person through TouchDesigner: see, point, show

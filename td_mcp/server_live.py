@@ -241,23 +241,15 @@ class TDClient:
         if width:
             args["width"] = width
         result = self._call("capture_viewport", args)
-        # Image-block feedback (mintiasaikoh): when the bridge returns a PNG
-        # file, attach base64 image content so MCP clients can render it
-        # directly instead of only seeing the verdict text.
-        if isinstance(result, dict) and result.get("ok") and result.get("file"):
-            try:
-                with open(result["file"], "rb") as f:
-                    import base64
-                    b64 = base64.b64encode(f.read()).decode("ascii")
-                    result["image"] = {
-                        "mime_type": "image/png",
-                        "data": b64,
-                        "description": result.get("verdict", {}).get("caption",
-                                      "TouchDesigner viewport capture"),
-                    }
-            except Exception:  # noqa: BLE001
-                pass
-        return result
+        return _attach_png(result, "TouchDesigner viewport capture")
+
+    def screenshot(self, args):
+        """What is on screen (a viewer window, TD's window, a display), as an
+        image the model can look at -- see the bridge's `_screenshot`."""
+        a = dict(args or {})
+        if "detail" in a and "detailLevel" not in a:
+            a["detailLevel"] = a.pop("detail")
+        return _attach_png(self._call("screenshot", a), "TouchDesigner screenshot")
 
     def get_resource(self, uri):
         return self._call("get_resource", {"uri": uri})
@@ -453,6 +445,24 @@ class TDClient:
         return self._call("save_tox", {"path": path, "file_path": file_path})
 
 
+def _attach_png(result, description):
+    """Image-block feedback (mintiasaikoh): when the bridge returns a PNG file,
+    attach it as base64 so the MCP client renders it -- the model SEES it --
+    instead of only reading the verdict text."""
+    if isinstance(result, dict) and result.get("ok") and result.get("file"):
+        try:
+            import base64
+            with open(result["file"], "rb") as f:
+                result["image"] = {
+                    "mime_type": "image/png",
+                    "data": base64.b64encode(f.read()).decode("ascii"),
+                    "description": (result.get("verdict") or {}).get("caption", description),
+                }
+        except Exception:  # noqa: BLE001
+            pass
+    return result
+
+
 # Tool Registry (maps tool name -> callable(args) -> result dict)
 # ---------------------------------------------------------------------------
 _client = TDClient()  # instantiated lazily in start()
@@ -501,6 +511,7 @@ _CLIENT_SIDE = {
     "build_and_verify": _wrap_tool(lambda c, a: c.build_and_verify(
         a.get("path"), a.get("type") or a.get("op_type"), a.get("params"), a.get("name"))),
     "get_non_default_params": _wrap_tool(lambda c, a: c.get_non_default_params(a.get("path"))),
+    "screenshot": _wrap_tool(lambda c, a: c.screenshot(a)),  # attaches the PNG
     # resolves parameter names against the catalog before the bridge sees them
     "build_network": _wrap_tool(lambda c, a: c.build_network(
         a.get("spec"), a.get("target_parent"), a.get("replace", False))),
@@ -699,6 +710,36 @@ _TOOL_META = [
     ("export_recipe", "Serialize a COMP's operators, parameters and wiring to a JSON "
      "recipe (import_recipe rebuilds it).",
      {"path": _PATH, "depth": _I}),
+    ("screenshot", "SEE what is on screen, as an image you can look at. path=<op> "
+     "(default target 'viewer'): opens that operator's floating viewer window, "
+     "captures it, closes it (keep_open=true leaves it up for the user). "
+     "target='td': TouchDesigner's main window -- the network editor, parameters, "
+     "what the user is looking at, to guide them. target='desktop' or 'monitor:N': a "
+     "whole display. Every target captures a SCREEN REGION: menus and windows over it "
+     "are in the picture. 'td'/'desktop'/'monitor' show OTHER APPLICATIONS whenever TD is "
+     "not in front, so they require allow_other_apps=true -- set it only after the user "
+     "has asked you to look at their screen and brought TouchDesigner forward. A viewer may apply a display mode; judge an operator's colours "
+     "from capture_viewport (its pixels), and what the user sees from this.",
+     {"path": _PATH, "target": _S, "keep_open": _B, "allow_other_apps": _B,
+      "detail": _DETAIL}),
+    ("move_window", "Move TouchDesigner's main window (window='td') or an "
+     "operator's viewer window (window=<operator path>) to a display: monitor="
+     "'165hz' (by refresh rate), 'primary', 'secondary', 'DISPLAY1' or 'index:N'. "
+     "Defaults to TD_MCP_MONITOR, the screen the user chose for TouchDesigner; "
+     "ui_state lists the displays.",
+     {"window": _S, "monitor": _S}),
+    ("open_viewer", "Open (or bring to the front) an operator's floating viewer "
+     "window -- what right-click > View... opens -- so the user sees the result. "
+     "close=true closes it.",
+     {"path": _PATH, "close": _B, "borders": _B}),
+    ("show_in_editor", "Point the user at an operator: move the network editor to "
+     "its network, make it current and selected, frame it, and show `message` in "
+     "TouchDesigner's status bar. Changes only what the user is looking at.",
+     {"path": _PATH, "message": _S, "frame": _B}),
+    ("ui_state", "What the user is looking at: the network shown in each editor "
+     "pane, its current and selected operators, the operator under the mouse, "
+     "the main window and monitors, perform mode, status bar, timeline. Read this "
+     "before guiding someone ('the node you have selected is...').", {}),
     ("build_network", "Build a whole network in ONE call (one Ctrl+Z): create, set parameters, "
      "wire, set flags and DAT text, auto-place left to right, then report every "
      "operator's result and cook errors. `spec` is the format td_validate_build "
@@ -734,7 +775,7 @@ _REQUIRED = {
     "snapshot_network": ["path"], "restore_network": ["snapshot"],
     "set_flags": ["path", "flags"], "set_node_position": ["path", "x", "y"],
     "timeline": ["action"], "export_recipe": ["path"], "import_recipe": ["recipe"],
-    "build_network": ["spec"],
+    "build_network": ["spec"], "open_viewer": ["path"], "show_in_editor": ["path"],
     "save_tox": ["path"],
 }
 

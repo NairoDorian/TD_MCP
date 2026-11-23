@@ -4,6 +4,67 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.14.0] — 2026-11-23 — See what the user sees, show them, stay on their chosen screen
+
+The agent can now look at the screen -- an operator's viewer window, or with
+consent TouchDesigner's window -- and point the user at things in their own
+editor. Built and checked live; three things only looking revealed are below.
+
+### Added
+- **`screenshot`**: what is ON SCREEN, as an image block the model sees.
+  `path=<op>` opens that operator's floating viewer (right-click > View...),
+  captures the window and closes it (`keep_open` leaves it up).
+  `target='td'|'desktop'|'monitor:N'` need `allow_other_apps=true`.
+- **`open_viewer`**, **`show_in_editor`** (editor to the operator, selected,
+  framed, status-bar message), **`ui_state`** (the user's network, selection,
+  operator under the mouse, window, monitors).
+- **The editor follows the work** (user rule): after any edit the user's
+  network editor moves into the edited operator's network and selects it;
+  `build_network` shows the inside of the built COMP with everything
+  selected. Results carry `view`; reads never move it; `TD_MCP_FOLLOW=0`
+  turns it off.
+- **TouchDesigner stays on the screen the user chose** (user rule):
+  `TD_MCP_MONITOR` / `td_live.py monitor 165hz` puts TD's main window and every
+  viewer the bridge opens on that display (picked by refresh rate, primary,
+  device or index). Verified: TD restores its saved layout a moment after
+  startup and moved itself back to the primary screen, so placement is
+  re-checked for a while instead of applied once; TD's `ui.windowX/Y` are
+  Y-up and not comparable with screen rectangles, so `ui_state.td_on_display`
+  is computed from Win32 rectangles. New tool `move_window`. Windows only.
+- **`td-guide-user` skill**: see, point, show, and the screen-capture privacy
+  rules. `td-workflow` gains "See and show".
+- The template gets real outputs: `out1` (Out TOP, `trails`) and `out_ctrl`
+  (Out CHOP, `drift`); the demo ends by showing the user (9 stages, all pass).
+- **Close what you open** (user rule): `screenshot` closes the viewer it opened
+  and the demo no longer leaves one up -- a window going away tells the user
+  the step is done. `scripts/td_live.py close` saves the project and quits
+  TouchDesigner when the work is finished. Verified: `project.quit(force=True)`
+  called through the bridge returns and does nothing, so after a confirmed
+  save `close` ends the TouchDesigner process that reported its own pid. A
+  save writes `NewProject.toe` and an identical numbered copy, so the next
+  `launch` continues the saved work (the template survived the round trip).
+
+### Found by looking
+- **Screen captures are screen REGIONS.** A capture of TouchDesigner's window
+  with TD behind other windows was almost entirely other applications,
+  including the text of another conversation; a taskbar menu landed on a
+  viewer capture. Those images were deleted and are not described. Wide
+  targets are now opt-in (`allow_other_apps`), every result carries a warning,
+  and other applications' window titles never leave TouchDesigner.
+- **A viewer window displays an image differently from its pixels**: a
+  colourful TOP (mean RGB ~0.59/0.50/0.58, no white pixels) looked white/grey,
+  then bright and washed out, in its viewer. Colour is judged from
+  `capture_viewport`; screenshots show what the user sees. (An apparent
+  "trails saturate to white" bug was this display difference; the decay now
+  uses `brightness1`, measured to keep more colour than `opacity`.)
+- **TouchDesigner re-executes a reloaded DAT's module in place**, resetting
+  globals while the old server keeps running: the start stamp read `None` from
+  a live server and `deploy` reported "NOT confirmed". Server identity now
+  lives on the server object, stamped before it serves; 6/6 deploys confirmed.
+- The catalog recorded `td_mcp_probe` (the probe's own name) as the default of
+  13 parameters such as Out TOP `label`; the sanitizer now writes
+  `<operator name>`.
+
 ## [1.13.3] — 2026-11-23 — A built-in demo, built and verified as an agent
 
 From scratch: TouchDesigner launched on TEST-01 and a template network built

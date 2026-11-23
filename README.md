@@ -10,7 +10,7 @@ best ideas of the public TD‑MCP ecosystem into one cohesive package:
 
 - **Offline doc / RAG server** — version‑aware retrieval over a merged MIT corpus **plus the complete official documentation** (no TouchDesigner required, no network, no API keys). Several lexical + semantic backends run **in parallel** and fuse via Reciprocal Rank Fusion, with an optional CrossEncoder reranker and optional external RAG fusion.
 - **Eval harness** — recall@k / MRR / nDCG over a labelled query set, so retrieval quality is provable and regressions are caught. **k=5 recall 1.000** with the wiki KB (**0.991** curated‑only), zero version‑gating violations.
-- **Live bridge + MCP server** — control a running TouchDesigner session (create / wire / inspect / verify) over **Streamable HTTP + SSE**, WebSocket, or stdio. Exposes **50 live tools**; every mutation is wrapped in `ui.undo` so one Ctrl+Z reverts a whole agent batch.
+- **Live bridge + MCP server** — control a running TouchDesigner session (create / wire / inspect / verify) over **Streamable HTTP + SSE**, WebSocket, or stdio. Exposes **55 live tools**; every mutation is wrapped in `ui.undo` so one Ctrl+Z reverts a whole agent batch.
 - **All four of TouchDesigner's error surfaces** — cook errors, warnings, **script tracebacks** and **GLSL compile errors** (which appear on none of the API's error accessors). Most tooling reads one of the four and calls a visibly broken network clean. See **[docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md)**.
 - **Natively embedded chat UI** and a **zero‑dependency autonomous agent** that run *inside* TouchDesigner Text DATs.
 
@@ -26,7 +26,7 @@ Full docs live in **[`docs/`](docs/README.md)**.
 |---|---|
 | **[What goes into TouchDesigner](docs/TOUCHDESIGNER_COMPONENT.md)** | The `/td_mcp` component, drag-and-drop `.tox`, and how the other 30 projects do it |
 | **[Install](docs/INSTALL.md)** | Both halves, the lifecycle, environment variables |
-| **[Tools](docs/TOOLS.md)** | All 109 tools with risk classes |
+| **[Tools](docs/TOOLS.md)** | All 114 tools with risk classes |
 | **[Diagnostics](docs/DIAGNOSTICS.md)** | The four error surfaces — read this one |
 | **[Agent guide](docs/AGENT_GUIDE.md)** | How to sequence the tools |
 | **[Troubleshooting](docs/TROUBLESHOOTING.md)** | Symptom-first |
@@ -340,7 +340,7 @@ td-mcp/
 │   └── generate_summary.py   # generates SUMMARY.md (code-free file/architecture overview)
 ├── td_mcp/
 │   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (59 tools)
-│   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server for the bridge (50 tools)
+│   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server for the bridge (55 tools)
 │   ├── heal.py                # self-healing orchestrator: validate → score → auto-repair → hints
 │   ├── validation.py          # 5-stage build validation + auto-repair (pure, TD-free)
 │   ├── scoring.py             # score_build (0..100 A–F) + repair_network
@@ -397,7 +397,7 @@ td-mcp/
 `td_scaffold_recipe`, `td_analyze_build`, `td_diff_networks`, `td_optimize_layout`,
 `td_resolve_params`, `td_docs_combos`.
 
-**Live server (50 tools)** — `build_network`, `create_node`, `delete_node`, `set_parameters`, `get_parameters`,
+**Live server (55 tools)** — `build_network`, `screenshot`, `open_viewer`, `show_in_editor`, `ui_state`, `move_window`, `create_node`, `delete_node`, `set_parameters`, `get_parameters`,
 `describe_op_type`, `pulse_parameter`,
 `get_parameter_info`, `get_non_default_params`, `bind_parameter_expression`, `get_errors`,
 `clear_script_errors`, `execute_python`, `list_nodes`, `project_info`, `capture_viewport`,
@@ -473,8 +473,11 @@ python scripts/demo_build.py         # examples/feedback_trails.json -> /project
 
 Over MCP, exactly as an agent: validate the spec offline (`td_validate_build`),
 build it live in one call (`build_network`, one Ctrl+Z), then verify — errors,
-a captured frame, motion across real frames, median frame cost. Measured:
-9 operators in ~150 ms, 0 errors, animating, ~2.5% of a 60 fps frame. See
+a captured frame, motion across real frames, median frame cost — and finally
+show the user: their network editor is pointed at the output with a status-bar
+message, and the output's viewer window is opened and screenshotted so the agent
+sees what they see. Measured: 11 operators in ~350 ms, 0 errors, animating,
+~3-4% of a 60 fps frame. See
 [examples/README.md](examples/README.md).
 
 ## Verify in TouchDesigner — the major rule
@@ -489,7 +492,13 @@ python scripts/td_live.py launch   # open ../TD_MCP_TESTS/TEST-01/NewProject.toe
 python scripts/td_live.py deploy   # after editing bridge/: copy into TEST-01 + safe restart
 python scripts/live_smoke.py       # MCP stdio client -> td-mcp-live/offline -> bridge -> TD
 python scripts/td_live.py call describe_op_type '{"op_type": "lfoCHOP"}'
+python scripts/td_live.py monitor 165hz   # TD + its viewers on that screen, not yours
+python scripts/td_live.py close    # work done: save the project and quit TouchDesigner
 ```
+
+Close what you open: `screenshot` closes the viewer window it opened (the
+window going away tells the user the step is done), and a finished session
+ends with `td_live.py close`.
 
 `live_smoke.py` builds, inspects, captures and cleans up a scratch network
 through the same MCP tools an agent calls (17 checks; `--offline-only` without

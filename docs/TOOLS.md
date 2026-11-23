@@ -1,12 +1,12 @@
 # Tool reference
 
-**109 tools across two servers.** They are deliberately split, because they
+**114 tools across two servers.** They are deliberately split, because they
 have different requirements and different risks.
 
 | Server | Tools | Needs TouchDesigner | What it is |
 |---|---|---|---|
 | `td-mcp-offline` | 59 | No | Documentation, RAG, network authoring, validation, scoring, planning |
-| `td-mcp-live` | 50 | Yes | Everything that touches a running session |
+| `td-mcp-live` | 55 | Yes | Everything that touches a running session |
 
 Register only the offline server if you want documentation and offline
 authoring without exposing a live session.
@@ -39,7 +39,7 @@ max-risk policy admit code it meant to block.
 
 ---
 
-## Live server — 50 tools
+## Live server — 55 tools
 
 Everything below requires the bridge component running inside TouchDesigner.
 See [TOUCHDESIGNER_COMPONENT.md](TOUCHDESIGNER_COMPONENT.md).
@@ -87,6 +87,11 @@ See [DIAGNOSTICS.md](DIAGNOSTICS.md) for the full story.
 | Tool | Risk | Notes |
 |---|---|---|
 | `get_parameters` | READ_ONLY | |
+| `screenshot` | READ_ONLY | What is ON SCREEN as an image the model sees: an operator's floating viewer window (`path`, opened, captured, closed unless `keep_open`), or with `allow_other_apps=true` TouchDesigner's window / a display. Every target is a screen region: menus and windows on top are in the picture. |
+| `open_viewer` | WRITE_ADDITIVE | Open (or bring to front) an operator's floating viewer window, as right-click > View...; `close=true` closes it. UI only. |
+| `show_in_editor` | WRITE_ADDITIVE | Move the user's network editor to an operator, select and frame it, and show a status-bar message. UI only. |
+| `move_window` | WRITE_ADDITIVE | Move TouchDesigner's window or an operator's viewer to a display ('165hz', 'primary', 'secondary', 'DISPLAY1', 'index:N'); defaults to `TD_MCP_MONITOR`. UI only, Windows. |
+| `ui_state` | READ_ONLY | What the user is looking at: network per editor pane, current/selected operators, operator under the mouse, window, monitors, perform mode, status bar, timeline. |
 | `build_network` | WRITE_ADDITIVE | A whole network in ONE call (one Ctrl+Z): create, parameters (read back), wires, flags, DAT text, left-to-right placement, per-operator report and cook errors. Takes the spec `td_validate_build` checks offline; names are resolved against the catalog first. |
 | `describe_op_type` | READ_ONLY | Parameter names, labels, styles, creation defaults and menu tokens for an operator **type**, probed off a throwaway instance in `/sys/quiet`. Look before you guess. |
 | `pulse_parameter` | WRITE_ADDITIVE | Pulse a pulse parameter (reset, reload, start). Setting `true` on one does nothing in TD. |

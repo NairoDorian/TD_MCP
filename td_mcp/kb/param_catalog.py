@@ -274,6 +274,7 @@ _MACHINE_MENU_NAMES = {"font"}
 _USER_PATH = re.compile(r"[/\\](?:Users|home)[/\\][^/\\]+", re.I)
 _TD_INSTALL = re.compile(r"^[A-Za-z]:[/\\]Program Files[/\\]Derivative[/\\]TouchDesigner[^/\\]*",
                          re.I)
+_PROBE_NAME = "td_mcp_probe"  # what scripts/probe_param_catalog_td.py names its instances
 MACHINE_STATE_NOTE = ("menu depends on this machine (devices, addresses, fonts, "
                       "windows); read it live with describe_op_type")
 
@@ -295,7 +296,12 @@ def sanitize_par(p: Dict[str, Any]) -> bool:
         v = p.get(key)
         if not isinstance(v, str):
             continue
-        if _USER_PATH.search(v):
+        if v == _PROBE_NAME:
+            # The default IS the operator's own name (Out TOP/CHOP `label`):
+            # the probe instance was called td_mcp_probe.
+            p[key] = "<operator name>"
+            changed = True
+        elif _USER_PATH.search(v):
             p[key] = "<machine-specific path>"
             p["machine_state"] = True
             changed = True

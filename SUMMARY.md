@@ -30,7 +30,7 @@ td-mcp is built around **two cooperating servers that share one authoring brain*
 | Module | `td_mcp/server_offline.py` | `td_mcp/server_live.py` + `bridge/td_mcp_bridge.py` |
 | Needs TouchDesigner? | **No** | **Yes** (running instance) |
 | Role | Doc/RAG answers, network *generation* (YAML, not live nodes), validation, scoring, self-heal | Create / delete / wire / inspect a live TD document over HTTP / stdio |
-| Tools | 1 (`td_*`) | 50 (`create_node`, `set_parameters`, …) |
+| Tools | 1 (`td_*`) | 55 (`create_node`, `set_parameters`, …) |
 
 The offline side owns the *intelligence*: `generators` -> `validation` ->
 `scoring` -> `heal` produce a diffable network description (**TDN** YAML) that the
@@ -101,6 +101,8 @@ td-mcp/
 │   ├── td-dat-python
 │   │   └── SKILL.md
 │   ├── td-glsl
+│   │   └── SKILL.md
+│   ├── td-guide-user
 │   │   └── SKILL.md
 │   ├── td-network-layout
 │   │   └── SKILL.md
@@ -325,7 +327,7 @@ td-mcp/
 - **`docs/SECURITY.md`** — Security model — The bridge opens a port inside your TouchDesigner session and lets a language
 - **`docs/TDN_FORMAT.md`** — TDN — TouchDesigner Network format — Version **2.1**. A diffable YAML serialisation of a TouchDesigner network, so a
 - **`docs/TESTING.md`** — Testing — **944+ tests.** `uv run pytest` on a fresh clone, after
-- **`docs/TOOLS.md`** — Tool reference — **109 tools across two servers.** They are deliberately split, because they
+- **`docs/TOOLS.md`** — Tool reference — **114 tools across two servers.** They are deliberately split, because they
 - **`docs/TOUCHDESIGNER_COMPONENT.md`** — What goes *into* TouchDesigner — The MCP server runs *outside* TouchDesigner, as a normal Python process your AI
 - **`docs/TROUBLESHOOTING.md`** — Troubleshooting — Ordered by how often each one bites. Every symptom here has been seen.
 
@@ -351,6 +353,7 @@ td-mcp/
 - **`skills/td-chop-family/SKILL.md`** — CHOP networks — - Source -> shaping -> `nullCHOP` named for its role (`null_audio`, `null_ctrl`).
 - **`skills/td-dat-python/SKILL.md`** — DATs and Python — - A new `textDAT` holds `language` = `text` (its declared default is `input`, which
 - **`skills/td-glsl/SKILL.md`** — GLSL in TouchDesigner — - `glslTOP` creates `<name>_pixel`, `<name>_compute` and `<name>_info` DATs beside it.
+- **`skills/td-guide-user/SKILL.md`** — Guiding someone through TouchDesigner — The person sees TouchDesigner; you see it through tools. Close that gap before
 - **`skills/td-network-layout/SKILL.md`** — Network layout — - Signal flows left to right: every wire goes forward (positive X). Parallel chains
 - **`skills/td-performance/SKILL.md`** — Performance — - TouchDesigner cooks on demand: an operator cooks when something downstream (a
 - **`skills/td-pop-family/SKILL.md`** — POP networks — - A POP is points (plus primitives) with attributes -- `P` position, `N`, `Color`,
@@ -440,7 +443,7 @@ td-mcp/
 
 ### `td_mcp.egg-info/`
 
-- **`td_mcp.egg-info/PKG-INFO`** — Generated data artifact (27,611 bytes) — produced by the build/eval pipeline; not hand-edited.
+- **`td_mcp.egg-info/PKG-INFO`** — Generated data artifact (28,309 bytes) — produced by the build/eval pipeline; not hand-edited.
 
 ### `tests/`
 

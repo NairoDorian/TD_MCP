@@ -96,6 +96,7 @@ SCHEMA = {name: set(props) for name, _desc, props in _TOOL_META}
 _FORWARD_RENAMES = {"detail": "detailLevel"}
 #: Tools answered on the client side, and keys consumed before dispatch.
 _CLIENT_ONLY = {"get_non_default_params"}
+#: The live server renames `detail` -> `detailLevel` for screenshot client-side.
 _PRE_DISPATCH = {
     # read by the bridge's multi-frame capture path (_capture_any_family),
     # which runs before the single-frame handler is dispatched

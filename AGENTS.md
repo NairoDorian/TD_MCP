@@ -25,6 +25,20 @@ python scripts/td_live.py py "result = op('/project1').children[0].OPType"
   a bad menu token is silently ignored; an OP Viewer TOP needs frames).
 - Build in `/project1/zz_<something>` and delete it afterwards. Never edit
   `/project1/td_mcp` (the bridge refuses anyway).
+- **Show the node you are working on.** The bridge moves the user's network
+  editor into the network of every operator a tool edits (results carry
+  `view`; `TD_MCP_FOLLOW=0` turns it off). After `execute_python`, which it
+  cannot follow, call `show_in_editor`. Check with `ui_state` -- the editor
+  must not sit at `/project1` while the work is inside a COMP.
+- **Keep TouchDesigner on the user's chosen screen.** `python scripts/td_live.py
+  monitor 165hz` (or `primary`, `secondary`, `DISPLAY1`, `index:N`) makes
+  `launch` put TD and every viewer window the bridge opens on that display,
+  leaving the user's working screen alone. `ui_state.td_on_display` says where
+  TD is; `move_window` moves it on request.
+- **Close what you open.** Every viewer window opened for a screenshot is
+  closed afterwards (`screenshot` does it by default) -- the window going away
+  tells the user the step is done. When the testing or building work is
+  finished, save and close TouchDesigner: `python scripts/td_live.py close`.
 - TouchDesigner 2025.33230 is the reference build. The token only works when
   the td_mcp component's own `Token` parameter is empty.
 

@@ -695,6 +695,67 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "ui_state",
+            "description": "What the user is looking at: network per editor pane, current/selected operators, operator under the mouse, window, monitors.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "move_window",
+            "description": "Move TouchDesigner's window (window='td') or an operator's viewer to a display ('165hz', 'primary', 'secondary').",
+            "parameters": {
+                "type": "object",
+                "properties": {"window": {"type": "string", "description": "'td' or an operator path"},
+                               "monitor": {"type": "string", "description": "'165hz' | 'primary' | 'secondary' | 'DISPLAY1' | 'index:N'"}},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_viewer",
+            "description": "Open (or bring to the front) an operator's floating viewer window so the user sees it; close=true closes it.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "Operator path"}, "close": {"type": "boolean", "description": "Close instead of open"}},
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "show_in_editor",
+            "description": "Move the network editor to an operator, select and frame it, and show a message in the status bar.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "Operator path"}, "message": {"type": "string", "description": "Status bar text"}},
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "screenshot",
+            "description": "Capture what is on screen: an operator's viewer window (path) or TouchDesigner's window (target='td'). Not available inside the in-TD agent's main-thread loop.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "Operator whose viewer to capture"}, "target": {"type": "string", "description": "viewer | td | desktop | monitor:N"}},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "build_network",
             "description": "Build a whole network in one call (one undo step): create, set "
                            "parameters, wire, set flags, auto-place, report errors.",

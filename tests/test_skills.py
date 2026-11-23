@@ -38,7 +38,7 @@ def test_skill_set_is_present():
     names = {p.parent.name for p in SKILL_FILES}
     assert {"td-workflow", "td-building", "td-top-family", "td-chop-family",
             "td-pop-family", "td-sop-render", "td-dat-python", "td-glsl",
-            "td-performance", "td-network-layout"} <= names
+            "td-performance", "td-network-layout", "td-guide-user"} <= names
 
 
 @pytest.mark.parametrize("path", SKILL_FILES, ids=lambda p: p.parent.name)

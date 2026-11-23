@@ -175,7 +175,7 @@ def _locate_bridge_dir():
 def _chat_ui_path():
     """Resolved on first use, never at import: module-level code runs while
     the DAT is still compiling, and reading a TD object there is how 1.13.3's
-    first build broke (see _STARTED_AT). tests/test_bridge_wave13.py enforces it."""
+    first build broke (see _server_identity). tests/test_bridge_wave13.py enforces it."""
     return os.path.join(_locate_bridge_dir(), "chat_ui.html")
 
 # WebSocket connected clients set (for future push events)
@@ -365,6 +365,8 @@ def pump():
         _last_pump_playing = bool(root.time.play)  # noqa: F821 - TD global
     except Exception:  # noqa: BLE001
         _last_pump_playing = None
+    if _PENDING_PLACEMENTS:
+        _service_placements()
     deadline = time.perf_counter() + PUMP_BUDGET_MS / 1000.0
     ran = 0
     while True:
@@ -402,6 +404,67 @@ _SELF_GUARDED = {
 }
 
 
+#: Follow the work in the user's network editor (user rule, 2026-11-23: "always
+#: adjust the editor view to see and look at what node you edit"). After a
+#: successful edit the editor moves into the edited operator's network and
+#: makes it current/selected; read-only tools never move the view.
+FOLLOW_EDITS = os.environ.get("TD_MCP_FOLLOW", "1") != "0"
+
+#: tool -> (args, result) -> (path, is_network). is_network: show INSIDE that COMP.
+_FOLLOW = {
+    "create_node": lambda a, r: (r.get("path"), False),
+    "set_parameters": lambda a, r: (a.get("path"), False),
+    "pulse_parameter": lambda a, r: (a.get("path"), False),
+    "bind_parameter_expression": lambda a, r: (a.get("path"), False),
+    "set_dat_text": lambda a, r: (a.get("path"), False),
+    "set_flags": lambda a, r: (a.get("path"), False),
+    "connect_nodes": lambda a, r: (a.get("to_path"), False),
+    "disconnect_nodes": lambda a, r: (a.get("to_path"), False),
+    "rename_node": lambda a, r: (r.get("path") or r.get("new_path"), False),
+    "copy_node": lambda a, r: (r.get("path"), False),
+    "set_node_position": lambda a, r: (a.get("path"), False),
+    "set_node_color": lambda a, r: (a.get("path"), False),
+    "set_node_comment": lambda a, r: (a.get("path"), False),
+    "build_network": lambda a, r: (r.get("parent"), True),
+    "import_recipe": lambda a, r: (a.get("target_parent"), True),
+}
+
+
+def _follow(tool, args, result):
+    """Move the user's network editor to what ``tool`` just changed. Never
+    raises, never shows the bridge's own component; returns the view or None."""
+    if not FOLLOW_EDITS or tool not in _FOLLOW or not isinstance(result, dict) \
+            or result.get("ok") is False:
+        return None
+    try:
+        path, is_network = _FOLLOW[tool](args or {}, result)
+        node = _op(path) if path else None
+        pane = _network_editor()
+        if node is None or pane is None or _inside_bridge(node.path):
+            return None
+        network = node if is_network else node.parent()
+        if network is None:
+            return None
+        pane.owner = network
+        for child in list(getattr(network, "selectedChildren", None) or []):
+            child.selected = False
+        if is_network:
+            built = [_op(v.get("path")) for v in (result.get("operators") or {}).values()
+                     if isinstance(v, dict) and v.get("path")]
+            for child in [b for b in built if b is not None]:
+                child.selected = True
+        else:
+            node.current = True
+            node.selected = True
+        try:
+            pane.homeSelected(zoom=False)
+        except Exception:  # noqa: BLE001
+            pass
+        return {"network": network.path, "current": None if is_network else node.path}
+    except Exception:  # noqa: BLE001 - following is a courtesy, never a failure
+        return None
+
+
 def _guard_call(tool, args):
     spec = _SELF_GUARDED.get(tool)
     if spec is None:
@@ -422,7 +485,11 @@ def _run_tool(tool, args):
     if refused is not None:
         return _wrap(refused)
     with _undo_block(tool):
-        return _wrap(fn(args or {}))
+        result = _wrap(fn(args or {}))
+    view = _follow(tool, args, result)
+    if view is not None:
+        result["view"] = view
+    return result
 
 
 def _invoke(tool, args):
@@ -479,15 +546,22 @@ def _ws_push(event):
 # version lets the live server say so on the first call instead. Keep in sync
 # with pyproject.toml [project].version -- scripts/check_bridge_stale.py fails
 # CI when they diverge.
-BRIDGE_VERSION = "1.13.3"
+BRIDGE_VERSION = "1.14.0"
 
 
-#: time.time() when this module's server started listening. `scripts/td_live.py
-#: deploy` waits for it to change: a new value proves the server was restarted
-#: AFTER the file copy, so it runs the new code. (A source hash read from the
-#: DAT at import time was tried first and broke the module: never touch TD
-#: objects at module level -- the import runs before the network is ready.)
-_STARTED_AT = None
+# Server identity lives ON THE SERVER OBJECT (td_mcp_started_at / td_mcp_version),
+# never in module globals: TouchDesigner reloads a file-synced DAT by
+# re-executing its module code in place, which resets every global while the
+# old server thread keeps answering (traced live 2026-11-23: started_at read
+# None from a running server). scripts/td_live.py deploy waits for a newer
+# td_mcp_started_at to prove the server it talks to was restarted on new code.
+# (A source hash read from the DAT at import was tried first and broke the
+# module: never touch TD objects at module level.)
+
+
+def _server_identity(srv):
+    return {"bridge_version": getattr(srv, "td_mcp_version", BRIDGE_VERSION),
+            "started_at": getattr(srv, "td_mcp_started_at", None)}
 
 TD_MCP_PORT = int(os.environ.get("TD_MCP_PORT", "9980"))
 
@@ -3163,7 +3237,7 @@ def _do_project_info():
                                               getattr(app, "build", None)),
             "td_version": str(getattr(app, "version", "")),
             "bridge_version": BRIDGE_VERSION,
-            "server_started_at": _STARTED_AT,
+            "server_started_at": _server_identity(_server)["started_at"],
             "fps": project.cookRate,
             "file": project.name}
 
@@ -3299,12 +3373,471 @@ def _capture_any_family(args):
     return res
 
 
+# --- Seeing what the user sees, and showing them -----------------------------
+# Verified on TouchDesigner 2025.33230 (2026-11-23):
+#   * OP.openViewer(unique=False, borders=True) opens -- or brings to the front
+#     -- the floating viewer the network editor's "View..." opens; the window
+#     is titled "<op path> (<w>,<h>) ...". closeViewer() closes it.
+#   * A Screen Grab TOP's `source` menu lists displays ('0' = whole desktop,
+#     '1', '2' ...) and window titles. A window capture is a capture of the
+#     SCREEN REGION under that window: anything overlapping it -- including
+#     other applications -- is in the picture. A display driven by another
+#     GPU captures black.
+#   * A viewer can apply a display mode (a letter badge in its corner): on the
+#     demo the viewer window showed white/grey while the TOP's pixels were
+#     colourful mid-tones. Pixels (capture_viewport) are the ground truth for
+#     content; a screenshot is the ground truth for what is ON SCREEN.
+#   * ui.panes[*].owner / homeSelected(zoom=True), OP.current / .selected and
+#     ui.status are all settable: an agent can point the user at an operator.
+GRAB_PREFIX = "td_mcp_grab_"
+
+
+def _network_editor():
+    for pane in getattr(ui, "panes", []) or []:  # noqa: F821
+        if "NETWORK" in str(getattr(pane, "type", "")).upper():
+            return pane
+    return None
+
+
+def _do_ui_state():
+    """What the user is looking at: the network in each editor pane, the
+    current and selected operators there, the operator under the mouse, the
+    main window and monitors, perform mode, the status bar and the timeline."""
+    panes = []
+    for pane in getattr(ui, "panes", []) or []:  # noqa: F821
+        owner = getattr(pane, "owner", None)
+        row = {"name": pane.name, "type": str(pane.type).split(".")[-1],
+               "network": getattr(owner, "path", None)}
+        if owner is not None and getattr(owner, "isCOMP", False):
+            cur = getattr(owner, "currentChild", None)
+            row["current"] = getattr(cur, "path", None)
+            row["selected"] = [o.path for o in (getattr(owner, "selectedChildren", None) or [])][:20]
+        panes.append(row)
+    out = {"ok": True, "panes": panes,
+           "window": {"x": ui.windowX, "y": ui.windowY,  # noqa: F821
+                      "width": ui.windowWidth, "height": ui.windowHeight},  # noqa: F821
+           "rollover": getattr(getattr(ui, "rolloverOp", None), "path", None),  # noqa: F821
+           "perform_mode": bool(getattr(ui, "performMode", False)),  # noqa: F821
+           "status": str(getattr(ui, "status", "") or "")}  # noqa: F821
+    try:
+        out["displays"] = _win32_monitors()  # with refresh rates (Windows)
+    except Exception:  # noqa: BLE001
+        out["displays"] = []
+    if not out["displays"]:
+        try:
+            import td as _td
+            out["displays"] = [{"index": m.index, "width": m.width, "height": m.height,
+                                "left": m.left, "top": m.top, "primary": bool(m.isPrimary)}
+                               for m in _td.monitors]
+        except Exception:  # noqa: BLE001
+            pass
+    out["windows_go_to"] = TD_MCP_MONITOR or None
+    try:
+        out["td_on_display"] = _td_display()
+    except Exception:  # noqa: BLE001
+        out["td_on_display"] = None
+    try:
+        out["timeline"] = {"playing": bool(root.time.play), "frame": root.time.frame}  # noqa: F821
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+# --- Window placement: keep TouchDesigner on the screen the user chose --------
+# User rule (2026-11-23): TD and every viewer open on the laptop's internal
+# 165 Hz screen, never the 240 Hz main screen the user works on. TD_MCP_MONITOR
+# names the screen ("165hz", "primary", "secondary", "DISPLAY1", "index:1");
+# unset = never move anything. Windows only (user32 via ctypes, run inside TD
+# so screen coordinates and DPI scaling are TouchDesigner's own).
+TD_MCP_MONITOR = os.environ.get("TD_MCP_MONITOR", "").strip()
+_PENDING_PLACEMENTS = []   # [{"prefix": str|None, "main": bool, "deadline": t, "monitor": spec}]
+
+
+def _win32_monitors():
+    """[{device, rect, work, primary, hz}] for every display, or [] off Windows."""
+    if os.name != "nt":
+        return []
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+
+    class MONITORINFOEXW(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD),
+                    ("szDevice", wintypes.WCHAR * 32)]
+
+    class DEVMODEW(ctypes.Structure):
+        _fields_ = [("dmDeviceName", wintypes.WCHAR * 32), ("dmSpecVersion", wintypes.WORD),
+                    ("dmDriverVersion", wintypes.WORD), ("dmSize", wintypes.WORD),
+                    ("dmDriverExtra", wintypes.WORD), ("dmFields", wintypes.DWORD),
+                    ("dmPositionX", wintypes.LONG), ("dmPositionY", wintypes.LONG),
+                    ("dmDisplayOrientation", wintypes.DWORD),
+                    ("dmDisplayFixedOutput", wintypes.DWORD), ("dmColor", ctypes.c_short),
+                    ("dmDuplex", ctypes.c_short), ("dmYResolution", ctypes.c_short),
+                    ("dmTTOption", ctypes.c_short), ("dmCollate", ctypes.c_short),
+                    ("dmFormName", wintypes.WCHAR * 32), ("dmLogPixels", wintypes.WORD),
+                    ("dmBitsPerPel", wintypes.DWORD), ("dmPelsWidth", wintypes.DWORD),
+                    ("dmPelsHeight", wintypes.DWORD), ("dmDisplayFlags", wintypes.DWORD),
+                    ("dmDisplayFrequency", wintypes.DWORD)]
+
+    found = []
+    proc = ctypes.WINFUNCTYPE(ctypes.c_int, wintypes.HMONITOR, wintypes.HDC,
+                              ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+
+    def each(hmon, _hdc, _rect, _data):
+        info = MONITORINFOEXW()
+        info.cbSize = ctypes.sizeof(MONITORINFOEXW)
+        user32.GetMonitorInfoW(hmon, ctypes.byref(info))
+        mode = DEVMODEW()
+        mode.dmSize = ctypes.sizeof(DEVMODEW)
+        user32.EnumDisplaySettingsW(info.szDevice, -1, ctypes.byref(mode))
+        r, w = info.rcMonitor, info.rcWork
+        found.append({"device": info.szDevice.replace("\\\\.\\", ""),
+                      "rect": [r.left, r.top, r.right, r.bottom],
+                      "work": [w.left, w.top, w.right, w.bottom],
+                      "primary": bool(info.dwFlags & 1), "hz": int(mode.dmDisplayFrequency)})
+        return 1
+
+    user32.EnumDisplayMonitors(None, None, proc(each), 0)
+    return found
+
+
+def pick_monitor(spec, monitors):
+    """The display ``spec`` names, or None. Pure: '165hz', 'primary',
+    'secondary' (first non-primary), 'DISPLAY1', 'index:1'."""
+    if not spec or not monitors:
+        return None
+    s = str(spec).strip().lower()
+    if s.endswith("hz") and s[:-2].isdigit():
+        return next((m for m in monitors if m.get("hz") == int(s[:-2])), None)
+    if s == "primary":
+        return next((m for m in monitors if m.get("primary")), None)
+    if s in ("secondary", "non-primary", "other"):
+        return next((m for m in monitors if not m.get("primary")), None)
+    if s.startswith("index:") and s[6:].isdigit():
+        i = int(s[6:])
+        return monitors[i] if i < len(monitors) else None
+    return next((m for m in monitors if m.get("device", "").lower() == s), None)
+
+
+def _win32_windows(prefix=None, main=False):
+    """Visible top-level windows of THIS process: TD's main window, or the ones
+    whose title starts with ``prefix``. Never looks at other processes."""
+    if os.name != "nt":
+        return []
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    me_pid, hits = os.getpid(), []
+    proc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+
+    def each(hwnd, _):
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value != me_pid or not user32.IsWindowVisible(hwnd):
+            return True
+        buf = ctypes.create_unicode_buffer(512)
+        user32.GetWindowTextW(hwnd, buf, 512)
+        title = buf.value
+        if (main and title.startswith("TouchDesigner")) or (prefix and title.startswith(prefix)):
+            hits.append((hwnd, title))
+        return True
+
+    user32.EnumWindows(proc(each), 0)
+    return hits
+
+
+def _place(hwnd, monitor, maximize):
+    """Move a window onto ``monitor``: maximized (main window) or centred in
+    its work area at its current size (viewers)."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    left, top, right, bottom = monitor["work"]
+    if maximize:
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE: a maximized window ignores moves
+        user32.SetWindowPos(hwnd, None, left + 40, top + 40, 0, 0, 0x0001 | 0x0004 | 0x0010)
+        user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE on the new screen
+        return
+    rect = wintypes.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+    w, h = rect.right - rect.left, rect.bottom - rect.top
+    x = left + max(0, (right - left - w) // 2)
+    y = top + max(0, (bottom - top - h) // 2)
+    user32.SetWindowPos(hwnd, None, x, y, 0, 0, 0x0001 | 0x0004 | 0x0010)  # NOSIZE|NOZORDER|NOACTIVATE
+
+
+def _window_display(hwnd, monitors):
+    """The display holding the centre of ``hwnd`` (Win32 coordinates on both
+    sides -- TD's ui.windowX/Y use a different, Y-up system)."""
+    import ctypes
+    from ctypes import wintypes
+    r = wintypes.RECT()
+    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r))
+    cx, cy = (r.left + r.right) // 2, (r.top + r.bottom) // 2
+    for m in monitors:
+        left, top, right, bottom = m["rect"]
+        if left <= cx < right and top <= cy < bottom:
+            return m
+    return None
+
+
+def _td_display():
+    """{device, hz, primary} of the display TouchDesigner's main window is on."""
+    wins = _win32_windows(None, True)
+    if not wins:
+        return None
+    m = _window_display(wins[0][0], _win32_monitors())
+    return {k: m[k] for k in ("device", "hz", "primary")} if m else None
+
+
+def _place_now(prefix=None, main=False, monitor_spec=None, only_if_elsewhere=False):
+    """Main thread: place matching windows of this process now. Returns what moved."""
+    spec = monitor_spec or TD_MCP_MONITOR
+    monitor = pick_monitor(spec, _win32_monitors()) if spec else None
+    if monitor is None:
+        return {"ok": False, "moved": [], "monitor": None,
+                "error": "no display matches %r" % spec if spec else "no monitor configured"}
+    moved, found = [], 0
+    monitors = _win32_monitors() if only_if_elsewhere else None
+    for hwnd, title in _win32_windows(prefix, main):
+        found += 1
+        if only_if_elsewhere:
+            on = _window_display(hwnd, monitors)
+            if on is not None and on["device"] == monitor["device"]:
+                continue  # already there
+        _place(hwnd, monitor, maximize=main)
+        moved.append(title)
+    return {"ok": found > 0, "found": found, "moved": moved, "monitor": monitor["device"],
+            "hz": monitor["hz"]}
+
+
+def _queue_placement(prefix=None, main=False, seconds=5.0, monitor_spec=None):
+    """Place a window that does not exist yet (a viewer opens a frame later,
+    the main window after startup): pump() retries until it appears."""
+    if (monitor_spec or TD_MCP_MONITOR) and os.name == "nt":
+        _PENDING_PLACEMENTS.append({"prefix": prefix, "main": main, "monitor": monitor_spec,
+                                    "deadline": time.time() + seconds})
+
+
+def _service_placements():
+    """pump() hook, twice a second: (re)place queued windows on their display.
+
+    A job is kept until its deadline, not dropped at the first success:
+    verified 2026-11-23, TouchDesigner restores its saved window layout a
+    moment AFTER startup and moved the main window back to the primary
+    screen. Each pass only moves a window that is not already there.
+    """
+    now = time.time()
+    keep = []
+    for job in _PENDING_PLACEMENTS:
+        if now < job.get("next", 0):
+            keep.append(job)
+            continue
+        job["next"] = now + 0.5
+        try:
+            _place_now(job["prefix"], job["main"], job["monitor"], only_if_elsewhere=True)
+        except Exception:  # noqa: BLE001 - placement is a courtesy
+            continue
+        if now < job["deadline"]:
+            keep.append(job)
+    _PENDING_PLACEMENTS[:] = keep
+
+
+def _do_move_window(window="td", monitor=None):
+    """Move TouchDesigner's main window (window='td') or an operator's viewer
+    window (window=<operator path>) to a display ('165hz', 'primary',
+    'secondary', 'DISPLAY1', 'index:N'); defaults to TD_MCP_MONITOR."""
+    spec = monitor or TD_MCP_MONITOR
+    if not spec:
+        return {"ok": False, "error": "say which display: monitor='165hz' | 'primary' | "
+                "'secondary' | 'DISPLAY1' | 'index:N'", "monitors": _win32_monitors()}
+    main = not window or window == "td"
+    prefix = None if main else (_op(window).path if _op(window) is not None else window)
+    out = _place_now(prefix, main, spec)
+    if not out.get("ok"):
+        out["monitors"] = _win32_monitors()
+    return out
+
+
+def _screenshot_needs_frames(path=None, target=None, keep_open=False, detail=None,
+                             allow_other_apps=False):
+    """Main-thread fallback (inside `batch`): a screen grab needs frames to pass."""
+    return {"ok": False, "error_code": "needs_frames",
+            "error": "screenshot needs a few frames: call it directly, not inside batch"}
+
+
+def _do_open_viewer(path, close=False, borders=True):
+    """Open (or bring to the front) the floating viewer of an operator -- what
+    right-click > View... opens -- so the user sees the result; close=true
+    closes it."""
+    node = _op(path)
+    if node is None:
+        return {"ok": False, "error": "not found: %s" % path}
+    if close:
+        node.closeViewer()
+        return {"ok": True, "path": node.path, "closed": True}
+    node.openViewer(unique=False, borders=bool(borders))
+    _queue_placement(prefix=node.path, seconds=3.0)  # onto TD_MCP_MONITOR once it exists
+    return {"ok": True, "path": node.path, "opened": True,
+            "note": "the window is titled with the operator path; screenshot(path=...) "
+                    "captures it, close with open_viewer(close=true)"}
+
+
+def _do_show_in_editor(path, message=None, frame=True):
+    """Point the user at an operator: move the network editor to its network,
+    make it current and selected, frame it, and put ``message`` in TD's status
+    bar. Changes only what the user is looking at, never the network."""
+    node = _op(path)
+    if node is None:
+        return {"ok": False, "error": "not found: %s" % path}
+    pane = _network_editor()
+    if pane is None:
+        return {"ok": False, "error": "no network editor pane is open"}
+    network = node.parent() if node.parent() is not None else node
+    pane.owner = network
+    # Clear the old selection first: otherwise homeSelected frames everything
+    # that was selected (verified live: all 11 built operators after a
+    # build_network) instead of pointing at this one.
+    for child in list(getattr(network, "selectedChildren", None) or []):
+        child.selected = False
+    node.current = True
+    node.selected = True
+    if frame:
+        try:
+            pane.homeSelected(zoom=True)
+        except Exception:  # noqa: BLE001
+            pass
+    if message:
+        ui.status = "TD_MCP: %s" % message  # noqa: F821
+    return {"ok": True, "network": network.path, "current": node.path,
+            "status": str(getattr(ui, "status", "") or "")}  # noqa: F821
+
+
+def _grab_prepare(target, path=None):
+    """Main thread: a transient Screen Grab TOP for ``target``; for an operator
+    viewer, also open the viewer (its window appears a frame or two later)."""
+    host = _viewer_host()
+    if host is None:
+        return {"ok": False, "error": "no COMP to host a screen grab in"}
+    if path:
+        node = _op(path)
+        if node is None:
+            return {"ok": False, "error": "not found: %s" % path}
+        node.openViewer(unique=False, borders=True)
+    with _undo_off():
+        for child in list(getattr(host, "children", [])):
+            if str(child.name).startswith(GRAB_PREFIX):
+                try:
+                    child.destroy()
+                except Exception:  # noqa: BLE001
+                    pass
+        grab = host.create("screengrabTOP", GRAB_PREFIX + secrets.token_hex(3))
+        grab.nodeX, grab.nodeY = -4000, -4400
+    out = {"ok": True, "grab": grab.path}
+    if path:
+        out["window_prefix"] = _op(path).path
+    elif target == "td":
+        out["window_prefix"] = "TouchDesigner 20"
+    else:
+        index = "0" if target in ("desktop", "screen") else target.split(":", 1)[-1]
+        names = [str(n) for n in grab.par.source.menuNames]
+        if index not in names:
+            _viewer_destroy(grab.path)
+            return {"ok": False, "error": "no display %r; displays: %s"
+                    % (index, [n for n in names if n.isdigit()])}
+        grab.par.source = index
+        out["source"] = index
+    return out
+
+
+def _grab_select_window(grab_path, prefix):
+    """Main thread: refresh the window list and aim at the first title starting
+    with ``prefix``. Returns only that title -- other applications' window
+    titles never leave TouchDesigner."""
+    grab = op(grab_path)  # noqa: F821
+    try:
+        grab.par.refreshsource.pulse()
+    except Exception:  # noqa: BLE001
+        pass
+    for name in grab.par.source.menuNames:
+        if str(name).startswith(prefix):
+            grab.par.source = name
+            return str(name)
+    return None
+
+
+def _screenshot(args):
+    """HTTP thread: see what is on screen (see the block comment above)."""
+    path = args.get("path")
+    target = (args.get("target") or ("viewer" if path else "td")).lower()
+    if target == "viewer" and not path:
+        return _wrap({"ok": False, "error": "target 'viewer' needs a path"})
+    wide = target in ("td", "desktop", "screen") or target.startswith("monitor")
+    if wide and not args.get("allow_other_apps"):
+        # Verified 2026-11-23: with TouchDesigner not in front, a 'td' capture
+        # was almost entirely OTHER applications -- including the text of the
+        # user's other conversations. Opt-in only.
+        return _wrap({"ok": False, "error_code": "consent_needed",
+                      "error": "target %r captures whatever is on that part of the screen, "
+                               "including other applications. Ask the user to bring "
+                               "TouchDesigner to the front and agree, then call again with "
+                               "allow_other_apps=true. Without a picture: ui_state says what "
+                               "they are looking at; screenshot(path=...) or capture_viewport "
+                               "shows an operator." % target})
+    prep = _call_on_main(_grab_prepare, target, path)
+    if not prep.get("ok"):
+        return _wrap(prep)
+    grab = prep["grab"]
+    window = None
+    try:
+        prefix = prep.get("window_prefix")
+        if prefix:
+            start = time.time()
+            while window is None and time.time() - start < VIEWER_WAIT_SECONDS:
+                time.sleep(0.1)
+                window = _call_on_main(_grab_select_window, grab, prefix)
+            if window is None:
+                return _wrap({"ok": False, "error": "no window titled %r appeared" % prefix})
+            if path and TD_MCP_MONITOR:
+                # Move the viewer onto the user's chosen screen BEFORE grabbing
+                # it. `prefix` is the operator path, resolved on the main thread.
+                _call_on_main(_place_now, prefix)
+                time.sleep(0.1)
+        start, seen = time.time(), 0
+        while time.time() - start < VIEWER_WAIT_SECONDS and seen < 3:
+            time.sleep(0.05)
+            seen += 1 if _call_on_main(_viewer_has_content, grab) else 0
+        res = _call_on_main(_do_capture_viewport, grab, args.get("detailLevel", "normal"))
+    finally:
+        _call_on_main(_viewer_destroy, grab)
+        if path and not args.get("keep_open"):
+            _call_on_main(lambda: _op(path).closeViewer())
+    res = dict(res or {})
+    res.update({"target": target, "captured_via": "screengrabTOP"})
+    if window:
+        res["window"] = window
+    # Every target is a capture of a SCREEN REGION. The viewer is brought to
+    # the front first, but menus and always-on-top windows still land on it:
+    # verified 2026-11-23, a Windows taskbar context menu over the demo viewer.
+    res["warning"] = ("screen capture: anything over this area is in the picture -- "
+                      + ("menus or always-on-top windows can cover the viewer"
+                         if target == "viewer" else "including other applications"))
+    if (res.get("verdict") or {}).get("is_black"):
+        res["hint"] = ("black capture: the window may be minimised or on a display driven "
+                       "by another GPU")
+    res["note"] = ("what is ON SCREEN, display modes included; for an operator's own "
+                   "pixels use capture_viewport")
+    return res
+
+
 #: Tools that must span frames. They run on the HTTP thread and marshal each
 #: step to the main thread themselves; called ON the main thread (a batch, the
 #: Textport) they fall back to the single-frame handler.
 _MULTI_FRAME_TOOLS = {"capture_viewport": _capture_any_family,
                       "observe": lambda a: _observe_across_frames(a),
-                      "get_performance": lambda a: _perf_across_frames(a)}
+                      "get_performance": lambda a: _perf_across_frames(a),
+                      "screenshot": lambda a: _screenshot(a)}
 
 
 def _do_capture_viewport(path, detail="normal"):
@@ -3627,7 +4160,9 @@ def _do_batch(ops):
             continue
         try:
             with _undo_block(tool):
-                results.append({"tool": tool, "result": fn(call.get("args", {}))})
+                res = fn(call.get("args", {}))
+            results.append({"tool": tool, "result": res})
+            _follow(tool, call.get("args", {}), res)
         except Exception as e:  # noqa: BLE001
             results.append({"tool": tool, "ok": False, "error": str(e),
                           "recovery_hints": recovery_hints(str(e))})
@@ -3967,6 +4502,16 @@ _DISPATCH = {
     "timeline": lambda a: _do_timeline(a.get("action"), a.get("value"), a.get("force", False)),
     "export_recipe": lambda a: _do_export_recipe(a.get("path"), _cap(a.get("depth", 3), MAX_DEPTH)),
     "import_recipe": lambda a: _do_import_recipe(a.get("recipe"), a.get("target_parent", "*here")),
+    "ui_state": lambda a: _do_ui_state(),
+    "move_window": lambda a: _do_move_window(a.get("window", "td"), a.get("monitor")),
+    "open_viewer": lambda a: _do_open_viewer(a.get("path"), a.get("close", False),
+                                             a.get("borders", True)),
+    "show_in_editor": lambda a: _do_show_in_editor(a.get("path"), a.get("message"),
+                                                   a.get("frame", True)),
+    "screenshot": lambda a: _screenshot_needs_frames(a.get("path"), a.get("target"),
+                                                     a.get("keep_open", False),
+                                                     a.get("detailLevel"),
+                                                     a.get("allow_other_apps", False)),
     "build_network": lambda a: _do_build_network(a.get("spec"), a.get("target_parent"),
                                                  a.get("replace", False)),
     "save_tox": lambda a: _do_save_tox(a.get("path"), a.get("file_path")),
@@ -4293,7 +4838,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/api/status":
             self._send({"ok": True, "status": "running", "port": TD_MCP_PORT,
                         "auth": True, "allow_exec": ALLOW_EXEC,
-                        "bridge_version": BRIDGE_VERSION, "started_at": _STARTED_AT})
+                        **_server_identity(self.server)})
         elif self.path.startswith("/api/resource?"):
             m = re.search(r"uri=([^&]+)", self.path)
             uri = _urldecode(m.group(1)) if m else ""
@@ -4464,7 +5009,7 @@ _thread = None
 
 
 def start():
-    global _server, _thread, _STARTED_AT
+    global _server, _thread
     if _server is not None:
         debug("td_mcp already running")
         return
@@ -4488,9 +5033,13 @@ def start():
         print("[td_mcp] execute_python DISABLED (TD_MCP_ALLOW_EXEC=0)")
     _server = HTTPServer(("127.0.0.1", TD_MCP_PORT), _Handler)
     _Handler.AUTH_TOKEN = AUTH_TOKEN  # set auth token on handler class
+    # Put TouchDesigner's main window on the chosen screen once it exists.
+    _queue_placement(main=True, seconds=20.0)
+    # Stamp before serving, so no request can read an unstamped server.
+    _server.td_mcp_started_at = time.time()
+    _server.td_mcp_version = BRIDGE_VERSION
     _thread = threading.Thread(target=_server.serve_forever, daemon=True)
     _thread.start()
-    _STARTED_AT = time.time()
     debug(f"td_mcp bridge v{BRIDGE_VERSION} started on http://127.0.0.1:{_server.server_address[1]}")
 
 

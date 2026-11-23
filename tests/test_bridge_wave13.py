@@ -260,3 +260,136 @@ class TestPerformanceSampling:
         row = out["cooks"][0]
         assert out["samples"] == 3 and row["cpu_ms"] == 0.09 and row["peak_ms"] == 27.2
         assert out["live_total_budget_pct"] < 2  # not the 160% a single read gave
+
+
+class TestSeeingAndShowing:
+    """The tools that let an agent see what the user sees and point at things.
+    Each behaviour was verified on TouchDesigner 2025.33230 first."""
+
+    def test_show_in_editor_navigates_selects_frames_and_says_why(self, bridge):
+        br, td = bridge
+        comp = td.make("demo", "baseCOMP")
+        td.make("out1", "outTOP", parent=comp)
+        out = br["_do_show_in_editor"]("/project1/demo/out1", "this is the output")
+        pane = td.ui.panes[0]
+        assert out["ok"] and pane.owner is comp and pane.framed == 1
+        assert comp.currentChild.name == "out1" and [c.name for c in comp.selectedChildren] == ["out1"]
+        assert td.ui.status == "TD_MCP: this is the output"
+
+    def test_ui_state_reports_what_the_user_is_looking_at(self, bridge):
+        br, td = bridge
+        comp = td.make("demo", "baseCOMP")
+        node = td.make("n1", "noiseTOP", parent=comp)
+        node.current = node.selected = True
+        td.ui.panes[0].owner = comp
+        out = br["_do_ui_state"]()
+        pane = out["panes"][0]
+        assert pane["network"] == "/project1/demo" and pane["type"] == "NETWORKEDITOR"
+        assert pane["current"] == "/project1/demo/n1" and pane["selected"] == ["/project1/demo/n1"]
+        assert out["window"]["width"] == 1280 and out["perform_mode"] is False
+
+    def test_open_and_close_viewer(self, bridge):
+        br, td = bridge
+        node = td.make("n1", "noiseTOP")
+        assert br["_do_open_viewer"]("/project1/n1")["opened"] and node.viewer_open
+        assert br["_do_open_viewer"]("/project1/n1", close=True)["closed"] and not node.viewer_open
+
+    def test_screenshot_inside_batch_refuses_instead_of_guessing(self, bridge):
+        br, td = bridge
+        td.make("n1", "noiseTOP")
+        out = br["_do_batch"]([{"tool": "screenshot", "args": {"path": "/project1/n1"}}])
+        assert out["batch"][0]["result"]["error_code"] == "needs_frames"
+
+
+class TestScreenshotConsent:
+    def test_wide_targets_need_explicit_consent(self, bridge):
+        """A 'td' capture with TouchDesigner behind other windows was almost all
+        other applications (verified 2026-11-23). Nothing is grabbed without
+        allow_other_apps=true."""
+        br, _ = bridge
+        for target in ("td", "desktop", "monitor:1"):
+            out = br["_screenshot"]({"target": target})
+            assert out["ok"] is False and out["error_code"] == "consent_needed", target
+            assert "ui_state" in out["error"]
+
+    def test_viewer_target_needs_no_consent_but_needs_a_path(self, bridge):
+        br, _ = bridge
+        out = br["_screenshot"]({"target": "viewer"})
+        assert out["ok"] is False and "needs a path" in out["error"]
+
+
+class TestEditorFollowsTheWork:
+    """User rule (2026-11-23): the editor shows the node being edited, not the
+    level above it. Edits move the view; reads never do."""
+
+    def test_an_edit_moves_the_editor_to_the_edited_operator(self, bridge):
+        br, td = bridge
+        comp = td.make("demo", "baseCOMP")
+        out = br["_run_tool"]("create_node", {"path": "/project1/demo", "type": "noiseTOP",
+                                              "name": "n1"})
+        pane = td.ui.panes[0]
+        assert pane.owner is comp and comp.currentChild.name == "n1" and pane.framed == 1
+        assert out["view"] == {"network": "/project1/demo", "current": "/project1/demo/n1"}
+
+    def test_build_network_shows_the_inside_of_the_target(self, bridge):
+        br, td = bridge
+        comp = td.make("demo", "baseCOMP")
+        spec = {"operators": [{"name": "a", "type": "noiseTOP"},
+                              {"name": "b", "type": "nullTOP", "inputs": ["a"]}]}
+        out = br["_run_tool"]("build_network", {"spec": spec, "target_parent": "/project1/demo"})
+        assert td.ui.panes[0].owner is comp and out["view"]["network"] == "/project1/demo"
+        assert sorted(c.name for c in comp.selectedChildren) == ["a", "b"]
+
+    def test_reads_never_move_the_view(self, bridge):
+        br, td = bridge
+        comp = td.make("demo", "baseCOMP")
+        td.make("n1", "noiseTOP", parent=comp)
+        before = td.ui.panes[0].owner
+        out = br["_run_tool"]("get_parameters", {"path": "/project1/demo/n1"})
+        assert td.ui.panes[0].owner is before and "view" not in out
+
+    def test_following_can_be_switched_off(self, bridge):
+        br, td = bridge
+        td.make("demo", "baseCOMP")
+        br["FOLLOW_EDITS"] = False
+        before = td.ui.panes[0].owner
+        br["_run_tool"]("create_node", {"path": "/project1/demo", "type": "noiseTOP"})
+        assert td.ui.panes[0].owner is before
+
+
+def test_show_in_editor_points_at_one_operator_not_the_old_selection():
+    """Verified live: after build_network selected all 11 operators,
+    show_in_editor framed all of them instead of the one it was asked for."""
+    br, td = build_bridge()
+    comp = td.make("demo", "baseCOMP")
+    for n in ("a", "b", "c"):
+        td.make(n, "noiseTOP", parent=comp).selected = True
+    br["_do_show_in_editor"]("/project1/demo/b")
+    assert [c.name for c in comp.selectedChildren] == ["b"]
+
+
+class TestPickMonitor:
+    """Which display TD_MCP_MONITOR names. Pure, so CI checks it; placement
+    itself was verified live (TD and every viewer on the 165 Hz screen)."""
+
+    DISPLAYS = [{"device": "DISPLAY5", "primary": True, "hz": 240, "rect": [0, 0, 1920, 1080]},
+                {"device": "DISPLAY1", "primary": False, "hz": 165, "rect": [-337, 1080, 2223, 2680]}]
+
+    @pytest.mark.parametrize("spec,device", [
+        ("165hz", "DISPLAY1"), ("240HZ", "DISPLAY5"), ("primary", "DISPLAY5"),
+        ("secondary", "DISPLAY1"), ("display1", "DISPLAY1"), ("index:0", "DISPLAY5"),
+    ])
+    def test_specs(self, bridge, spec, device):
+        br, _ = bridge
+        assert br["pick_monitor"](spec, self.DISPLAYS)["device"] == device
+
+    @pytest.mark.parametrize("spec", ["", "60hz", "index:9", "DISPLAY7"])
+    def test_no_match_is_none_so_nothing_moves(self, bridge, spec):
+        br, _ = bridge
+        assert br["pick_monitor"](spec, self.DISPLAYS) is None
+
+    def test_unset_monitor_moves_nothing(self, bridge):
+        br, _ = bridge
+        br["TD_MCP_MONITOR"] = ""
+        br["_queue_placement"](main=True)
+        assert br["_PENDING_PLACEMENTS"] == []

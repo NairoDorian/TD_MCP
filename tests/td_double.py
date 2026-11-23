@@ -441,6 +441,25 @@ class FakeOP:
     def isCOMP(self) -> bool:
         return self.family == "COMP"
 
+    # -- what the user sees (verified on 2025.33230) ------------------------
+    current = False
+    selected = False
+    viewer_open = False
+
+    def openViewer(self, unique=False, borders=True):
+        self.viewer_open = True
+
+    def closeViewer(self, topMost=False):
+        self.viewer_open = False
+
+    @property
+    def currentChild(self):
+        return next((c for c in self.children if c.current), None)
+
+    @property
+    def selectedChildren(self):
+        return [c for c in self.children if c.selected]
+
     @property
     def allowCooking(self) -> bool:
         return self._allowCooking
@@ -1006,9 +1025,18 @@ class _Undo:
 
 
 class _Pane:
+    """A network editor pane. Verified on 2025.33230: `owner` is settable (it
+    navigates the editor), `homeSelected(zoom=True)` frames the selection, and
+    `type` prints as PaneType.NETWORKEDITOR."""
+
     def __init__(self, owner: FakeOP):
         self.owner = owner
-        self.type = "NetworkEditor"
+        self.name = "pane1"
+        self.type = "PaneType.NETWORKEDITOR"
+        self.framed = 0
+
+    def homeSelected(self, zoom=False):
+        self.framed += 1
 
 
 class _Panes(list):
@@ -1022,6 +1050,12 @@ class FakeUI:
         self.undo = _Undo()
         self.panes = _Panes(_Pane(root))
         self.messages: List[str] = []
+        # ui.status is a settable string (verified); window geometry and the
+        # operator under the mouse are read-only state.
+        self.status = ""
+        self.windowX, self.windowY, self.windowWidth, self.windowHeight = 0, 0, 1280, 720
+        self.performMode = False
+        self.rolloverOp = None
 
     def status(self, msg):  # pragma: no cover - convenience
         self.messages.append(msg)

@@ -132,12 +132,33 @@ async def build_and_verify(spec: dict, comp: str, cleanup: bool, rep: Report) ->
                           budget, perf.get("frame_budget_ms"),
                           hot.get("path", "-").rsplit("/", 1)[-1],
                           hot.get("cpu_ms", 0) + hot.get("gpu_ms", 0), hot.get("peak_ms", 0)))
+            # Show the user, and look at what they see: point the network
+            # editor at the output, open its floating viewer (right-click >
+            # View...), and screenshot that window -- the model sees the image.
+            shown = _json(await s.call_tool("show_in_editor", {
+                "path": f"{comp}/{out}",
+                "message": f"{spec.get('name')}: built and verified by TD_MCP -- this is its output"}))
+            rep.stage("show: show_in_editor", shown.get("ok"),
+                      "editor at %s, status bar set" % shown.get("network"))
+            # The viewer opens, is captured, and CLOSES again: a window that
+            # disappears tells the user the step is done (user rule, 2026-11-23).
+            shot = await s.call_tool("screenshot", {"path": f"{comp}/{out}"})
+            smeta = _json(shot)
+            simg = [b for b in shot.content if getattr(b, "type", None) == "image"]
+            if simg:
+                spng = OUT_DIR / f"{spec.get('name', 'demo')}_viewer.png"
+                spng.write_bytes(base64.b64decode(simg[0].data))
+            rep.stage("show: screenshot of the viewer window",
+                      bool(simg) and (smeta.get("verdict") or {}).get("is_black") is False,
+                      "window %r%s" % (smeta.get("window"),
+                                       f"; saved {spng.relative_to(ROOT)}" if simg else ""))
             if cleanup:
                 gone = _json(await s.call_tool("delete_node", {"path": comp}))
                 rep.stage("cleanup", gone.get("ok"))
             else:
-                print(f"\nLeft in TouchDesigner at {comp} -- open it to look. "
-                      "Ctrl+Z there undoes build_network in one step.")
+                print(f"\nLeft in TouchDesigner at {comp} (viewer window closed again). "
+                      "Ctrl+Z there undoes build_network in one step. When the work "
+                      "is done: python scripts/td_live.py close  (saves, then quits TD).")
 
 
 def main(argv: list[str]) -> int:

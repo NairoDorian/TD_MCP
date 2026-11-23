@@ -149,6 +149,28 @@ async def live() -> None:
                 check("live: build_network builds the example in one call",
                       built.get("ok") and built.get("created") == len(spec["operators"])
                       and not built.get("cook_errors"), built.get("issues") or built)
+                ui = _text(await s.call_tool("ui_state", {}))
+                check("live: the editor followed build_network into the built COMP",
+                      (built.get("view") or {}).get("network") == SCRATCH + "/built"
+                      and (ui.get("panes") or [{}])[0].get("network") == SCRATCH + "/built",
+                      {"view": built.get("view"), "pane": (ui.get("panes") or [{}])[0]})
+                check("live: ui_state reports the editor pane and window",
+                      ui.get("ok") and ui.get("panes") and ui.get("window"), ui)
+                shown = _text(await s.call_tool("show_in_editor", {
+                    "path": SCRATCH + "/built/out1", "message": "live_smoke was here"}))
+                after = _text(await s.call_tool("ui_state", {}))
+                check("live: show_in_editor moves the editor and selects the operator",
+                      shown.get("ok") and after["panes"][0].get("current") == SCRATCH + "/built/out1",
+                      {"shown": shown, "pane": after.get("panes")})
+                shot = await s.call_tool("screenshot", {"path": SCRATCH + "/built/out1"})
+                smeta = _text(shot)
+                check("live: screenshot of a viewer window returns an image block",
+                      any(getattr(b, "type", None) == "image" for b in shot.content)
+                      and (smeta.get("window") or "").startswith(SCRATCH + "/built/out1"),
+                      {k: smeta.get(k) for k in ("ok", "window", "error")})
+                denied = _text(await s.call_tool("screenshot", {"target": "td"}))
+                check("live: a whole-window screenshot needs allow_other_apps",
+                      denied.get("error_code") == "consent_needed", denied)
                 errs = _text(await s.call_tool("get_errors", {"path": SCRATCH, "recurse": True}))
                 check("live: get_errors recurse answers", errs.get("ok"), errs)
             finally:

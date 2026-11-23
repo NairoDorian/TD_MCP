@@ -17,13 +17,19 @@
     {"name": "transform_zoom", "type": "transformTOP", "inputs": ["feedback_loop"],
      "parameters": {"sx": 1.01, "sy": 1.01, "extend": "hold"}},
     {"name": "level_decay", "type": "levelTOP", "inputs": ["transform_zoom"],
-     "parameters": {"opacity": 0.93}},
+     "parameters": {"brightness1": 0.93}},
 
     {"name": "composite_trails", "type": "compositeTOP",
      "inputs": ["level_shape", "level_decay"],
      "parameters": {"operand": "maximum"}},
     {"name": "null_out", "type": "nullTOP", "inputs": ["composite_trails"],
-     "flags": {"display": true}}
+     "flags": {"display": true}},
+
+    {"name": "out1", "type": "outTOP", "inputs": ["null_out"],
+     "parameters": {"label": "trails"}},
+    {"name": "out_ctrl", "type": "outCHOP", "inputs": ["null_ctrl"],
+     "parameters": {"label": "drift"}}
   ],
+  "output": "out1",
   "connections": []
 }

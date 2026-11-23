@@ -118,6 +118,11 @@ RISK_CLASS = {
     "set_parameters":        "WRITE_ADDITIVE",
     "pulse_parameter":       "WRITE_ADDITIVE",
     "build_network":         "WRITE_ADDITIVE",  # replace=true overwrites same-named ops
+    "ui_state":              "READ_ONLY",
+    "screenshot":            "READ_ONLY",       # transient grab TOP + viewer, both removed
+    "open_viewer":           "WRITE_ADDITIVE",  # UI only: opens a window
+    "move_window":           "WRITE_ADDITIVE",  # UI only: moves a window
+    "show_in_editor":        "WRITE_ADDITIVE",  # UI only: moves the editor, selects
     "batch":                 "WRITE_ADDITIVE",  # mixed, but creates more than deletes
     "build_and_verify":      "WRITE_ADDITIVE",
     "connect_nodes":         "WRITE_ADDITIVE",
