@@ -107,6 +107,18 @@ from TouchDesigner 2025.33230. Full account: `UPSTREAM_SYNC_2026-11-22.md`.
 Closed from the 2026-09-14 backlog: any-family `capture` (High), project-wide
 performance with stale detection (Medium, partially: COMP-wide with depth).
 
+## Sweep of 2026-11-27 — 24 new repos, the saved-file reader, silent failures
+
+See `UPSTREAM_SYNC_2026-11-27.md`. Every TouchDesigner fact below was
+re-probed on 2025.33230 before use; the references supplied the questions.
+
+| Reference repo | What was picked | Where it lives |
+|---|---|---|
+| **grigabyte/td-atlas** (MIT) | Reading `.toe`/`.tox` offline through TouchDesigner's own `toeexpand`, on a cached copy; its format notes as the starting map (two rules came out differently here: the mode is `flags & 3`, tables are rows-then-columns) | `td_mcp/toe_reader.py`, `td_project_read/grep/diff/check`, `docs/PROJECT_FILES.md` |
+| **grigabyte/td-atlas** (MIT) | `td_health`: a report of what TouchDesigner does not call an error, sampled across frames, with a paused/stalled clock treated as "no evidence" | bridge `_do_health`, `health_report`, `_health_across_frames` |
+| **KingRaver/touchme** (no licence: ideas only) | Questions from its probe tables -- glob paths in `op()`, cross-network wiring, destroy-rewires, writes through binds, Script OP errors on no surface, sequence growth -- each answered by our own probe | bridge `path_argument_error`, `_do_connect_nodes`, `_do_delete`, `_write_readback`, `_docked_script_errors`, `_grows_sequence` |
+| **cacheflowe/td-http-api** (no licence: ideas only) | The lead that utility operators (annotations) are invisible to `op()` and `ops()` | bridge `_do_annotate`, `_annotations_in` |
+
 ## Deliberately skipped (too complex / useless for TD_MCP)
 
 - **ChromaDB + OpenAI embeddings**: too heavy for a stdlib-first offline tool. TF-IDF cosine + BM25 is enough; dense opt-in via `TD_MCP_DENSE=1`.

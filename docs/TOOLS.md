@@ -1,12 +1,12 @@
 # Tool reference
 
-**114 tools across two servers.** They are deliberately split, because they
+**120 tools across two servers.** They are deliberately split, because they
 have different requirements and different risks.
 
 | Server | Tools | Needs TouchDesigner | What it is |
 |---|---|---|---|
-| `td-mcp-offline` | 59 | No | Documentation, RAG, network authoring, validation, scoring, planning |
-| `td-mcp-live` | 55 | Yes | Everything that touches a running session |
+| `td-mcp-offline` | 63 | No | Documentation, RAG, network authoring, validation, scoring, planning, reading saved `.toe`/`.tox` files |
+| `td-mcp-live` | 57 | Yes | Everything that touches a running session |
 
 Register only the offline server if you want documentation and offline
 authoring without exposing a live session.
@@ -39,10 +39,19 @@ max-risk policy admit code it meant to block.
 
 ---
 
-## Live server — 55 tools
+## Live server — 57 tools
 
 Everything below requires the bridge component running inside TouchDesigner.
 See [TOUCHDESIGNER_COMPONENT.md](TOUCHDESIGNER_COMPONENT.md).
+
+**Every path argument names one operator.** `path`, `from_path`, `to_path`,
+`other_path`, `new_parent` and `target_parent` are refused when they hold a
+wildcard (`*`, `?`, `[`) or are not a string: TouchDesigner's `op()` resolves a
+pattern to *one arbitrary match* and a number to the operator with that id, so
+a tool would act on an operator nobody named (`error_code: wildcard_path` /
+`bad_path`). `*here` and `*this` still work; `find_nodes` takes patterns.
+A path that names nothing is `not found` -- it no longer falls back to the
+project root.
 
 ### Diagnostics
 
@@ -51,7 +60,8 @@ See [DIAGNOSTICS.md](DIAGNOSTICS.md) for the full story.
 
 | Tool | Risk | Notes |
 |---|---|---|
-| `get_errors` | READ_ONLY | **All four** diagnostic surfaces: cook errors, warnings, script tracebacks, GLSL compile errors. Tagged by `kind`. `errorCount`/`hasErrors` mean *what the network shows red*. |
+| `get_errors` | READ_ONLY | **All four** diagnostic surfaces: cook errors, warnings, script tracebacks, GLSL compile errors. Tagged by `kind`. `errorCount`/`hasErrors` mean *what the network shows red*. A Script operator's traceback is read off its docked callbacks DAT (the operator itself reports nothing); GLSL errors come from `compileResult`, recursively under a COMP. One TouchDesigner message is one diagnostic. |
+| `health` | READ_ONLY | What TouchDesigner does **not** call an error, sampled across real frames: expressions that raise (`errors()` stays empty until the next cook), dead binds, failed extensions, COMPs with cooking off, bypassed, never-cooked and idle operators, operators over half a frame, a paused or stalled timeline -- plus every error and warning. `clean` only with no error and no warning. Run it before saying a network works. |
 | `clear_script_errors` | WRITE_CHECKPOINT | Script errors persist until cleared — a transient failure keeps badging an operator whose code is already correct. |
 | `validate_network` | READ_ONLY | Layout lint (overlaps, origin, docking) plus cook errors. |
 | `get_performance` | READ_ONLY | Ranks child cook times to surface hotspots. |
@@ -75,8 +85,9 @@ See [DIAGNOSTICS.md](DIAGNOSTICS.md) for the full story.
 |---|---|---|
 | `create_node` | WRITE_ADDITIVE | Accepts a display name (`"Noise TOP"`) or an opType (`"noiseTOP"`); auto-places in family lanes when no position is given. |
 | `build_and_verify` | WRITE_ADDITIVE | create → set → **all four error surfaces** → viewport verdict → offline validate/score/heal, in one call. |
-| `connect_nodes` / `disconnect_nodes` | WRITE_ADDITIVE | Wire by path and index. |
-| `delete_node` | **DESTRUCTIVE** | Refuses paths under `TD_MCP_PROTECTED_PATHS`. |
+| `connect_nodes` / `disconnect_nodes` | WRITE_ADDITIVE | Wire by path and index. A wire across networks is refused (TouchDesigner would drop the existing wire and report nothing) with the Select operator to use instead; a connector index that does not exist is explained. |
+| `delete_node` | **DESTRUCTIVE** | Refuses paths under `TD_MCP_PROTECTED_PATHS`. Reports the rewire TouchDesigner makes (deleting the middle of a chain connects its input to what it fed) under `rewired`, and inputs left empty under `left_unwired`. |
+| `annotate` | WRITE_ADDITIVE | Comments, titled boxes and network boxes: `list` / `create` (frame operators named in `around`, or a `rect`) / `update` / `delete`. Annotations are utility operators -- invisible to `list_nodes`, `find_nodes`, `get_node` and `op()` -- so this is the only tool that sees them. `list_nodes` says how many a network has. |
 | `rename_node`, `copy_node` | WRITE_ADDITIVE | |
 | `auto_layout`, `set_node_position` | WRITE_ADDITIVE | |
 | `set_node_color`, `set_node_comment`, `set_flags` | WRITE_ADDITIVE | |
@@ -93,11 +104,11 @@ See [DIAGNOSTICS.md](DIAGNOSTICS.md) for the full story.
 | `move_window` | WRITE_ADDITIVE | Move TouchDesigner's window or an operator's viewer to a display ('165hz', 'primary', 'secondary', 'DISPLAY1', 'index:N'); defaults to `TD_MCP_MONITOR`. UI only, Windows. |
 | `ui_state` | READ_ONLY | What the user is looking at: network per editor pane, current/selected operators, operator under the mouse, window, monitors, perform mode, status bar, timeline. |
 | `build_network` | WRITE_ADDITIVE | A whole network in ONE call (one Ctrl+Z): create, parameters (read back), wires, flags, DAT text, left-to-right placement, per-operator report and cook errors. Takes the spec `td_validate_build` checks offline; names are resolved against the catalog first. |
-| `describe_op_type` | READ_ONLY | Parameter names, labels, styles, creation defaults and menu tokens for an operator **type**, probed off a throwaway instance in `/sys/quiet`. Look before you guess. |
+| `describe_op_type` | READ_ONLY | Parameter names, labels, styles, creation defaults and menu tokens for an operator **type**, probed off a throwaway instance in `/sys/quiet` -- which is never cooked, so sequence block parameters that only exist after a first cook (Primitive POP `pt0posx`) are added from the catalog, marked `from_catalog`. Reports `sequences`. Look before you guess. |
 | `pulse_parameter` | WRITE_ADDITIVE | Pulse a pulse parameter (reset, reload, start). Setting `true` on one does nothing in TD. |
-| `get_parameter_info` | READ_ONLY | Full schema: label, value, **expr**, mode, default, page, style, bounds, menu. The expression *is* the configuration; `value` is one reading of it. |
+| `get_parameter_info` | READ_ONLY | Full schema: label, value, **expr**, mode, default, page, style, bounds, menu. The expression *is* the configuration; `value` is one reading of it. A name past the last block of a sequence is reported under `missing` and **not looked up** -- in TouchDesigner the lookup itself would add the blocks. |
 | `get_non_default_params` | READ_ONLY | Only what differs from default — the token-efficient read for a large network. |
-| `set_parameters` | WRITE_ADDITIVE | Close-match suggestions on a misspelled name. |
+| `set_parameters` | WRITE_ADDITIVE | Close-match suggestions on a misspelled name. Values: a constant, `{"expr": ...}`, `{"bind": ...}`, `{"mode": "constant", "val": ...}`. Every write is read back: an invalid menu token, a write that raised (a dead bind) or an unknown name makes the call `ok: false`; notes report clamps, an expression switched to constant (its text is kept), a write that went **through a bind** to its master, and sequences grown by naming a later block (`const2value`). Growth of 64+ blocks in one call is refused. |
 | `bind_parameter_expression` | **DESTRUCTIVE** | Sets `.expr`, snaps mode to EXPRESSION, evaluates, and returns any **new** cook errors so a bad expression cannot silently no-op. |
 
 ### Reading data — reductions, not dumps
@@ -151,7 +162,7 @@ numbers answers that badly and expensively. Every reader reduces by default.
 | Tool | Risk | Notes |
 |---|---|---|
 | `snapshot_network` / `restore_network` | WRITE_ADDITIVE | Durable `.tox` checkpoint that survives the undo stack. **Preserves code** — unlike a TDN checkpoint. |
-| `export_recipe` / `import_recipe` | WRITE_ADDITIVE | Portable JSON blueprint carrying params, **expressions** and **authored DAT text**. |
+| `export_recipe` / `import_recipe` | WRITE_ADDITIVE | Portable JSON blueprint carrying params, **expressions**, **binds** and **authored DAT text**. |
 | `save_tox` | WRITE_ADDITIVE | |
 | `timeline` | WRITE_ADDITIVE | status / play / pause / frame / seek / rate. **Pausing is refused by default** — see below. |
 | `exec_node_method` | WRITE_ADDITIVE | Gated by the exec flag. |
@@ -159,7 +170,7 @@ numbers answers that badly and expensively. Every reader reduces by default.
 
 ---
 
-## Offline server — 58 tools
+## Offline server — 63 tools
 
 No TouchDesigner required. Every one is a pure function over a description or
 the knowledge base.
@@ -220,6 +231,21 @@ four different operators.
 | `td_analyze_performance` | fps + per-node cook times → hotspots. |
 | `td_compat_check`, `td_discover` | Version compatibility; find running bridges. |
 | `td_expert_prompt`, `td_source_registry` | |
+
+### Saved project files
+
+Read a `.toe` or `.tox` **with TouchDesigner closed**. The file is copied into
+`~/.td_mcp/cache/toe/` (keyed by its SHA-256) and expanded there with
+TouchDesigner's own `toeexpand`; the original is never touched. The reader's
+grammar was measured on 2025.33230 over all 768 components that ship with the
+install. See [PROJECT_FILES.md](PROJECT_FILES.md).
+
+| Tool | Notes |
+|---|---|
+| `td_project_read` | No `path`: build, operator counts, top-level networks, code size, files it points at. With `path`: the operators under it with real opTypes, wires, flags and non-default parameters. `text=head` or `full` adds DAT code and tables; `format="spec"` emits a build spec for `td_validate_build` / `build_network`. |
+| `td_project_grep` | Regex inside the file: DAT code with line numbers, table cells, parameter values and expressions, names and comments. |
+| `td_project_diff` | Two saves compared by meaning: added / removed / retyped / rewired / re-parameterised / re-flagged operators and DAT code diffs; moves counted apart. |
+| `td_project_check` | The file against this build's parameter catalog: unknown types, parameter names the build does not have (with close matches), menu values outside the menu, missing absolute file paths. |
 
 ### Memory
 

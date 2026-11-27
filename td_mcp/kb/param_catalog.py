@@ -247,6 +247,13 @@ def describe(op_type: str, pattern: Optional[str] = None, page: Optional[str] = 
            "inputs": [info.get("min_inputs"), info.get("max_inputs")],
            "count": len(rows), "total": len(info.get("pars") or []),
            "parameters": rows, "source": f"live probe, TouchDesigner {build()}"}
+    if info.get("sequences"):
+        # `const0name` is block 0 of sequence `const`. Setting const1name adds
+        # block 1 -- and so does merely READING it on a live operator.
+        out["sequences"] = info["sequences"]
+        out["sequence_note"] = ("block parameters are <sequence><n><field>; set a "
+                                "higher block to add one (const2value adds blocks 1 "
+                                "and 2)")
     if (pattern or page) and not rows:
         out["hint"] = ("No parameter matched -- the name guess is wrong, not the "
                        "operator. Retry without filters and match by label.")

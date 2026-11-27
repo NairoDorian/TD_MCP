@@ -774,6 +774,43 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "health",
+            "description": "What TouchDesigner does not call an error: dead expressions and binds, failed extensions, cooking off, bypassed and never-cooked operators, a paused timeline, plus errors and warnings. Run before saying a network works.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Network to check (default /project1)"},
+                    "seconds": {"type": "number", "description": "Sampling window, default 0.5"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "annotate",
+            "description": "List, create, update or delete network annotations (comments, network boxes). They are invisible to list_nodes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["list", "create", "update", "delete"]},
+                    "path": {"type": "string", "description": "The network (list/create) or the annotation (update/delete)"},
+                    "mode": {"type": "string", "enum": ["annotate", "comment", "networkbox"]},
+                    "title": {"type": "string"},
+                    "body": {"type": "string"},
+                    "around": {"type": "array", "items": {"type": "string"}, "description": "Operator names to frame"},
+                    "rect": {"type": "array", "items": {"type": "number"}, "description": "[x, y, w, h]"},
+                    "color": {"type": "array", "items": {"type": "number"}, "description": "[r, g, b] 0-1"},
+                    "name": {"type": "string"}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "pulse_parameter",
             "description": "Pulse a pulse-type parameter (reset, reload, start).",
             "parameters": {

@@ -41,6 +41,7 @@ from td_mcp import freshness as freshness_mod
 from td_mcp import scaffolds as scaffolds_mod
 from td_mcp import safety_registry as safety_registry_mod
 from td_mcp import activity as activity_mod
+from td_mcp import toe_reader as toe_reader_mod
 
 DEFAULT_CHUNKS = os.path.join(os.path.dirname(__file__), "kb", "chunks.jsonl")
 
@@ -722,7 +723,9 @@ def _register_offline():
                td_build_particle, td_build_glsl_shader,
                td_build_led_wall, td_build_dmx_fixture,
                td_build_video_pipeline, td_build_midi_rig,
-               td_build_kinect_skeleton):
+               td_build_kinect_skeleton,
+               td_project_read, td_project_grep, td_project_diff,
+               td_project_check):
         name = "td_" + fn.__name__[3:] if not fn.__name__.startswith("td_") else fn.__name__
         _OFFLINE_DISPATCH[name] = fn
 
@@ -1026,6 +1029,92 @@ def td_scaffold_recipe(spec):
     return _json_dumps(draft)
 
 
+# ---------------------------------------------------------------------------
+# Saved project files (.toe / .tox), read with TouchDesigner closed
+# ---------------------------------------------------------------------------
+def _project_load(file):
+    """A loaded project, or an error dict the caller returns as is."""
+    if not file:
+        return None, {"ok": False, "error": "`file` is required: the path of a .toe or .tox"}
+    try:
+        return toe_reader_mod.load(str(file)), None
+    except toe_reader_mod.ToeReaderError as exc:
+        return None, {"ok": False, "error": str(exc)}
+
+
+def _compact(obj, max_chars=60000):
+    """One-line-per-record JSON, capped: a project listing is data, and a
+    pretty-printed one spends half its tokens on indentation."""
+    import json as _json
+    text = _json.dumps(_json_safe(obj), ensure_ascii=False, separators=(",", ":"),
+                       default=_json_safe)
+    if len(text) > max_chars:
+        return ("%s\n... [output cut at %d of %d characters: narrow `path`, lower `depth`, "
+                "or use text='none']" % (text[:max_chars], max_chars, len(text)))
+    return text
+
+
+def td_project_read(file, path=None, depth=1, params=True, text="none", format="network"):
+    """Read a saved .toe/.tox with TouchDesigner closed.
+
+    No ``path``: what is in the file (build it was saved with, operator counts,
+    the top-level networks, where the code is, which files on disk it points
+    at). With ``path``: the operators under it, ``depth`` levels down, with
+    wiring, flags and every non-default parameter (``{"expr": ...}`` /
+    ``{"bind": ...}`` for the non-constant ones). ``text``: none | head | full
+    includes DAT code and table cells. ``format="spec"`` returns the network
+    inside ``path`` as a build spec for ``td_validate_build`` / ``build_network``.
+    """
+    project, err = _project_load(file)
+    if err:
+        return _json_dumps(err)
+    if format == "spec":
+        if not path or path == "/":
+            return _json_dumps({"ok": False, "error": "format='spec' needs the `path` of a COMP",
+                                "roots": project.roots})
+        return _compact(toe_reader_mod.to_spec(project, path))
+    if not path:
+        out = toe_reader_mod.summarize(project)
+        out["ok"] = True
+        out["next"] = "td_project_read(file, path=<a root>) lists a network; td_project_grep searches the code"
+        return _json_dumps(out)
+    return _compact(toe_reader_mod.read_network(
+        project, path, depth=int(depth or 1), params=bool(params), text=str(text or "none")))
+
+
+def td_project_grep(file, pattern, scope="all", path=None, ignore_case=True):
+    """Regex search inside a saved .toe/.tox: DAT code (with line numbers),
+    table cells, parameter values and expressions, operator names and comments."""
+    project, err = _project_load(file)
+    if err:
+        return _json_dumps(err)
+    return _compact(toe_reader_mod.grep(project, str(pattern or ""), scope=str(scope or "all"),
+                                        path=path, ignore_case=bool(ignore_case)))
+
+
+def td_project_diff(before, after, path=None):
+    """What changed between two saved .toe/.tox files, by meaning."""
+    a, err = _project_load(before)
+    if err:
+        return _json_dumps(err)
+    b, err = _project_load(after)
+    if err:
+        return _json_dumps(err)
+    return _compact(toe_reader_mod.diff(a, b, path=path))
+
+
+def td_project_check(file, path=None):
+    """Hold a saved .toe/.tox against the installed build's parameter catalog."""
+    project, err = _project_load(file)
+    if err:
+        return _json_dumps(err)
+    out = toe_reader_mod.check(project, path=path)
+    if out.get("ok") and not out.get("clean"):
+        out["note"] = ("TouchDesigner migrates old names and menu values when it loads "
+                       "the file; they matter when you copy them into new work.")
+    return _compact(out)
+
+
 # ============================================================
 # MCP server (MCP SDK 2.0 — on_* constructor kwargs, stateless transports)
 # ============================================================
@@ -1275,6 +1364,39 @@ async def _offline_list_tools(ctx, params):
             _tool("td_scaffold_recipe", "Scaffold a reusable recipe blueprint from a network description (TDN/JSON/operators).",
                     {"spec": {"type": "string"}},
                     annotations=read_only),
+            _tool("td_project_read", "Read a saved .toe or .tox file WITHOUT TouchDesigner running (the original is "
+                    "never touched; a copy is expanded with TD's own toeexpand). No `path`: what is in the file -- "
+                    "build, operator counts, top-level networks, code size, files it points at. With `path` "
+                    "(e.g. '/project1'): the operators under it, `depth` levels down, with real opTypes, wiring, "
+                    "flags and every non-default parameter ({'expr': ...} / {'bind': ...} when not constant). "
+                    "`text`: none|head|full adds DAT code and table cells. `format='spec'` returns the network inside "
+                    "`path` as a build spec for td_validate_build / the live build_network.",
+                    {"file": {"type": "string", "description": "Absolute path of a .toe or .tox"},
+                     "path": {"type": "string", "optional": True},
+                     "depth": {"type": "integer", "optional": True},
+                     "params": {"type": "boolean", "optional": True},
+                     "text": {"type": "string", "enum": ["none", "head", "full"], "optional": True},
+                     "format": {"type": "string", "enum": ["network", "spec"], "optional": True}},
+                    annotations=read_only),
+            _tool("td_project_grep", "Regex search INSIDE a saved .toe/.tox, where no file search reaches: Python and "
+                    "GLSL in DATs (with line numbers), table cells, parameter values and expressions, operator "
+                    "names and comments. `scope`: all|text|params|names|tables; `path` limits it to one network.",
+                    {"file": {"type": "string"}, "pattern": {"type": "string"},
+                     "scope": {"type": "string", "enum": ["all", "text", "params", "names", "tables"], "optional": True},
+                     "path": {"type": "string", "optional": True},
+                     "ignore_case": {"type": "boolean", "optional": True}},
+                    annotations=read_only),
+            _tool("td_project_diff", "Compare two saved .toe/.tox files by meaning: operators added, removed, retyped, "
+                    "rewired, re-parameterised, re-flagged, plus a line diff of changed DAT code. Operators that only "
+                    "moved are counted apart. Use it to review what a session changed (save before, save after).",
+                    {"before": {"type": "string"}, "after": {"type": "string"},
+                     "path": {"type": "string", "optional": True}},
+                    annotations=read_only),
+            _tool("td_project_check", "Hold a saved .toe/.tox against the installed build's parameter catalog: operator "
+                    "types this build does not have, parameter names it no longer has (with close matches), menu "
+                    "values outside the menu, and absolute file paths that are missing on this machine.",
+                    {"file": {"type": "string"}, "path": {"type": "string", "optional": True}},
+                    annotations=read_only),
         ],
         ttl_ms=60000,
         cache_scope="private",
@@ -1419,6 +1541,17 @@ async def _offline_call_tool(ctx, params):
                                             a.get("show_code", True)), "")
             elif name == "td_tool_batch":
                 out = (td_tool_batch(a.get("ops", "[]")), "")
+            elif name == "td_project_read":
+                out = (td_project_read(a.get("file"), a.get("path"), a.get("depth", 1),
+                                       a.get("params", True), a.get("text", "none"),
+                                       a.get("format", "network")), "")
+            elif name == "td_project_grep":
+                out = (td_project_grep(a.get("file"), a.get("pattern", ""), a.get("scope", "all"),
+                                       a.get("path"), a.get("ignore_case", True)), "")
+            elif name == "td_project_diff":
+                out = (td_project_diff(a.get("before"), a.get("after"), a.get("path")), "")
+            elif name == "td_project_check":
+                out = (td_project_check(a.get("file"), a.get("path")), "")
             else:
                 out = ("unknown tool", "")
         except Exception as e:  # noqa: BLE001

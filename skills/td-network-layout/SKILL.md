@@ -32,5 +32,9 @@ description: Placing and tidying operators in a TouchDesigner network through TD
 1. `validate_network` -> fix overlaps and origin nodes.
 2. Colour groups by role with `set_node_color` (inputs, processing, outputs).
 3. `set_node_comment` on anything non-obvious: what it does and why.
-4. Re-run `get_errors` recurse and one `capture_viewport` -- tidying must not change
-   what renders.
+4. Frame each section of a larger network with `annotate(action='create',
+   mode='networkbox', around=[...operator names...], title=...)`. Annotations are
+   utility operators: `list_nodes` and `find_nodes` do not show them, so read and
+   edit them with `annotate` only.
+5. Re-run `get_errors` recurse, `health`, and one `capture_viewport` -- tidying
+   must not change what renders.

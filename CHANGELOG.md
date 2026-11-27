@@ -4,6 +4,84 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.15.0] - 2026-11-27 — Saved projects, silent failures, and paths that name one operator
+
+24 new reference repos cloned and the rest pulled (see
+`UPSTREAM_SYNC_2026-11-27.md`). Everything below about TouchDesigner was
+reproduced on 2025.33230 in TEST-01 before it was coded: 47 live checks
+through the bridge's tool layer, and `live_smoke.py` 30/30 through real MCP
+stdio clients.
+
+### Added
+- **Read saved `.toe` / `.tox` files with TouchDesigner closed**: new
+  `td_mcp/toe_reader.py` and four offline tools -- `td_project_read`
+  (summary, then any network with real opTypes, wires, flags, non-default
+  parameters, DAT code; `format="spec"` feeds `build_network`),
+  `td_project_grep` (code, expressions, tables, names inside the file),
+  `td_project_diff` (two saves by meaning; moves counted apart),
+  `td_project_check` (unknown types, renamed parameters, bad menu values,
+  missing files against this build's catalog). A copy is expanded with TD's
+  own `toeexpand` into `~/.td_mcp/cache/toe/`; the original is never touched.
+  The grammar was measured over all 768 components that ship with the install
+  (93,153 operators): the parameter mode is `flags & 3` (`0x10` only means an
+  expression is stored -- 22,394 shipped constants keep an inactive one),
+  tables are rows-then-columns, quoted values span lines.
+  `python -m td_mcp.toe_reader --selftest DIR` re-measures. New
+  `docs/PROJECT_FILES.md`.
+- **`health`** (live): what TouchDesigner does not call an error, sampled
+  across real frames -- expressions that raise (`errors()` stays empty until
+  the next cook), dead binds, extensions that failed to initialise, COMPs with
+  cooking off, bypassed / never-cooked / idle operators, operators over half a
+  frame, a paused or stalled timeline, plus every error and warning. Paused or
+  stalled means "no evidence", never "dead".
+- **`annotate`** (live): list / create / update / delete network boxes and
+  comments. They are utility operators -- invisible to `op()`, `children`,
+  `findChildren()` and so to every other tool; `list_nodes` now counts them.
+- `set_parameters` takes `{"bind": ...}` and `{"mode": "constant", "val": ...}`;
+  recipes carry binds (they exported the stale constant).
+
+### Fixed (each verified live)
+- **Paths name one operator.** `op()` resolves `glob_*` to one arbitrary match
+  and `op(5)` to the operator with id 5; a wildcard or non-string path is now
+  refused on every tool and batch step. A path that names nothing is "not
+  found" -- seven readers fell back to the project root.
+- **Wiring across networks** raised nothing, connected nothing and removed the
+  existing wire: refused, with the Select operator to use. Out-of-range
+  connector indexes are explained; the wire is read back.
+- `delete_node` reports TouchDesigner's automatic rewire of a deleted
+  mid-chain operator (`rewired`, `left_unwired`).
+- A **Script operator's** traceback is on its docked callbacks DAT, not on the
+  operator: `get_errors` reads it. GLSL errors come from `compileResult` (no
+  cook, survives a deleted Info DAT), also recursively under a COMP. One
+  message is one diagnostic (an extension error split into three).
+- Writes: a value written to a **bound** parameter lands on its bind master --
+  reported as `written_through_bind`, not "mode changed"; a write over an
+  expression keeps the text (the note said it was discarded); a write that
+  **raised** (a dead bind) is `ok: false` instead of `ok: true` with
+  `"error: ..."` under `applied`.
+- **Sequence parameters**: looking up `const4value` on a one-channel Constant
+  CHOP creates the blocks, so read tools never look such a name up
+  (`missing`); `set_parameters` reports `sequences_grown` and refuses 64+
+  blocks in one call. Block parameters exist lazily (a fresh Primitive POP has
+  no `pt*`): listings show them once the operator has cooked, and the live
+  `describe_op_type` adds them from the catalog (`from_catalog`).
+- **Iterating `OP.seq` cooks a never-cooked operator**, even in `/sys/quiet`
+  with cooking off: the bridge reaches sequences through `Par.sequence`
+  instead, which cooks nothing.
+- `create_node` honours the name for an Annotate COMP (TD ignores it).
+
+### Changed
+- Parameter catalog re-probed: 21,820 parameters (+24 that exist only after a
+  first cook, `after_cook`), `sequences` on 111 types. The probe records before
+  it cooks and never cooks a hardware or network type; time-dependent defaults
+  keep their committed reading so a same-build re-probe does not churn.
+- MCP `instructions`, `td-workflow` and `td-network-layout` skills, TOOLS.md,
+  README, ECOSYSTEM.md and the reference index updated; AGENTS.md gains "a
+  probe or a read must not change what it reads". `SUMMARY.md` regenerated.
+- Tools: offline 63, live 57. Tests: 1,057 (was 989), 64 of them new.
+
+---
+
 ## [1.14.0] — 2026-11-23 — See what the user sees, show them, stay on their chosen screen
 
 The agent can now look at the screen -- an operator's viewer window, or with

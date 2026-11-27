@@ -84,6 +84,12 @@ RISK_CLASS = {
     "td_memory_save":        "WRITE_ADDITIVE",
     "td_memory_recall":      "READ_ONLY",
     "td_scaffold_recipe":    "READ_ONLY",
+    # Saved project files: read from a copy expanded into the cache; the
+    # .toe/.tox itself is never opened for writing.
+    "td_project_read":       "READ_ONLY",
+    "td_project_grep":       "READ_ONLY",
+    "td_project_diff":       "READ_ONLY",
+    "td_project_check":      "READ_ONLY",
 
     # Live bridge tools — read-only inspectors
     "get_parameters":        "READ_ONLY",
@@ -111,6 +117,7 @@ RISK_CLASS = {
     "get_connections":       "READ_ONLY",
     "get_performance":       "READ_ONLY",
     "validate_network":      "READ_ONLY",
+    "health":                "READ_ONLY",
     "find_nodes":            "READ_ONLY",
 
     # Live bridge tools — additive writers
@@ -140,6 +147,7 @@ RISK_CLASS = {
     "export_recipe":         "WRITE_ADDITIVE",
     "import_recipe":         "WRITE_ADDITIVE",
     "save_tox":              "WRITE_ADDITIVE",
+    "annotate":              "WRITE_ADDITIVE",  # action=delete removes one annotation
     "timeline":              "WRITE_ADDITIVE",
 
     # Live bridge tools — mutating but idempotent

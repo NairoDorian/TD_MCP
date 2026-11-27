@@ -16,7 +16,8 @@ Start here.
 
 | | |
 |---|---|
-| **[TOOLS.md](TOOLS.md)** | All 103 tools, with risk classes and the reduction contract. |
+| **[TOOLS.md](TOOLS.md)** | All 120 tools, with risk classes and the reduction contract. |
+| **[PROJECT_FILES.md](PROJECT_FILES.md)** | Reading saved `.toe`/`.tox` files with TouchDesigner closed: how, and the file format as measured over 768 shipped components. |
 | **[AGENT_GUIDE.md](AGENT_GUIDE.md)** | How to sequence them. Written for the model, and for whoever writes its prompt. |
 | **[DIAGNOSTICS.md](DIAGNOSTICS.md)** | **TouchDesigner reports errors in four places and three are invisible to the obvious API call.** The most important page here. |
 | **[RAG.md](RAG.md)** | How retrieval works, why citations and family disambiguation matter. |
@@ -28,7 +29,7 @@ Start here.
 | **[TDN_FORMAT.md](TDN_FORMAT.md)** | The diffable network format, and four rules each bought with a real bug. |
 | **[TESTING.md](TESTING.md)** | The TouchDesigner API double, and the guards that catch drift. |
 | **[SECURITY.md](SECURITY.md)** | The exec gate, auth, protected paths, bounded ops, the threading hazard. |
-| **[ECOSYSTEM.md](ECOSYSTEM.md)** | 30 projects surveyed: what they do and what is worth taking. |
+| **[ECOSYSTEM.md](ECOSYSTEM.md)** | 57 projects mirrored, the ones worth taking from surveyed. |
 | **[CPP_CUSTOM_OPERATORS.md](CPP_CUSTOM_OPERATORS.md)** | The compiled custom-operator SDK (CPlusPlus CHOP/TOP/DAT/SOP/POP): C-ABI exports, cook callbacks, buffers, the hard-real-time threading pattern, and the PluginBuilder build/hot-reload workflow. |
 
 ## Project-level

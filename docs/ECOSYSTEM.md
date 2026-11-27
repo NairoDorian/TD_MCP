@@ -1,7 +1,8 @@
 # The TouchDesigner MCP ecosystem
 
-A survey of **30 public TouchDesigner + MCP projects**, mirrored side by side in
-`github-mcp/` and re-synced 2026-08-26. This page is about what they *do* and
+A survey of the public TouchDesigner + MCP projects, mirrored side by side in
+`github-mcp/` (57 as of the 2026-11-27 sync, which added 24; see
+[../UPSTREAM_SYNC_2026-11-27.md](../UPSTREAM_SYNC_2026-11-27.md)). This page is about what they *do* and
 what is worth taking from each; the packaging question specifically is covered
 in [TOUCHDESIGNER_COMPONENT.md](TOUCHDESIGNER_COMPONENT.md#how-every-other-project-does-it).
 
@@ -125,6 +126,12 @@ source of `td-mcp`'s schema↔handler parity tests and traceback redaction.
 | `cacheflowe` | Live `docs.derivative.ca` scrape with Crawl4AI |
 | `TrueFiasco` | Key-free offline builder; hybrid RAG; **eval-gated 636/636** *(AGPL)* |
 | `mahsan07` | Docs-first skill packaging: operating contract, safety boundaries, **expected evidence per step** |
+| `grigabyte/td-atlas` | **Reads saved `.toe`/`.tox` offline** through TD's own `toeexpand`; `td_health` (what TD does not report); a call journal with old values; network text on save |
+| `KingRaver/touchme` | Published live-probe research on 2025.33230 (glob paths, undo, wiring across networks, capture via `numpyArray` + cv2) |
+| `cacheflowe/td-http-api` | HTTP bridge with agent skills (`td-common-mistakes`, process testing) and an in-TD dashboard |
+| `jlopesmo/TDflowMCP` | Permission model, audit store, project memory, 17 architecture decision records |
+| `GaNotchVFX/touchbridge` | Async file bridge, never-overwrite saves, GPU cost measurement |
+| `skylarbarrera/nyan` | A typed `.toe` parser and a guide to editing an expansion and collapsing it back |
 
 ---
 

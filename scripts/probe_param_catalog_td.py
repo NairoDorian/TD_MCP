@@ -49,6 +49,7 @@ sanitize step strips them; tests/test_param_catalog.py fails until it has run.
 import datetime as _dt
 import json as _json
 import pathlib as _pathlib
+import re as _re
 
 _NUMERIC_STYLES = {"Float", "Int", "XY", "XYZ", "XYZW", "WH", "UV", "UVW",
                    "RGB", "RGBA"}
@@ -119,6 +120,66 @@ def _keep(p):
     return not (p.name == "pageindex" and p.page is None)
 
 
+#: Operator types that talk to hardware, the network or other processes.
+#: They are created (as always) but never cooked here: cooking is what opens a
+#: device, a socket or a file share. Broad on purpose -- a type wrongly listed
+#: only loses the parameters that appear after a first cook.
+_NO_COOK = _re.compile(
+    r"device|kinect|realsense|orbbec|^zed|^oak|leapmotion|oculus|openvr|^ndi|"
+    r"syphonspout|sharedmem|^touchin|^touchout|videostream|st2110|artnet|dmx|"
+    r"midi|^osc|serial|tcpip|^udp|websocket|webserver|webclient|mqtt|ableton|"
+    r"laser|etherdream|hokuyo|ouster|^sick|mosys|^ncam|stype|nuitrack|joystick|"
+    r"keyboardin|mousein|tablet|tuio|multitouch|pipein|pipeout|renderstream|"
+    r"notch|screengrab|directxin|directxout|webrender|audiostream|vst|socketio|"
+    r"^freed|posistage|optitrack|scalable|vioso|mpcdi|nvidia|^hog|pangolin|"
+    r"^ltc|bodytrack|facetrack|^engine", _re.I)
+
+
+def _cook_reveal(node, cls_name, family):
+    """Parameters that exist only once the operator has cooked.
+
+    Verified on 2025.33230: block parameters of a sequence are created lazily
+    -- a fresh Primitive POP has no ``pt*`` parameter at all -- and a Script
+    operator's default callbacks add custom parameters (``Valuea``) on its
+    first cook. The only way to see them is a cook: iterating ``OP.seq`` cooks
+    a never-cooked operator even inside /sys/quiet with cooking off. So this
+    runs AFTER the operator's parameters were recorded (menus and defaults
+    stay the pre-cook facts; a cook fills content-derived menus such as a
+    Rename CHOP's channel list) and never for a ``_NO_COOK`` type.
+
+    Returns ``(sequence sizes, parameters that appeared)``.
+    """
+    stem = cls_name[:-len(family)] if cls_name.endswith(family) else cls_name
+    if _NO_COOK.search(stem):
+        return {}, []
+    before = {p.name for p in node.pars()}
+    sizes = {}
+    try:
+        seqs = list(node.seq)  # this is the cook
+    except Exception:  # noqa: BLE001 - no sequences on this operator
+        seqs = []
+    for seq in seqs:
+        try:
+            for block in seq.blocks:
+                for _p in block.par:
+                    pass
+            sizes[str(seq.name)] = int(seq.numBlocks)
+        except Exception:  # noqa: BLE001
+            continue
+    appeared = [p for p in node.pars() if p.name not in before and _keep(p)]
+    return sizes, appeared
+
+
+def _sequences(node):
+    """``{name: blocks}`` of the sequences reachable without cooking."""
+    sizes = {}
+    for p in node.pars():
+        seq = getattr(p, "sequence", None)
+        if seq is not None:
+            sizes.setdefault(str(seq.name), int(seq.numBlocks))
+    return sizes
+
+
 def probe_family(family, quiet):
     ops, failed = {}, {}
     for cls in families[family]:  # noqa: F821 - TD global
@@ -126,6 +187,7 @@ def probe_family(family, quiet):
         node = None
         try:
             node = quiet.create(cls, "td_mcp_probe")
+            sequences = _sequences(node)
             ops[name] = {
                 "family": node.family,
                 "label": node.label,
@@ -136,6 +198,14 @@ def probe_family(family, quiet):
                 "pages": [pg.name for pg in node.pages],
                 "pars": [_par_record(p) for p in node.pars() if _keep(p)],
             }
+            revealed_sizes, appeared = _cook_reveal(node, name, family)
+            for p in appeared:
+                rec = _par_record(p)
+                rec["after_cook"] = True
+                ops[name]["pars"].append(rec)
+            sequences.update(revealed_sizes)
+            if sequences:
+                ops[name]["sequences"] = sequences
         except Exception as exc:  # noqa: BLE001 - record and keep going
             failed[name] = "%s: %s" % (type(exc).__name__, str(exc)[:200])
         finally:

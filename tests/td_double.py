@@ -41,6 +41,7 @@ from __future__ import annotations
 import contextlib
 import enum
 import os
+import re
 import sys
 import threading
 import time
@@ -85,6 +86,11 @@ class FakePar:
         self.menuLabels = list(self.menuNames)
         self.owner = owner
         self.enable = True
+        #: The Par this one is bound to; None while the bind does not resolve.
+        self.bindMaster: Optional["FakePar"] = None
+        self._bindExpr = ""
+        #: The FakeSequence this parameter is a block member of, if any.
+        self.sequence = None
         # Set by the double when an expression should raise on eval, so tests
         # can exercise the "bad expression" path the way TD does.
         self.eval_error: Optional[Exception] = None
@@ -106,6 +112,19 @@ class FakePar:
         self._expr = text
         if text and getattr(self, "_init_done", False):
             self.mode = FakeParMode.EXPRESSION
+
+    @property
+    def bindExpr(self):
+        return self._bindExpr
+
+    @bindExpr.setter
+    def bindExpr(self, text):
+        # Verified on 2025.33230: assigning a bind expression switches the
+        # parameter to BIND mode, and does not raise when nothing is there to
+        # bind to (bindMaster is then None and eval() returns the constant).
+        self._bindExpr = text
+        if text:
+            self.mode = FakeParMode.BIND
 
     @property
     def isMenu(self) -> bool:
@@ -135,8 +154,19 @@ class FakePar:
                 v = self.menuNames[v]
             elif isinstance(v, str) and v not in self.menuNames:
                 return
-        # Verified on 2025.33230: writing the value switches an EXPRESSION or
-        # BIND parameter to CONSTANT; the expression is dropped.
+        # Verified on 2025.33230 (probes of 2026-11-26):
+        #  * a BOUND parameter stays bound -- the write lands on its bind
+        #    master (tx bound to holder.Amount: after `tx = 0.42` the master
+        #    read 0.42, tx.eval() 0.42, tx.val the stale 0.0, mode BIND);
+        #  * bound to something that does not exist, the write raises and
+        #    changes nothing;
+        #  * an EXPRESSION parameter switches to CONSTANT and KEEPS its
+        #    expression text (it is saved that way: `label 16 trails me.name`).
+        if self.mode == FakeParMode.BIND:
+            if self.bindMaster is None:
+                raise AttributeError("'NoneType' object has no attribute 'par'")
+            self.bindMaster.val = v
+            return
         if self.mode != FakeParMode.CONSTANT:
             self.mode = FakeParMode.CONSTANT
         self._val = v
@@ -160,6 +190,8 @@ class FakePar:
     def eval(self):
         if self.eval_error is not None:
             raise self.eval_error
+        if self.mode == FakeParMode.BIND and self.bindMaster is not None:
+            return self.bindMaster.eval()
         return self._val
 
     def __repr__(self):  # pragma: no cover - debugging aid
@@ -249,10 +281,22 @@ class FakeParCollection:
         self._pars[par.name] = par
         return par
 
+    def _sequence_lookup(self, name):
+        owner = object.__getattribute__(self, "_owner")
+        for seq in getattr(owner, "_sequences", ()):
+            par = seq._lookup(name)
+            if par is not None:
+                return par
+        return None
+
     def __getattr__(self, name):
         pars = object.__getattribute__(self, "_pars")
         if name in pars:
             return pars[name]
+        if not name.startswith("_"):
+            par = self._sequence_lookup(name)
+            if par is not None:
+                return par
         raise AttributeError(name)
 
     def __setattr__(self, name, value):
@@ -284,7 +328,9 @@ class FakeParCollection:
         one in TouchDesigner.
         """
         pars = object.__getattribute__(self, "_pars")
-        return pars.get(name)
+        if name in pars:
+            return pars[name]
+        return self._sequence_lookup(name) if isinstance(name, str) else None
 
     def __iter__(self):
         return iter(list(self._pars.values()))
@@ -302,6 +348,88 @@ class FakeParCollection:
 
     def __len__(self):
         return len(self._pars)
+
+
+# ---------------------------------------------------------------------------
+# Sequences (verified on 2025.33230, probes of 2026-11-26)
+# ---------------------------------------------------------------------------
+class FakeSequenceBlock:
+    def __init__(self, sequence: "FakeSequence", index: int):
+        self.sequence = sequence
+        self.index = index
+
+    @property
+    def par(self):
+        """Iterating a block's parameters makes them exist -- and adds no block."""
+        return self.sequence._materialize(self.index)
+
+
+class FakeSequence:
+    """``op.seq[...]``: a repeating group of parameters (Constant CHOP's
+    ``const0name``/``const0value``, Primitive POP's ``pt0posx``...).
+
+    Two behaviours no documentation mentions, both modelled because the
+    bridge has to survive them:
+
+    * **Block parameters exist lazily.** A fresh Primitive POP says
+      ``numBlocks == 1`` while ``pars()`` lists no ``pt*`` parameter; they
+      appear once something touches them.
+    * **Looking a parameter up past the last block creates it.**
+      ``op.par['const4value']`` on a one-channel Constant CHOP returns a
+      parameter and leaves five channels behind. A name whose suffix is not a
+      block member (``const3bogus``) is None and grows nothing.
+    """
+
+    def __init__(self, owner: "FakeOP", name: str, fields: Dict[str, Any],
+                 numBlocks: int = 1, materialized: bool = False):
+        self.owner = owner
+        self.name = name
+        self.fields = dict(fields)
+        self._numBlocks = int(numBlocks)
+        self.blockSize = 1
+        self.maxBlocks = None
+        if materialized:
+            for i in range(self._numBlocks):
+                self._materialize(i)
+
+    @property
+    def numBlocks(self) -> int:
+        return self._numBlocks
+
+    @numBlocks.setter
+    def numBlocks(self, n: int):
+        n = int(n)
+        pars = object.__getattribute__(self.owner.par, "_pars")
+        for i in range(n, self._numBlocks):
+            for suffix in self.fields:
+                pars.pop("%s%d%s" % (self.name, i, suffix), None)
+        self._numBlocks = n
+
+    @property
+    def blocks(self):
+        return [FakeSequenceBlock(self, i) for i in range(self._numBlocks)]
+
+    def _materialize(self, index: int):
+        out = []
+        pars = object.__getattribute__(self.owner.par, "_pars")
+        for suffix, default in self.fields.items():
+            pname = "%s%d%s" % (self.name, index, suffix)
+            if pname not in pars:
+                par = FakePar(pname, default, default)
+                par.sequence = self
+                self.owner.par._add(par)
+            out.append(pars[pname])
+        return out
+
+    def _lookup(self, name: str):
+        match = re.fullmatch(r"%s(\d+)(.*)" % re.escape(self.name), name)
+        if not match or match.group(2) not in self.fields:
+            return None
+        index = int(match.group(1))
+        if index >= self._numBlocks:
+            self._numBlocks = index + 1  # the read grew the operator
+        self._materialize(index)
+        return object.__getattribute__(self.owner.par, "_pars")[name]
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +466,10 @@ class FakeInputConnector:
         source = _as_op(target)
         out_index = getattr(target, "index", 0) if hasattr(target, "owner") else 0
         self.disconnect()
+        if source._parent is not self.owner._parent:
+            # Verified on 2025.33230: wiring across networks raises nothing,
+            # connects nothing, and the wire that was here is gone.
+            return
         oc = source._output_connector(out_index)
         self.connections = [oc]
         oc.connections.append(self)
@@ -436,10 +568,80 @@ class FakeOP:
         self._scriptErrors = scriptErrors
         self.saved_to: Optional[str] = None
         self._allowCooking = True
+        self._sequences: List[FakeSequence] = []
+        self._utility = False
+        self._utility_children: List[FakeOP] = []
+
+    # Cook bookkeeping and state the health check reads.
+    bypass = False
+    totalCooks = 0
+    cpuCookTime = 0.0
+    gpuCookTime = 0.0
+    extensions = ()
+    #: GLSL operators only: the compiler's own output.
+    compileResult = None
 
     @property
     def isCOMP(self) -> bool:
         return self.family == "COMP"
+
+    @property
+    def seq(self):
+        """Iterable only: attribute access by name (``op.seq.pt``) fails on a
+        fresh Primitive POP in TouchDesigner, so nothing should rely on it.
+
+        Iterating it COOKS an operator that has never cooked (verified,
+        2025.33230); modelled so a test can see a read tool do it."""
+        if self.totalCooks == 0:
+            self.totalCooks = 1
+            self.cooked_by_seq = True
+        return list(self._sequences)
+
+    def add_sequence(self, name, fields, numBlocks=1, materialized=False):
+        seq = FakeSequence(self, name, fields, numBlocks, materialized)
+        self._sequences.append(seq)
+        return seq
+
+    def pars(self, *patterns):
+        found = list(self.par)
+        if patterns:
+            import fnmatch as _fn
+            found = [q for q in found if any(_fn.fnmatchcase(q.name, pat) for pat in patterns)]
+        return found
+
+    @property
+    def utility(self) -> bool:
+        return self._utility
+
+    @utility.setter
+    def utility(self, flag: bool):
+        """A utility operator (an annotation made in the editor) drops out of
+        ``children``, ``op()`` and ``findChildren()``; only
+        ``findChildren(includeUtility=True)`` still returns it (verified)."""
+        flag = bool(flag)
+        parent = self._parent
+        if parent is not None and flag != self._utility:
+            src, dst = ((parent.children, parent._utility_children) if flag
+                        else (parent._utility_children, parent.children))
+            if self in src:
+                src.remove(self)
+                dst.append(self)
+        self._utility = flag
+
+    @property
+    def numChildren(self) -> int:
+        return len(self.children) + len(self._utility_children)
+
+    @property
+    def enclosedOPs(self):
+        """Annotations: the siblings whose tile lies inside this one's rectangle."""
+        if self._parent is None:
+            return []
+        x0, y0 = self.nodeX, self.nodeY
+        x1, y1 = x0 + self.nodeWidth, y0 + self.nodeHeight
+        return [c for c in self._parent.children
+                if c is not self and x0 <= c.nodeX and c.nodeX + c.nodeWidth <= x1
+                and y0 <= c.nodeY and c.nodeY + c.nodeHeight <= y1]
 
     # -- what the user sees (verified on 2025.33230) ------------------------
     current = False
@@ -580,6 +782,10 @@ class FakeOP:
         type_name = str(opType)
         if not any(type_name.endswith(f) for f in _FAMILY_BY_SUFFIX):
             raise TypeError(f"invalid operator type: {type_name!r}")
+        if type_name == "annotateCOMP":
+            # Verified on 2025.33230: create('annotateCOMP', 'my_note') comes
+            # back named annotate1; the name has to be assigned afterwards.
+            name = None
         if name is None:
             # TD auto-names: base name from the type, next free number.
             stem = type_name
@@ -601,7 +807,14 @@ class FakeOP:
             cls = FakePOP
         elif type_name.endswith("TOP"):
             cls = FakeTOP
-        return self.add(cls(name, type_name)._install_default_pars())
+        node = self.add(cls(name, type_name)._install_default_pars())
+        if type_name == "annotateCOMP":
+            for pname, default in (("Mode", "annotate"), ("Titletext", ""), ("Bodytext", ""),
+                                   ("Backcolorr", 0.1), ("Backcolorg", 0.1), ("Backcolorb", 0.1)):
+                node.par._add(FakePar(pname, default, default,
+                                      menuNames=["comment", "networkbox", "annotate"]
+                                      if pname == "Mode" else None))
+        return node
 
     def copy(self, source: "FakeOP", name: str = None) -> "FakeOP":
         clone = FakeOP(name or source.name, source.type)
@@ -611,8 +824,21 @@ class FakeOP:
         return self.add(clone)
 
     def destroy(self):
+        # Verified on 2025.33230: destroying an operator in the middle of a
+        # chain wires its FIRST input straight into everything it fed; one
+        # with no input leaves those inputs empty.
+        upstream = self.inputConnectors[0].connections[:1] if self.inputConnectors else []
+        for oc in self.outputConnectors:
+            for ic in list(oc.connections):
+                ic.disconnect()
+                if upstream:
+                    ic.connect(upstream[0])
+        for ic in self.inputConnectors:
+            ic.disconnect()
         if self._parent is not None:
             self._parent.children = [c for c in self._parent.children if c is not self]
+            self._parent._utility_children = [c for c in self._parent._utility_children
+                                              if c is not self]
         self.valid = False
 
     def save(self, file_path: str, **kwargs) -> str:
@@ -627,10 +853,11 @@ class FakeOP:
         # NB: TD matches `depth` as an EXACT relative depth, not "up to".
         # Modelled faithfully so a handler that assumes otherwise fails here.
         depth = kwargs.get("depth")
+        utility = bool(kwargs.get("includeUtility"))
         out: List[FakeOP] = []
 
         def walk(node, d):
-            for c in node.children:
+            for c in list(node.children) + (list(node._utility_children) if utility else []):
                 if depth is None or d == depth:
                     out.append(c)
                 walk(c, d + 1)
@@ -971,6 +1198,10 @@ def _resolve(base: FakeOP, path) -> Optional[FakeOP]:
         return None
     if isinstance(path, FakeOP):
         return path
+    if isinstance(path, int) and not isinstance(path, bool):
+        # Verified on 2025.33230: op(5) is the operator with id 5 (/sys/drag
+        # there) -- some operator, never the one a caller meant.
+        return _ROOT.children[0] if _ROOT is not None and _ROOT.children else None
     path = str(path)
     if not path:
         return None
@@ -979,10 +1210,17 @@ def _resolve(base: FakeOP, path) -> Optional[FakeOP]:
         if node is None:
             return None
         nxt = None
-        for c in node.children:
-            if c.name == part:
-                nxt = c
-                break
+        if any(ch in part for ch in "*?["):
+            # Verified on 2025.33230: a pattern resolves to ONE arbitrary match
+            # (glob_* gave glob_beta though glob_alpha was created first).
+            import fnmatch as _fn
+            hits = [c for c in node.children if _fn.fnmatchcase(c.name, part)]
+            nxt = hits[-1] if hits else None
+        else:
+            for c in node.children:
+                if c.name == part:
+                    nxt = c
+                    break
         node = nxt
     return node
 

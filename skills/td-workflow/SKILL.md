@@ -14,6 +14,11 @@ The **live** bridge acts inside a running TouchDesigner, one undo step per call.
 1. **Scout** -- `project_info` (build, fps, bridge version), then `list_nodes` /
    `scan_network` / `get_connections` on the target COMP. Never assume `/project1`
    holds what you think; never build inside `/project1/td_mcp` (the bridge refuses).
+   Network boxes and comments are invisible to those tools: `annotate(action='list')`
+   reads them (`list_nodes` says when there are some). A saved `.toe`/`.tox` can be
+   read with TouchDesigner closed: `td_project_read` (what is in it, then one
+   network), `td_project_grep` (code and expressions inside it), `td_project_check`
+   (names this build no longer has).
 2. **Plan** -- name every operator before creating one. For each unfamiliar type call
    `describe_op_type` (live) or `td_describe_op_type` (offline): it returns the exact
    parameter names, menu tokens and creation defaults. Draft bigger builds as a spec
@@ -24,13 +29,18 @@ The **live** bridge acts inside a running TouchDesigner, one undo step per call.
    report. For single edits: `create_node` (type = class name: `noiseTOP`,
    `lfoCHOP`, `gridPOP`), `set_parameters`, `connect_nodes`, or a `batch`.
 4. **Verify** -- `get_errors` with `recurse=true` after every step that matters (it
-   reads cook errors, warnings, script tracebacks AND GLSL compile logs). Then look:
+   reads cook errors, warnings, script tracebacks AND GLSL compile logs), and
+   `health` before saying it works: it finds what TouchDesigner never calls an
+   error -- an expression that raises (errors stay empty until the next cook), a
+   dead bind, a failed extension, cooking switched off, an operator nothing pulls.
+   Then look:
    `capture_viewport` (any family) and `observe` (is it actually moving?). Read
    `read_chop` / `read_dat` / `read_pop` stats for data chains. Judge cost with
    `get_performance samples=10` (median per frame): one reading right after a
    build includes one-off costs. A COMP nobody is viewing does not cook at all
    (TD is pull-based), so stale readings there are the truth, not a fault.
-5. **Tidy** -- see `td-network-layout`.
+5. **Tidy** -- see `td-network-layout`; label sections with `annotate(action='create',
+   around=[...], title=...)`.
 
 ## See and show
 
@@ -55,7 +65,18 @@ The **live** bridge acts inside a running TouchDesigner, one undo step per call.
 
 - `set_parameters` reads every write back. `ok:false` with "invalid menu value" means
   TD silently kept the old value -- use one of the tokens it lists. `notes.clamped_to`
-  means TD clamped your number; `notes.mode_changed` means you overwrote an expression.
+  means TD clamped your number; `notes.mode_changed` means you overwrote an expression
+  (its text is kept, inactive); `notes.written_through_bind` means the parameter is
+  bound and the value landed on ANOTHER operator, its bind master. Bind with
+  `{"bind": "op('ctrl').par.Speed"}`; unbind while setting with
+  `{"mode": "constant", "val": 1}`.
+- Sequence parameters are `<sequence><block><field>` (`const0name`, `pt1posx`).
+  Naming a higher block adds blocks (`notes.sequences_grown`), so count before you
+  write; `describe_op_type` reports each type's `sequences`.
+- Paths are exact: a wildcard is refused (TouchDesigner would pick one arbitrary
+  match). Use `find_nodes(query='noise*')` to expand a pattern first.
+- Wires join siblings only; to use an operator from another COMP, reference it
+  with a Select operator (`connect_nodes` says which parameter).
 - `get_parameters` reports `eval()` values; `modes` shows expressions / binds / exports.
 - Every failure carries `recovery_hints` (`cause`, `action`, `next_tools`): follow them.
 

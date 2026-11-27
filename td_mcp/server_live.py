@@ -444,6 +444,15 @@ class TDClient:
     def save_tox(self, path, file_path=None):
         return self._call("save_tox", {"path": path, "file_path": file_path})
 
+    def health(self, path=None, seconds=0.5):
+        return self._call("health", {"path": path, "seconds": seconds})
+
+    def annotate(self, action="list", path=None, mode=None, title=None, body=None,
+                 around=None, rect=None, color=None, name=None):
+        return self._call("annotate", {"action": action, "path": path, "mode": mode,
+                                       "title": title, "body": body, "around": around,
+                                       "rect": rect, "color": color, "name": name})
+
 
 def _attach_png(result, description):
     """Image-block feedback (mintiasaikoh): when the bridge returns a PNG file,
@@ -515,7 +524,62 @@ _CLIENT_SIDE = {
     # resolves parameter names against the catalog before the bridge sees them
     "build_network": _wrap_tool(lambda c, a: c.build_network(
         a.get("spec"), a.get("target_parent"), a.get("replace", False))),
+    # adds the block parameters a throwaway instance cannot show (see below)
+    "describe_op_type": _wrap_tool(lambda c, a: _with_catalog_blocks(
+        c._call("describe_op_type", dict(a or {})), a or {})),
 }
+
+
+def _with_catalog_blocks(result, args):
+    """Add the sequence block parameters the bridge could not see.
+
+    The bridge describes a type from a fresh instance and will not cook it
+    (iterating ``OP.seq`` would, verified on 2025.33230 -- and cooking is what
+    opens a device). A fresh Primitive POP therefore shows no ``pt0posx`` at
+    all, though ``set_parameters`` accepts it. The catalog recorded those
+    after one cook in /sys/quiet, so they are added here, marked
+    ``from_catalog``, under the same `pattern` / `page` filter.
+    """
+    if not isinstance(result, dict) or not result.get("ok"):
+        return result
+    try:
+        from td_mcp.kb import param_catalog
+        info = param_catalog.op_info(result.get("op_type") or "")
+    except Exception:  # noqa: BLE001 - the description stands without it
+        return result
+    if not info:
+        return result
+    seen = {r.get("name") for r in result.get("parameters") or []}
+    pattern, page = args.get("pattern"), args.get("page")
+    import fnmatch as _fnmatch
+    pat = (pattern or "").lower()
+    if pat and not any(ch in pat for ch in "*?["):
+        pat = "*%s*" % pat
+    extra = []
+    for p in info.get("pars") or []:
+        if p["name"] in seen or not (p.get("sequence") or p.get("after_cook")):
+            continue
+        if page and (p.get("page") or "").lower() != str(page).lower():
+            continue
+        if pat and not (_fnmatch.fnmatchcase(p["name"].lower(), pat)
+                        or _fnmatch.fnmatchcase((p.get("label") or "").lower(), pat)):
+            continue
+        row = dict(p)
+        if args.get("include_menus") is False:
+            row.pop("menu", None)
+            row.pop("menu_labels", None)
+        row["from_catalog"] = True
+        extra.append(row)
+    if extra:
+        result = dict(result)
+        result["parameters"] = list(result.get("parameters") or []) + extra
+        result["count"] = len(result["parameters"])
+        result["from_catalog"] = ("%d parameter(s) exist only once the operator has cooked "
+                                  "(sequence blocks, script callbacks); listed from the "
+                                  "catalog of TouchDesigner %s" % (len(extra), param_catalog.build()))
+        if info.get("sequences") and not result.get("sequences"):
+            result["sequences"] = info["sequences"]
+    return result
 
 TOOL_REGISTRY = {}  # filled from _TOOL_META below, so the two cannot drift
 
@@ -691,6 +755,27 @@ _TOOL_META = [
      {"path": _PATH, "max_age_frames": _I, "depth": _I, "limit": _I, "samples": _I}),
     ("validate_network", "Scene contract check: unplaced/overlapping nodes and cook errors.",
      {"path": _PATH, "depth": _I}),
+    ("health", "What TouchDesigner does NOT call an error, in one read -- run it before saying "
+     "a network works. Samples twice with real frames between (`seconds`, default 0.5) and "
+     "reports findings by severity: parameter expressions that raise (errors() stays empty "
+     "until the operator next cooks), dead binds, extensions that failed to initialise, COMPs "
+     "with cooking off, bypassed operators, operators that have never cooked because nothing "
+     "pulls them, operators costing over half a frame, a paused or stalled timeline, plus "
+     "every error and warning under `path` (default /project1). `clean` is true only with no "
+     "error and no warning.",
+     {"path": _PATH, "seconds": _N}),
+    ("annotate", "Network annotations: comments, titled boxes and network boxes. They are "
+     "utility operators, invisible to list_nodes / find_nodes / get_node, so this is the only "
+     "tool that reads or edits them. action=list (`path` = the network) | create (`path` = the "
+     "network; `around` = operator names to frame, or `rect` [x,y,w,h]; `title`, `body`, "
+     "`mode` annotate|comment|networkbox, `color` [r,g,b], `name`) | update | delete (`path` = "
+     "the annotation). Use it to label the sections of a network you build.",
+     {"action": {"type": "string", "enum": ["list", "create", "update", "delete"]},
+      "path": _PATH, "mode": {"type": "string", "enum": ["annotate", "comment", "networkbox"]},
+      "title": _S, "body": _S,
+      "around": {"type": "array", "items": {"type": "string"}},
+      "rect": {"type": "array", "items": {"type": "number"}},
+      "color": {"type": "array", "items": {"type": "number"}}, "name": _S}),
     ("set_flags", "Set operator flags: display, render, bypass, lock, viewer, "
      "allowCooking (COMPs only), excludeFromCook, forceCooking, cloneImmune, pickable, "
      "expose, activeViewer, current, selected. E.g. {'display': true}.",
@@ -776,7 +861,7 @@ _REQUIRED = {
     "set_flags": ["path", "flags"], "set_node_position": ["path", "x", "y"],
     "timeline": ["action"], "export_recipe": ["path"], "import_recipe": ["recipe"],
     "build_network": ["spec"], "open_viewer": ["path"], "show_in_editor": ["path"],
-    "save_tox": ["path"],
+    "save_tox": ["path"], "annotate": ["action"],
 }
 
 

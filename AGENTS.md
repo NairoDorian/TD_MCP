@@ -23,6 +23,12 @@ python scripts/td_live.py py "result = op('/project1').children[0].OPType"
   with a probe in TEST-01 before modelling it in `tests/td_double.py`. Several
   "known" facts did not survive a probe (writing `par.val` switches the mode;
   a bad menu token is silently ignored; an OP Viewer TOP needs frames).
+- **A probe or a read must not change what it reads.** Iterating `OP.seq`
+  cooks an operator that has never cooked (even in `/sys/quiet`), and looking up
+  a sequence parameter past the last block creates the blocks. A cook is what
+  opens a camera, a socket or a file -- never cook a hardware or network type to
+  learn about it. Measure side effects (`totalCooks`, block counts) when you
+  write a new probe.
 - Build in `/project1/zz_<something>` and delete it afterwards. Never edit
   `/project1/td_mcp` (the bridge refuses anyway).
 - **Show the node you are working on.** The bridge moves the user's network

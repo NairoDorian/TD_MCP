@@ -401,6 +401,7 @@ _SELF_GUARDED = {
     "build_network": ("target_parent", False),
     "restore_network": ("target_parent", False),
     "edit_custom_parameters": ("path", False),
+    "annotate": ("path", False),
 }
 
 
@@ -481,7 +482,7 @@ def _run_tool(tool, args):
     fn = _DISPATCH.get(tool)
     if fn is None:
         return {"ok": False, "error": f"unknown tool: {tool}"}
-    refused = _guard_call(tool, args)
+    refused = path_argument_error(tool, args) or _guard_call(tool, args)
     if refused is not None:
         return _wrap(refused)
     with _undo_block(tool):
@@ -500,6 +501,9 @@ def _invoke(tool, args):
     """
     multi = _MULTI_FRAME_TOOLS.get(tool)
     if multi is not None and not on_main_thread():
+        refused = path_argument_error(tool, args or {})
+        if refused is not None:
+            return _wrap(refused)
         return multi(args or {})
     return _call_on_main(_run_tool, tool, args or {})
 
@@ -546,7 +550,7 @@ def _ws_push(event):
 # version lets the live server say so on the first call instead. Keep in sync
 # with pyproject.toml [project].version -- scripts/check_bridge_stale.py fails
 # CI when they diverge.
-BRIDGE_VERSION = "1.14.0"
+BRIDGE_VERSION = "1.15.0"
 
 
 # Server identity lives ON THE SERVER OBJECT (td_mcp_started_at / td_mcp_version),
@@ -585,6 +589,9 @@ AUTH_TOKEN = os.environ.get("TD_MCP_AUTH_TOKEN") or secrets.token_urlsafe(24)
 # are env-tunable and enforced server-side in the relevant handlers.
 MAX_BATCH_SIZE = int(os.environ.get("TD_MCP_MAX_BATCH", "64"))
 MAX_PARAMS = int(os.environ.get("TD_MCP_MAX_PARAMS", "256"))
+#: Most blocks one set_parameters call may add to a sequence: naming
+#: const400value on a Constant CHOP creates 400 channels.
+MAX_SEQUENCE_GROWTH = int(os.environ.get("TD_MCP_MAX_SEQUENCE_GROWTH", "64"))
 MAX_DEPTH = int(os.environ.get("TD_MCP_MAX_DEPTH", "4"))
 MAX_SAMPLES = int(os.environ.get("TD_MCP_MAX_SAMPLES", "4096"))
 MAX_ROWS = int(os.environ.get("TD_MCP_MAX_ROWS", "10000"))
@@ -949,6 +956,10 @@ def touchdesigner_release(version, build):
     return version or "unknown"
 
 
+#: How TouchDesigner opens a diagnostic message (optionally path-prefixed).
+_DIAG_START = re.compile(r"^(?:/\S*:)?\s*(?:Error|Warning):")
+
+
 def group_diagnostics(text):
     """Split one of TD's diagnostic strings into individual messages.
 
@@ -966,6 +977,24 @@ def group_diagnostics(text):
     if not text:
         return []
     lines = [ln.rstrip() for ln in str(text).splitlines() if ln.strip()]
+    if any(_DIAG_START.match(ln) for ln in lines):
+        # TouchDesigner opens every message with "Error:" / "Warning:" (after a
+        # "<path>:" prefix when read recursively) and continues it on lines
+        # that are not always indented. Verified on 2025.33230:
+        #   "  Error: NameError: name 'X' is not defined \n<string>, line 1, in
+        #    <module>\nContext:(Extension 1) (/project1/c)"
+        # is ONE error on three lines, and a traceback ends with its operator
+        # path on a line of its own. Splitting on indentation made three
+        # errors of the first and two of the second.
+        groups, current = [], []
+        for line in lines:
+            if _DIAG_START.match(line) and current:
+                groups.append("\n".join(current))
+                current = []
+            current.append(line)
+        if current:
+            groups.append("\n".join(current))
+        return groups
     groups, current, in_traceback = [], [], False
     for line in lines:
         indented = line[:1].isspace()
@@ -1318,6 +1347,21 @@ RECOVERY_HINT_RULES = [
      "TD's own methods (op(), par.eval()); set optional inputs with try/except "
      "NameError instead of globals().",
      ["execute_python"]),
+    (re.compile(r"contains a wildcard|must be an operator path string", re.I),
+     "A path argument was a pattern or a number; op() would resolve it to an "
+     "operator nobody named.",
+     "Pass one exact path. find_nodes(query='noise*') lists what a pattern matches.",
+     ["find_nodes", "list_nodes"]),
+    (re.compile(r"different networks", re.I),
+     "Wires only join operators inside the same COMP.",
+     "Reference the far operator with a Select operator, or pass it through "
+     "In/Out operators of the COMP.",
+     ["create_node", "set_parameters"]),
+    (re.compile(r"'NoneType' object has no attribute", re.I),
+     "An op() lookup returned None: a path in the code or expression does not "
+     "exist (annotations and other utility operators are also invisible to op()).",
+     "Check the path with list_nodes / find_nodes; guard with `if n is not None`.",
+     ["find_nodes", "list_nodes"]),
     (re.compile(r"TD_MCP_ALLOW_EXEC|TD_MCP_EXEC_MODE|code-bearing", re.I),
      "This bridge runs with code execution disabled.",
      "Use the typed tools (create_node, set_parameters, connect_nodes) or ask "
@@ -1393,9 +1437,61 @@ def _resolve_path(path):
     return path
 
 
+#: Arguments that name ONE operator. (``find_nodes.query`` is a pattern and is
+#: deliberately not here.)
+_PATH_ARGS = ("path", "from_path", "to_path", "other_path", "new_parent",
+              "target_parent")
+_PATH_WILDCARDS = "*?["
+
+
+def path_argument_error(tool, args):
+    """Refuse a path argument that is not one exact operator path. Pure.
+
+    Verified on 2025.33230: ``td.op()`` resolves a pattern to ONE arbitrary
+    match (``op('.../glob_*')`` returned ``glob_beta`` although ``glob_alpha``
+    was created first and sorts first) and resolves a number to the operator
+    with that id (``op(5)`` is ``/sys/drag``). Either way a tool would act --
+    delete, rewire, overwrite -- on an operator nobody named, and report
+    success. ``*here`` / ``*this`` are this bridge's own pointers and stay.
+    """
+    for key in _PATH_ARGS:
+        value = (args or {}).get(key)
+        if value is None or value == "":
+            continue
+        if not isinstance(value, str):
+            return {"ok": False, "error_code": "bad_path",
+                    "error": "%s: `%s` must be an operator path string, got %s"
+                             % (tool, key, type(value).__name__)}
+        bare = value.replace("*here", "").replace("*this", "")
+        if any(ch in bare for ch in _PATH_WILDCARDS):
+            return {"ok": False, "error_code": "wildcard_path",
+                    "error": "%s: `%s`=%r contains a wildcard. TouchDesigner would "
+                             "resolve it to one arbitrary match, so it is refused; pass "
+                             "the exact path (find_nodes lists what a pattern matches)"
+                             % (tool, key, value),
+                    "next_tools": ["find_nodes", "list_nodes"]}
+    return None
+
+
 def _op(path):
+    if not isinstance(path, str):
+        return None  # op(5) is the operator with id 5, never what was meant
     resolved = _resolve_path(path)
-    return op(resolved) if resolved else None
+    if not resolved or any(ch in resolved for ch in _PATH_WILDCARDS):
+        return None
+    return op(resolved)
+
+
+def _start_node(path):
+    """Where a listing or scan starts: ``path``, or the root when none is given.
+
+    None when a path WAS given and nothing is there. Seven readers used to say
+    ``_op(path) or root``, so a mistyped path listed the whole project and came
+    back looking like an answer.
+    """
+    if path:
+        return _op(path)
+    return root  # noqa: F821 - TD global
 
 
 def _current_parent():
@@ -1581,6 +1677,13 @@ def _do_create(path, type, name=None, nodeX=None, nodeY=None):
     # have worked against a real TouchDesigner.
     op_type = normalize_op_type(type)
     node = parent.create(op_type, name) if name else parent.create(op_type)
+    if name and getattr(node, "name", name) != name:
+        # Verified on 2025.33230: create('annotateCOMP', 'my_note') comes back
+        # as 'annotate1'; the name has to be assigned afterwards.
+        try:
+            node.name = name
+        except Exception:  # noqa: BLE001 - reported through the returned path
+            pass
     try:
         if nodeX is not None and nodeY is not None:
             node.nodeX, node.nodeY = nodeX, nodeY
@@ -1599,8 +1702,31 @@ def _do_delete(path):
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
+    # Verified on 2025.33230: destroying an operator in the middle of a chain
+    # does not leave a gap -- TouchDesigner wires its first input straight into
+    # everything it fed. Usually wanted, never announced; so say what happened.
+    deleted = node.path
+    fed_from = [o.path for _i, o, _oi in _input_sources(node)]
+    feeding = [(o.path, i) for _oi, o, i in _output_targets(node)]
     node.destroy()
-    return {"ok": True}
+    out = {"ok": True, "deleted": deleted}
+    rewired, unwired = [], []
+    for target_path, index in feeding:
+        target = _op(target_path)
+        if target is None:
+            continue
+        now = [o.path for i, o, _ in _input_sources(target) if i == index]
+        if now:
+            rewired.append({"to": "%s[%d]" % (target_path, index), "now_from": now[0]})
+        else:
+            unwired.append("%s[%d]" % (target_path, index))
+    if rewired:
+        out["rewired"] = rewired
+        out["note"] = ("TouchDesigner connected the deleted operator's input (%s) to what "
+                       "it was feeding" % (fed_from[0] if fed_from else "?"))
+    if unwired:
+        out["left_unwired"] = unwired
+    return out
 
 
 def _json_safe(value):
@@ -1655,6 +1781,100 @@ def _serialize_exec_result(value):
         "result_type": type(value).__name__,
         "result_is_structured": isinstance(value, structured_types),
     }
+
+
+def _sequences(node):
+    """The sequences of ``node`` that can be reached without cooking it.
+
+    Verified on 2025.33230: ITERATING ``OP.seq`` cooks an operator that has
+    never cooked -- totalCooks 0 -> 1 for a Constant CHOP, a Noise TOP and an
+    Alembic SOP alike, even inside /sys/quiet with cooking off (the Alembic SOP
+    read its file; a device operator would open its device). On an operator
+    that has cooked it adds no cook. So a never-cooked operator's sequences are
+    found through its visible parameters (``Par.sequence``), which cooks
+    nothing; a sequence none of whose parameters exist yet (Primitive POP
+    ``pt``) stays out of sight until the operator first cooks.
+    """
+    try:
+        cooked = int(getattr(node, "totalCooks", 1) or 0) > 0
+    except (TypeError, ValueError):
+        cooked = True
+    if cooked:
+        try:
+            return list(node.seq)
+        except Exception:  # noqa: BLE001 - no sequences, or a build without OP.seq
+            return []
+    found = {}
+    try:
+        for par in node.pars():
+            seq = getattr(par, "sequence", None)
+            if seq is not None:
+                found.setdefault(str(getattr(seq, "name", seq)), seq)
+    except Exception:  # noqa: BLE001
+        pass
+    return list(found.values())
+
+
+def _sequence_sizes(node):
+    """``{sequence name: block count}`` for an operator."""
+    out = {}
+    for seq in _sequences(node):
+        try:
+            out[str(seq.name)] = int(seq.numBlocks)
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
+def _materialize_sequences(node):
+    """Make an operator's sequence parameters visible to ``node.par`` / ``pars()``.
+
+    Verified on 2025.33230: block parameters exist lazily. A Primitive POP
+    reports one ``pt`` block while ``pars()`` lists no ``pt*`` parameter at all
+    -- they appear only once something touches them. Walking
+    ``seq.blocks[i].par`` does that without adding a block (unlike
+    ``par[name]``, see :func:`_grows_sequence`) and, through
+    :func:`_sequences`, without cooking anything.
+    """
+    for seq in _sequences(node):
+        try:
+            for block in seq.blocks:
+                for _par in block.par:
+                    pass
+        except Exception:  # noqa: BLE001
+            continue
+
+
+def _grows_sequence(node, name):
+    """The ``(sequence name, blocks)`` a LOOKUP of ``name`` would grow, else None.
+
+    Verified on 2025.33230: reading a sequence parameter that is past the last
+    block creates it. ``op.par['const4value']`` on a one-channel Constant CHOP
+    returned a parameter and left the operator with five channels; so did
+    ``getattr(op.par, 'const7value')``. A read-only tool must not look such a
+    name up -- checking that it exists would change the network.
+    """
+    if not isinstance(name, str):
+        return None
+    for seq in _sequences(node):
+        try:
+            prefix, blocks = str(seq.name), int(seq.numBlocks)
+        except Exception:  # noqa: BLE001
+            continue
+        match = re.match(r"%s(\d+)" % re.escape(prefix), name)
+        if match and int(match.group(1)) >= blocks:
+            return prefix, blocks
+    return None
+
+
+def _read_par(node, name):
+    """``node.par[name]`` for read-only tools: None instead of growing a sequence."""
+    if not name or _grows_sequence(node, name) is not None:
+        return None
+    try:
+        return node.par[name]
+    except Exception:  # noqa: BLE001
+        return getattr(node.par, name, None)
 
 
 def _par_mode_name(par):
@@ -1714,6 +1934,7 @@ def _do_get_parameters(path, detail="normal", names=None, non_default=False):
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
+    _materialize_sequences(node)
     pars = list(node.par)
     if names:
         pats = [n.strip() for n in (names.split(",") if isinstance(names, str) else names)
@@ -1756,12 +1977,20 @@ def _do_get_parameter_info(path, names=None):
         return {"ok": False, "error": "not found"}
     if isinstance(names, str):
         names = [n.strip() for n in names.split(",") if n.strip()]
+    _materialize_sequences(node)
     if not names:
         names = [p.name for p in node.par]
-    out = {}
+    out, missing = {}, {}
     for nm in names:
-        par = getattr(node.par, nm, None)
+        grows = _grows_sequence(node, nm)
+        if grows is not None:
+            missing[nm] = ("sequence %r has %d block(s); reading this name would add "
+                           "blocks, so it was not looked up" % grows)
+            continue
+        par = _read_par(node, nm)
         if par is None:
+            missing[nm] = (suggest_parameter(nm, [p.name for p in node.par])
+                           or "no such parameter")
             continue
         entry = {
             "name": par.name,
@@ -1790,7 +2019,13 @@ def _do_get_parameter_info(path, names=None):
         except Exception:  # noqa: BLE001
             pass
         out[nm] = entry
-    return {"ok": True, "parameters": out}
+    result = {"ok": True, "parameters": out}
+    if missing:
+        result["missing"] = missing
+    sizes = _sequence_sizes(node)
+    if sizes:
+        result["sequences"] = sizes
+    return result
 
 
 def _do_bind_parameter_expression(path, param, expression):
@@ -1875,6 +2110,18 @@ def _shader_errors_for(node):
     for the session. Callers scope it to the operators a write actually
     touched; an explicit ``get_errors`` is a deliberate request and may walk.
     """
+    # `compileResult` is the compiler's own output, on the operator itself
+    # (verified on glslTOP, 2025.33230: "ERROR: /…/gl_pixel:3: 'x' : undeclared
+    # identifier"). It needs no cook and survives a deleted Info DAT, so it is
+    # read first; the Info DAT stays as the fallback for types without it.
+    result = getattr(node, "compileResult", None)
+    if isinstance(result, str) and result.strip():
+        try:
+            lines = shader_error_lines(result)
+        except Exception:  # noqa: BLE001
+            lines = []
+        if lines:
+            return lines
     info = _info_dat_for(node)
     if info is None:
         return []
@@ -1882,6 +2129,23 @@ def _shader_errors_for(node):
         return shader_error_lines(info.text)
     except Exception:  # noqa: BLE001
         return []
+
+
+def _docked_script_errors(node, already=()):
+    """Script errors that live on ``node``'s docked DATs.
+
+    Verified on 2025.33230: a Script CHOP whose ``onCook`` raises reports
+    nothing through its own ``errors()``, ``warnings()`` or ``scriptErrors()``
+    -- recursive or not. The traceback is on the docked callbacks DAT
+    (``scr_callbacks.scriptErrors()``). Asking the Script operator alone came
+    back clean while its viewer was red.
+    """
+    out = []
+    for docked in (getattr(node, "docked", None) or []):
+        for message in _diag_call(docked, "scriptErrors", False):
+            if message not in already and message not in out:
+                out.append(message)
+    return out
 
 
 def _diag_host(node):
@@ -1910,7 +2174,22 @@ def _op_diagnostics(node, include_warnings=True, include_shader=True,
     errors = _diag_call(node, "errors", recurse)
     warnings = _diag_call(node, "warnings", recurse) if include_warnings else []
     script = _diag_call(node, "scriptErrors", recurse)
+    script = script + _docked_script_errors(node, script)
     shader = _shader_errors_for(node) if include_shader else []
+    if include_shader and recurse and getattr(node, "isCOMP", False):
+        # A compile failure is on none of the three recursive surfaces, so a
+        # recursive read of a COMP missed every shader inside it (verified:
+        # only the GLSL TOP's vague *warning* came back). compileResult is a
+        # property and costs no cook; capped like every other walk.
+        try:
+            inner = node.findChildren(maxDepth=MAX_DEPTH)
+        except Exception:  # noqa: BLE001
+            inner = []
+        for child in inner[:2000]:
+            if isinstance(getattr(child, "compileResult", None), str):
+                for line in _shader_errors_for(child):
+                    if line not in shader:
+                        shader.append(line)
     split = split_diagnostics(errors, warnings, script, shader)
     return {
         "errors": errors + script + shader,
@@ -2017,19 +2296,27 @@ def _do_execute_python(code):
 
 def _do_list_nodes(path, detail="normal"):
     """List the children of a node (defaults to the root COMP when path is empty)."""
-    node = _op(path) or root
+    node = _start_node(path)
     if node is None:
         return {"ok": False, "error": "not found"}
     kids = [{"name": c.name, "type": c.type, "op_type": _op_type(c), "path": c.path}
             for c in node.children]
+    hidden = len([a for a in _annotations_in(node) if getattr(a, "utility", False)])
     if detail == "brief":
-        return {"ok": True, "count": len(kids)}
-    return {"ok": True, "nodes": kids}
+        out = {"ok": True, "count": len(kids)}
+    else:
+        out = {"ok": True, "nodes": kids}
+    if hidden:
+        # Comments and network boxes are utility operators: `children`, `ops()`
+        # and op(path) all skip them (verified 2025.33230).
+        out["annotations"] = hidden
+        out["annotations_hint"] = "annotate(action='list', path=...) reads them"
+    return out
 
 
 def _do_scan_network(path, depth=3):
     """Traverse a subnetwork: every node, connection, and non-default parameter."""
-    start_node = _op(path) or root
+    start_node = _start_node(path)
     if start_node is None:
         return {"ok": False, "error": "not found"}
     scanned = []
@@ -2103,11 +2390,58 @@ def _do_connect_nodes(from_path, to_path, from_output=0, to_input=0):
         return {"ok": False, "error": f"source not found: {from_path}"}
     if dst is None:
         return {"ok": False, "error": f"destination not found: {to_path}"}
+    # A wire only exists between siblings. Verified on 2025.33230: connecting
+    # across networks raises nothing, makes no connection, AND removes the wire
+    # that was on that input -- a "successful" call that breaks the network.
+    src_parent, dst_parent = _parent_path(src), _parent_path(dst)
+    if src_parent is not None and dst_parent is not None and src_parent != dst_parent:
+        family = _family_of(src) or "TOP"
+        select_par = _SELECT_PAR.get(family)
+        how = ("a select%s in %s with %s=%r" % (family, dst_parent, select_par, src.path)
+               if select_par else "a Select operator in %s" % dst_parent)
+        return {"ok": False, "error_code": "cross_network",
+                "error": "%s and %s are in different networks (%s vs %s); a wire only "
+                         "joins siblings. Nothing was changed. Reference it instead with "
+                         "%s, or bring it in through an In operator inside the COMP."
+                         % (src.path, dst.path, src_parent, dst_parent, how),
+                "next_tools": ["create_node", "set_parameters"]}
     try:
-        dst.inputConnectors[to_input].connect(src.outputConnectors[from_output])
-        return {"ok": True, "connected": f"{src.path}[{from_output}] -> {dst.path}[{to_input}]"}
+        from_output, to_input = int(from_output or 0), int(to_input or 0)
+        ins, outs = dst.inputConnectors, src.outputConnectors
+        if not 0 <= to_input < len(ins):
+            return {"ok": False,
+                    "error": "%s has %d input connector(s); to_input=%d does not exist%s"
+                             % (dst.path, len(ins), to_input,
+                                " (a COMP gets one per In operator inside it)"
+                                if getattr(dst, "isCOMP", False) else "")}
+        if not 0 <= from_output < len(outs):
+            return {"ok": False,
+                    "error": "%s has %d output connector(s); from_output=%d does not exist%s"
+                             % (src.path, len(outs), from_output,
+                                " (a COMP gets one per Out operator inside it)"
+                                if getattr(src, "isCOMP", False) else "")}
+        ins[to_input].connect(outs[from_output])
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)}
+    fed_by = [o.path for i, o, _ in _input_sources(dst) if i == to_input]
+    if fed_by and src.path not in fed_by:
+        return {"ok": False, "error": "TouchDesigner accepted the call but %s[%d] is fed by %s, "
+                                      "not %s" % (dst.path, to_input, ", ".join(fed_by), src.path),
+                "fed_by": fed_by}
+    return {"ok": True, "connected": f"{src.path}[{from_output}] -> {dst.path}[{to_input}]"}
+
+
+#: The parameter of select<FAMILY> that names its source (from the catalog).
+_SELECT_PAR = {"TOP": "top", "CHOP": "chops", "SOP": "sops", "DAT": "dat", "POP": "pop"}
+
+
+def _parent_path(node):
+    """Path of ``node``'s network, or None when it cannot be told."""
+    try:
+        parent = node.parent()
+        return parent.path if parent is not None else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _do_rename_node(path, new_name):
@@ -2142,7 +2476,7 @@ def _do_copy_node(path, new_parent, new_name=None):
 
 def _do_auto_layout(path, direction="left-right", spacing_x=200, spacing_y=200):
     """Auto-arrange all children of a COMP in a left-to-right or top-down grid."""
-    node = _op(path) or root
+    node = _start_node(path)
     if node is None:
         return {"ok": False, "error": "not found"}
     try:
@@ -2279,6 +2613,21 @@ def _do_set_parameters(path, params, detail="normal"):
     # came back as {"ok": true, "applied": {}} and the caller carried on
     # believing the network was configured. Report it, and say what was meant.
     unknown = {}
+    blocks_before = _sequence_sizes(node)
+    runaway = {}
+    for k in params:
+        grows = _grows_sequence(node, k)
+        if grows is not None:
+            index = int(re.match(r"%s(\d+)" % re.escape(grows[0]), k).group(1))
+            if index - grows[1] >= MAX_SEQUENCE_GROWTH:
+                runaway[k] = "sequence %r has %d block(s)" % grows
+    if runaway:
+        return {"ok": False,
+                "error": "refused: %s would add %d or more blocks to a sequence in one "
+                         "call (TD_MCP_MAX_SEQUENCE_GROWTH). Check the block index."
+                         % (", ".join(sorted(runaway)), MAX_SEQUENCE_GROWTH),
+                "sequences": _sequence_sizes(node)}
+    _materialize_sequences(node)
     all_pars = list(node.par)
     available = [p.name for p in all_pars]
     tuplets = {}
@@ -2302,6 +2651,7 @@ def _do_set_parameters(path, params, detail="normal"):
         if node.par[k] is None:
             unknown[k] = suggest_parameter(k, available)
     invalid = {}
+    failed = {}
     for k, v in params.items():
         if node.par[k] is None:
             continue
@@ -2309,8 +2659,16 @@ def _do_set_parameters(path, params, detail="normal"):
         try:
             was_mode = _par_mode_name(par)
             if isinstance(v, dict):
+                if "mode" in v:
+                    wanted = str(v["mode"]).strip().upper()
+                    if wanted not in ("CONSTANT", "EXPRESSION", "BIND"):
+                        raise ValueError("mode must be constant, expression or bind")
+                    par.mode = getattr(type(par.mode), wanted)
                 if "expr" in v:
                     par.expr = v["expr"]
+                if "bind" in v:
+                    # Assigning bindExpr switches the mode to BIND (verified).
+                    par.bindExpr = v["bind"]
                 if v.get("pulse"):
                     par.pulse()
                 if "val" in v:
@@ -2335,7 +2693,25 @@ def _do_set_parameters(path, params, detail="normal"):
                     else:
                         notes[k] = note
         except Exception as e:  # noqa: BLE001
-            applied[k] = f"error: {e}"
+            # Used to be recorded as applied[k] = "error: ..." under ok:true --
+            # a failed write reported as a success with a footnote.
+            message = "%s: %s" % (type(e).__name__, e)
+            if (_par_mode_name(par) == "BIND" and getattr(par, "bindMaster", None) is None
+                    and not isinstance(v, dict)):
+                # Verified on 2025.33230: a parameter bound to something that
+                # does not exist raises "'NoneType' object has no attribute
+                # 'par'" on write and keeps its old value.
+                message = ("bound to %r, which does not resolve, so the write raised (%s). "
+                           "Fix the bind, or unbind while setting: {%r: {'mode': 'constant', "
+                           "'val': %r}}" % (str(getattr(par, "bindExpr", "")), e, k, v))
+            failed[k] = message
+    grown = {name: "%d -> %d blocks" % (blocks_before.get(name, 0), size)
+             for name, size in _sequence_sizes(node).items()
+             if size != blocks_before.get(name, size)}
+    if grown:
+        # Naming const2value on a one-channel Constant CHOP adds the blocks in
+        # between: that is how a sequence is extended, and worth saying.
+        notes["sequences_grown"] = grown
     if invalid:
         # TD does not raise on a bad menu token: the parameter just keeps its
         # old value. Treated as the failure it is, with the valid tokens.
@@ -2345,6 +2721,12 @@ def _do_set_parameters(path, params, detail="normal"):
                     "; ".join("%s=%r (valid: %s)" % (k, params[k], ", ".join(n["menu"][:12]))
                               for k, n in invalid.items())),
                 "invalid": invalid, "applied": applied}
+    if failed:
+        return {"ok": False,
+                "error": "could not set %s on %s" % (
+                    "; ".join("%s (%s)" % (k, m) for k, m in sorted(failed.items())),
+                    getattr(node, "OPType", node.type)),
+                "failed": failed, "applied": applied}
     if unknown:
         # Partial application is a failure, not a success with a footnote: the
         # caller has to know the network is not in the state it asked for.
@@ -2391,8 +2773,10 @@ def _write_readback(par, requested, was_mode):
     """What TD actually did with a plain-value write, when it is not what was
     asked. Verified on 2025.33230: a bad menu token is silently ignored; a
     value past a hard clamp is silently clamped (resolutionw=-5 -> 1); a write
-    to an EXPRESSION/BIND parameter switches it to CONSTANT and drops the
-    expression. Returns None when the write landed as asked."""
+    to an EXPRESSION parameter switches it to CONSTANT (the expression text
+    stays, inactive -- it is saved that way too); a write to a BOUND parameter
+    stays bound and lands on its bind master, so another operator changed.
+    Returns None when the write landed as asked."""
     try:
         got = par.eval()
     except Exception:  # noqa: BLE001
@@ -2403,8 +2787,18 @@ def _write_readback(par, requested, was_mode):
             return {"invalid": True, "kept": _json_safe(got), "menu": names}
         return None
     note = {}
+    now_mode = _par_mode_name(par)
     if was_mode not in ("", "CONSTANT"):
-        note["mode_changed"] = "%s -> CONSTANT (the old expression/bind was discarded)" % was_mode
+        if now_mode == "BIND" and was_mode == "BIND":
+            master = getattr(par, "bindMaster", None)
+            owner = getattr(master, "owner", None)
+            note["written_through_bind"] = (
+                "still bound: the value was written to its bind master%s"
+                % (" %s:%s" % (owner.path, master.name)
+                   if owner is not None and hasattr(master, "name") else ""))
+        elif now_mode != was_mode:
+            note["mode_changed"] = ("%s -> %s (the expression text is kept but no longer "
+                                    "drives the value)" % (was_mode, now_mode or "CONSTANT"))
     if (isinstance(requested, (int, float)) and not isinstance(requested, bool)
             and isinstance(got, (int, float)) and not isinstance(got, bool)
             and abs(float(got) - float(requested)) > 1e-9):
@@ -2448,6 +2842,9 @@ def _describe_par(p):
             row["clamp"] = [lo, hi]
     if getattr(p, "readOnly", False):
         row["read_only"] = True
+    seq = getattr(p, "sequence", None)
+    if seq is not None:
+        row["sequence"] = str(getattr(seq, "name", seq))
     return row
 
 
@@ -2483,6 +2880,7 @@ def _do_describe_op_type(op_type, pattern=None, page=None, include_menus=True):
         probe = None
         try:
             probe = quiet.create(cls if cls is not None else name, "td_mcp_describe")
+            _materialize_sequences(probe)
             _OPTYPE_CACHE[name] = {
                 "family": getattr(probe, "family", ""),
                 "label": getattr(probe, "label", ""),
@@ -2490,6 +2888,7 @@ def _do_describe_op_type(op_type, pattern=None, page=None, include_menus=True):
                 "pages": [pg.name for pg in getattr(probe, "pages", [])],
                 "parameters": [_describe_par(p) for p in probe.par
                                if not (p.name == "pageindex" and getattr(p, "page", None) is None)],
+                "sequences": _sequence_sizes(probe),
             }
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": "could not instantiate %s: %s" % (name, exc)}
@@ -2515,6 +2914,10 @@ def _do_describe_op_type(op_type, pattern=None, page=None, include_menus=True):
            "display_name": ("%s %s" % (entry["label"], entry["family"])).strip(),
            "inputs": entry["inputs"], "pages": entry["pages"], "count": len(rows),
            "total": len(entry["parameters"]), "parameters": rows, "cached": cached}
+    if entry.get("sequences"):
+        # const0name is block 0 of sequence `const`; const1name is block 1 and
+        # comes into being when it is first set.
+        out["sequences"] = entry["sequences"]
     if (pattern or page) and not rows:
         out["hint"] = ("No parameter matched -- the name guess is wrong, not the "
                        "operator. Retry without filters and match by label.")
@@ -2527,7 +2930,7 @@ def _do_pulse_parameter(path, param):
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
-    par = node.par[param] if param else None
+    par = _read_par(node, param) if param else None
     if par is None:
         pulses = [p.name for p in node.par if getattr(p, "isPulse", False)]
         return {"ok": False, "error": "unknown parameter %r on %s" % (param, node.path),
@@ -2690,7 +3093,7 @@ def _do_get_performance(path, max_age_frames=10, depth=1, limit=25):
 
 def _do_validate_network(path, depth=2):
     """Scene-contract check (TD-Codex): unplaced/overlapping nodes and cook errors."""
-    start = _op(path) or root
+    start = _start_node(path)
     if start is None:
         return {"ok": False, "error": "not found"}
     issues = []
@@ -2762,7 +3165,7 @@ def _do_set_flags(path, flags=None):
 
 def _do_find_nodes(path, query=None, op_type=None, depth=4):
     """Search descendants by name substring and/or operator type (touch_mcp find)."""
-    start = _op(path) or root
+    start = _start_node(path)
     if start is None:
         return {"ok": False, "error": "not found"}
     q = (query or "").lower()
@@ -2880,6 +3283,7 @@ def _capture_parameters(node):
     params, expressions = {}, {}
     excluded = excluded_parameter_names(getattr(node, "tags", None))
     unknown = list(excluded)
+    _materialize_sequences(node)
     try:
         pars = list(node.par)
     except Exception:  # noqa: BLE001
@@ -2899,6 +3303,12 @@ def _capture_parameters(node):
                 continue
             mode = str(getattr(p, "mode", "")).upper()
             expr = getattr(p, "expr", "") or ""
+            bind = getattr(p, "bindExpr", "") or ""
+            if "BIND" in mode and bind:
+                # A bound parameter's own `expr` is empty and its `val` is a
+                # stale constant: the bind expression is what has to travel.
+                expressions[name] = {"bind": bind}
+                continue
             if expr and ("EXPRESSION" in mode or "BIND" in mode):
                 expressions[name] = expr
                 continue
@@ -2940,7 +3350,7 @@ def _do_export_recipe(path, depth=3):
     looked source operators up by *name*, so no wire was ever reconnected and
     nothing said so.
     """
-    start = _op(path) or root
+    start = _start_node(path)
     if start is None:
         return {"ok": False, "error": "not found"}
     nodes = []
@@ -3186,6 +3596,10 @@ def _do_import_recipe(recipe, target_parent="*here"):
             if node.par[k] is not None:
                 try:
                     par = node.par[k]
+                    if isinstance(expr, dict) and "bind" in expr:
+                        par.bindExpr = expr["bind"]
+                        par.mode = getattr(type(par.mode), "BIND", par.mode)
+                        continue
                     par.expr = expr
                     par.mode = getattr(type(par.mode), "EXPRESSION", par.mode)
                 except Exception:  # noqa: BLE001
@@ -4084,7 +4498,7 @@ def _do_map_network(path, depth=2):
 
     Shows node connections, positions and non-default param counts so an
     agent can reason about topology spatially. Rendered by `dot -Tpng/-Tsvg`."""
-    start_node = _op(path) or root
+    start_node = _start_node(path)
     if start_node is None:
         return {"ok": False, "error": "not found"}
     nodes = []
@@ -4154,7 +4568,8 @@ def _do_batch(ops):
         if fn is None:
             results.append({"tool": tool, "ok": False, "error": "unknown tool"})
             continue
-        refused = _guard_call(tool, call.get("args", {}))
+        refused = (path_argument_error(tool, call.get("args", {}))
+                   or _guard_call(tool, call.get("args", {})))
         if refused is not None:
             results.append({"tool": tool, "result": _wrap(refused)})
             continue
@@ -4445,6 +4860,478 @@ def _do_set_dat_text(path, text, expected_sha256=None):
         return {"ok": False, "error": str(e)}
 
 
+# --- Annotations (comments, network boxes) ---------------------------------
+# Verified on 2025.33230. An annotation is an annotateCOMP (a clone of
+# op.TDAnnotate's master). The ones made in the UI carry `utility = True`,
+# and a utility operator is invisible to almost everything: `op(path)` returns
+# None, `parent.op(name)`, `ops('*')`, `children` and `findChildren()` all skip
+# it. Only `findChildren(includeUtility=True)` returns it. So no other tool
+# here can see, edit or delete one. `create('annotateCOMP', name)` also
+# ignores the name (it comes back as annotate1).
+_ANNOTATE_MODES = ("annotate", "comment", "networkbox")
+_ANNOTATE_MARGIN = 40
+_ANNOTATE_TITLE = 60
+
+
+def _annotations_in(parent):
+    """Every annotation directly inside ``parent``, utility ones included."""
+    try:
+        found = parent.findChildren(depth=1, includeUtility=True)
+    except Exception:  # noqa: BLE001 - a build/double without includeUtility
+        try:
+            found = list(parent.children)
+        except Exception:  # noqa: BLE001
+            return []
+    return [c for c in found if _op_type(c) == "annotateCOMP"]
+
+
+def _find_annotation(path):
+    """An annotation by path -- found by listing its network, because op()
+    cannot return a utility operator."""
+    resolved = _resolve_path(path) if isinstance(path, str) else ""
+    if not resolved or any(ch in resolved for ch in _PATH_WILDCARDS):
+        return None
+    parent_path, _, name = resolved.rstrip("/").rpartition("/")
+    parent = op(parent_path or "/")  # noqa: F821 - TD global
+    if parent is None:
+        return None
+    for found in _annotations_in(parent):
+        if found.name == name:
+            return found
+    return None
+
+
+def _annotation_view(node):
+    out = {"path": node.path, "name": node.name, "utility": bool(getattr(node, "utility", False)),
+           "rect": [getattr(node, "nodeX", 0), getattr(node, "nodeY", 0),
+                    getattr(node, "nodeWidth", 0), getattr(node, "nodeHeight", 0)]}
+    for key, par_name in (("mode", "Mode"), ("title", "Titletext"), ("body", "Bodytext")):
+        par = getattr(node.par, par_name, None)
+        if par is not None:
+            try:
+                out[key] = _json_safe(par.eval())
+            except Exception:  # noqa: BLE001
+                pass
+    try:
+        out["encloses"] = sorted(o.name for o in node.enclosedOPs)
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def annotation_rect(boxes, margin=_ANNOTATE_MARGIN, title=_ANNOTATE_TITLE):
+    """The rectangle that frames ``boxes`` (``[(x, y, w, h), ...]``, y up) with
+    room for a title bar above. Pure. Returns ``(x, y, w, h)``."""
+    if not boxes:
+        return None
+    x0 = min(b[0] for b in boxes) - margin
+    y0 = min(b[1] for b in boxes) - margin
+    x1 = max(b[0] + b[2] for b in boxes) + margin
+    y1 = max(b[1] + b[3] for b in boxes) + margin + title
+    return int(x0), int(y0), int(x1 - x0), int(y1 - y0)
+
+
+def _apply_annotation(node, mode=None, title=None, body=None, rect=None, color=None):
+    notes = {}
+    if mode is not None:
+        token = str(mode).strip().lower().replace(" ", "")
+        if token not in _ANNOTATE_MODES:
+            return {"ok": False, "error": "mode must be one of %s" % ", ".join(_ANNOTATE_MODES)}
+        node.par.Mode = token
+    if title is not None:
+        node.par.Titletext = str(title)
+    if body is not None:
+        node.par.Bodytext = str(body)
+    if color is not None:
+        try:
+            r, g, b = (float(c) for c in list(color)[:3])
+            node.par.Backcolorr, node.par.Backcolorg, node.par.Backcolorb = r, g, b
+        except Exception as exc:  # noqa: BLE001
+            notes["color"] = "ignored: %s" % exc
+    if rect is not None:
+        try:
+            x, y, w, h = (int(v) for v in list(rect)[:4])
+            node.nodeX, node.nodeY = x, y
+            node.nodeWidth, node.nodeHeight = max(40, w), max(40, h)
+        except Exception as exc:  # noqa: BLE001
+            notes["rect"] = "ignored: %s" % exc
+    return notes
+
+
+def _do_annotate(action="list", path=None, mode=None, title=None, body=None,
+                 around=None, rect=None, color=None, name=None):
+    """List, create, update or delete network annotations (comments, network boxes).
+
+    ``list``: ``path`` is a network. ``create``: ``path`` is the network;
+    ``around`` (operator names in it) frames those operators, or pass
+    ``rect=[x, y, w, h]``. ``update`` / ``delete``: ``path`` is the annotation.
+    ``mode``: annotate (title + body) | comment (body only) | networkbox.
+    """
+    action = str(action or "list").strip().lower()
+    if action == "list":
+        parent = _op(path) if path else _current_parent()
+        if parent is None or not getattr(parent, "isCOMP", False):
+            return {"ok": False, "error": "not a network (COMP): %s" % path}
+        found = [_annotation_view(a) for a in _annotations_in(parent)]
+        return {"ok": True, "network": parent.path, "count": len(found), "annotations": found}
+    if action == "create":
+        parent = _op(path) if path else _current_parent()
+        if parent is None or not getattr(parent, "isCOMP", False):
+            return {"ok": False, "error": "not a network (COMP): %s" % path}
+        missing, boxes = [], []
+        for ref in ([around] if isinstance(around, str) else list(around or [])):
+            target = parent.op(str(ref).rsplit("/", 1)[-1])
+            if target is None:
+                missing.append(str(ref))
+            else:
+                boxes.append((target.nodeX, target.nodeY, target.nodeWidth, target.nodeHeight))
+        if missing:
+            return {"ok": False, "error": "`around` names operators that are not in %s: %s"
+                                          % (parent.path, ", ".join(missing))}
+        node = parent.create("annotateCOMP")
+        if name:
+            try:
+                node.name = name
+            except Exception:  # noqa: BLE001 - keeps the generated name
+                pass
+        notes = _apply_annotation(node, mode or "annotate", title, body,
+                                  rect if rect is not None else annotation_rect(boxes), color)
+        if isinstance(notes, dict) and notes.get("ok") is False:
+            node.destroy()
+            return notes
+        try:
+            node.utility = True  # as the editor makes them: out of ops()/children
+        except Exception:  # noqa: BLE001
+            pass
+        out = {"ok": True, "annotation": _annotation_view(node)}
+        if notes:
+            out["notes"] = notes
+        return out
+    if action in ("update", "delete"):
+        node = _find_annotation(path)
+        if node is None:
+            return {"ok": False, "error": "no annotation at %s" % path,
+                    "hint": "annotate(action='list', path=<its network>) shows their paths"}
+        if action == "delete":
+            where = node.path
+            node.destroy()
+            return {"ok": True, "deleted": where}
+        notes = _apply_annotation(node, mode, title, body, rect, color)
+        if isinstance(notes, dict) and notes.get("ok") is False:
+            return notes
+        if name and name != node.name:
+            node.name = name
+        out = {"ok": True, "annotation": _annotation_view(node)}
+        if notes:
+            out["notes"] = notes
+        return out
+    return {"ok": False, "error": "action must be list, create, update or delete"}
+
+
+# --- Health: what TouchDesigner does not report ----------------------------
+# `get_errors` covers what TouchDesigner calls an error. A network can be
+# broken in ways it never calls one: an expression that raises until the next
+# cook, a bypassed operator, a COMP with cooking switched off, a branch nothing
+# pulls, a timeline that is not running. One call collects those. The idea of
+# a "what it stays quiet about" report is grigabyte/td-atlas's `td_health`;
+# each finding here was reproduced on 2025.33230 before it was written.
+HEALTH_MAX_OPS = int(os.environ.get("TD_MCP_HEALTH_MAX_OPS", "2000"))
+HEALTH_SCAN_MS = float(os.environ.get("TD_MCP_HEALTH_SCAN_MS", "400"))
+_HEALTH_PATHS = 8
+_DIAG_PATH = re.compile(r"\((/[^()\s]*)\)\s*$")
+_DATAFLOW = ("TOP", "CHOP", "SOP", "POP", "MAT")
+
+
+def _finding(severity, kind, message, paths=None, **extra):
+    paths = list(paths or [])
+    out = {"severity": severity, "kind": kind, "message": message, "count": len(paths)}
+    if paths:
+        out["paths"] = paths[:_HEALTH_PATHS]
+        if len(paths) > _HEALTH_PATHS:
+            out["more"] = len(paths) - _HEALTH_PATHS
+    out.update(extra)
+    return out
+
+
+def health_report(raw):
+    """Findings from one health sample. Pure.
+
+    ``raw``: ``{"fps_target", "seconds", "frames_advanced", "playing",
+    "realtime", "partial", "errors": {path: [msg]}, "warnings": {path: [msg]},
+    "ops": [{"path", "family", "cooks_before", "cooks_after", "cook_ms",
+    "bypass", "cooking_off", "dead_expressions": [par], "dead_binds": [par],
+    "failed_extensions": [n]}]}``.
+    """
+    findings = []
+    fps_target = float(raw.get("fps_target") or 60.0)
+    seconds = float(raw.get("seconds") or 0.0)
+    advanced = raw.get("frames_advanced")
+    playing = raw.get("playing")
+    ops = raw.get("ops") or []
+    measured = (advanced / seconds) if (advanced is not None and seconds > 0) else None
+    judged = True  # can "did it cook" be told from this sample?
+    if playing is False:
+        judged = False
+        findings.append(_finding(
+            "note", "paused", "the timeline is paused: nothing time-driven advances, and "
+            "whether an operator is being cooked cannot be told from this sample"))
+    elif measured is not None and advanced < max(2, 0.25 * fps_target * seconds):
+        judged = False
+        findings.append(_finding(
+            "warning", "stalled", "only %d frame(s) passed in %.2f s at a %g fps target: "
+            "TouchDesigner is not drawing (minimised, or in the background). There is no "
+            "evidence either way about cooking or cost until it runs"
+            % (advanced, seconds, fps_target), measured_fps=round(measured, 1)))
+    elif measured is not None and measured < 0.6 * fps_target:
+        findings.append(_finding(
+            "warning", "slow", "running at %.0f of %g fps" % (measured, fps_target),
+            measured_fps=round(measured, 1)))
+    if raw.get("realtime") is False:
+        findings.append(_finding(
+            "note", "not-realtime", "Realtime is off: every frame is cooked however long it "
+            "takes, so the frame rate says nothing about cost"))
+
+    errors = raw.get("errors") or {}
+    if errors:
+        first = next(iter(errors.values()))[0]
+        findings.append(_finding(
+            "error", "errors", "%d operator(s) report an error; first: %s"
+            % (len(errors), first.strip().splitlines()[0][:200]), sorted(errors)))
+    dead = sorted(o["path"] for o in ops if o.get("dead_expressions"))
+    if dead:
+        detail = {o["path"]: o["dead_expressions"][:6] for o in ops if o.get("dead_expressions")}
+        findings.append(_finding(
+            "error", "dead-expression", "%d operator(s) hold a parameter expression that "
+            "raises. Until the operator next cooks errors() stays empty, so get_errors can "
+            "call it clean" % len(dead), dead,
+            parameters={k: detail[k] for k in list(detail)[:_HEALTH_PATHS]}))
+    binds = sorted(o["path"] for o in ops if o.get("dead_binds"))
+    if binds:
+        findings.append(_finding(
+            "warning", "dead-bind", "%d operator(s) have a parameter bound to something that "
+            "does not exist; it reads its last value and reports no error" % len(binds), binds))
+    failed = sorted(o["path"] for o in ops if o.get("failed_extensions"))
+    if failed:
+        findings.append(_finding(
+            "error", "extension-failed", "%d COMP(s) have an extension that did not "
+            "initialise (the object is None); every call into it fails later as a plain "
+            "AttributeError. scriptErrors on the COMP has the reason" % len(failed), failed))
+    off = sorted(o["path"] for o in ops if o.get("cooking_off"))
+    if off:
+        findings.append(_finding(
+            "warning", "cooking-off", "%d COMP(s) have cooking switched off: nothing inside "
+            "them runs, and nothing reports it" % len(off), off))
+    bypassed = sorted(o["path"] for o in ops if o.get("bypass"))
+    if bypassed:
+        findings.append(_finding(
+            "note", "bypassed", "%d operator(s) are bypassed: each passes its first input "
+            "through unchanged" % len(bypassed), bypassed))
+    warnings = raw.get("warnings") or {}
+    if warnings:
+        first = next(iter(warnings.values()))[0]
+        findings.append(_finding(
+            "warning", "warnings", "%d operator(s) carry a warning; first: %s"
+            % (len(warnings), first.strip().splitlines()[0][:200]), sorted(warnings)))
+
+    cooked = [o for o in ops if o.get("cooks_after", 0) != o.get("cooks_before", 0)]
+    if judged:
+        never = sorted(o["path"] for o in ops if o.get("family") in _DATAFLOW
+                       and not o.get("cooks_after") and not o.get("bypass"))
+        if never:
+            findings.append(_finding(
+                "warning", "never-cooked", "%d operator(s) have never cooked: nothing asks "
+                "for their output (no viewer, no display flag, nothing downstream that is "
+                "itself pulled). Wire them into what is shown, or turn a viewer on"
+                % len(never), never))
+        idle = sorted(o["path"] for o in ops if o.get("family") in _DATAFLOW
+                      and o.get("cooks_after") and o.get("cooks_after") == o.get("cooks_before")
+                      and not o.get("bypass"))
+        if idle:
+            findings.append(_finding(
+                "note", "idle", "%d operator(s) have cooked before but did not cook during the "
+                "check. Normal when nothing they depend on changes; for a network that should "
+                "animate it means nothing is pulling it -- no viewer, no display flag, no output "
+                "reading it" % len(idle), idle))
+        frame_ms = 1000.0 / fps_target
+        heavy = sorted((o for o in cooked if float(o.get("cook_ms") or 0) > 0.5 * frame_ms),
+                       key=lambda o: -float(o.get("cook_ms") or 0))
+        if heavy:
+            findings.append(_finding(
+                "warning", "expensive", "%d operator(s) cooked during the check and each "
+                "took more than half a frame (%.1f ms)" % (len(heavy), 0.5 * frame_ms),
+                ["%s (%.1f ms)" % (o["path"], float(o["cook_ms"])) for o in heavy]))
+    if raw.get("partial"):
+        findings.append(_finding(
+            "note", "partial", "the scan stopped at its time or size budget (%s); narrow "
+            "`path` for a complete answer" % raw["partial"]))
+    order = {"error": 0, "warning": 1, "note": 2}
+    findings.sort(key=lambda f: order.get(f["severity"], 3))
+    counts = {k: sum(1 for f in findings if f["severity"] == k) for k in order}
+    summary = "%d operator(s) checked" % len(ops)
+    if judged and ops:
+        summary += ", %d cooked during the check" % len(cooked)
+    if measured is not None and judged:
+        summary += ", %.0f/%g fps" % (measured, fps_target)
+    return {"ok": True, "summary": summary, "counts": counts,
+            "clean": counts["error"] == 0 and counts["warning"] == 0,
+            "findings": findings}
+
+
+def _health_scope(path):
+    """``(start, operators)`` for a health check, or ``(None, error)``."""
+    if path:
+        start = _op(path)
+        if start is None:
+            return None, "not found: %s" % path
+    else:
+        start = op("/project1")  # noqa: F821 - TD global
+        if start is None:
+            start = root  # noqa: F821
+    if getattr(start, "isCOMP", False):
+        try:
+            nodes = list(start.findChildren())
+        except Exception:  # noqa: BLE001
+            nodes = list(getattr(start, "children", []))
+    else:
+        nodes = [start]
+    home = _bridge_home()
+    nodes = [n for n in nodes if not _inside_bridge(n.path, home)]
+    return start, nodes
+
+
+def _health_first(path):
+    """Main thread, cheap: the clock and every operator's cook count."""
+    start, nodes = _health_scope(path)
+    if start is None:
+        return {"error": nodes}
+    return {"t": time.time(), "frame": _now_abs_frame(),
+            "cooks": {n.path: int(getattr(n, "totalCooks", 0) or 0)
+                      for n in nodes[:HEALTH_MAX_OPS]}}
+
+
+def _diagnostics_by_path(start, method):
+    """``{operator path: [messages]}`` from one recursive diagnostic read."""
+    out = {}
+    for message in _diag_call(start, method, True):
+        match = _DIAG_PATH.search(message.strip())
+        out.setdefault(match.group(1) if match else start.path, []).append(message)
+    return out
+
+
+def _health_second(path, first):
+    """Main thread: the second sample and the static scan, as raw material
+    for :func:`health_report`."""
+    start, nodes = _health_scope(path)
+    if start is None:
+        return {"error": nodes}
+    partial = None
+    if len(nodes) > HEALTH_MAX_OPS:
+        partial = "%d of %d operators" % (HEALTH_MAX_OPS, len(nodes))
+        nodes = nodes[:HEALTH_MAX_OPS]
+    now_frame = _now_abs_frame()
+    seconds = max(0.0, time.time() - first["t"])
+    try:
+        playing = bool(root.time.play)  # noqa: F821 - TD global
+    except Exception:  # noqa: BLE001
+        playing = None
+    try:
+        fps_target, realtime = float(project.cookRate), bool(project.realTime)  # noqa: F821
+    except Exception:  # noqa: BLE001
+        fps_target, realtime = 60.0, None
+    errors = _diagnostics_by_path(start, "errors")
+    for path_, messages in _diagnostics_by_path(start, "scriptErrors").items():
+        errors.setdefault(path_, []).extend(messages)
+    warnings = _diagnostics_by_path(start, "warnings")
+    deadline = time.perf_counter() + HEALTH_SCAN_MS / 1000.0
+    ops, scanned = [], 0
+    for node in nodes:
+        row = {"path": node.path, "family": _family_of(node),
+               "cooks_before": first["cooks"].get(node.path, 0),
+               "cooks_after": int(getattr(node, "totalCooks", 0) or 0),
+               "cook_ms": float(getattr(node, "cpuCookTime", 0) or 0)
+                          + float(getattr(node, "gpuCookTime", 0) or 0),
+               "bypass": bool(getattr(node, "bypass", False))}
+        if getattr(node, "isCOMP", False):
+            if getattr(node, "allowCooking", True) is False:
+                row["cooking_off"] = True
+            try:
+                exts = list(node.extensions)
+                wanted = [i for i in range(1, 5)
+                          if str(getattr(getattr(node.par, "extension%d" % i, None), "eval",
+                                         lambda: "")() or "").strip()]
+                failed = [i for i in wanted if i - 1 < len(exts) and exts[i - 1] is None]
+                if failed:
+                    row["failed_extensions"] = failed
+            except Exception:  # noqa: BLE001
+                pass
+        if time.perf_counter() < deadline:
+            scanned += 1
+            dead, binds = [], []
+            try:
+                for par in node.pars():
+                    mode = _par_mode_name(par)
+                    if mode == "EXPRESSION":
+                        try:
+                            par.eval()
+                        except Exception:  # noqa: BLE001 - that IS the finding
+                            dead.append(par.name)
+                    elif mode == "BIND" and getattr(par, "bindMaster", None) is None:
+                        binds.append(par.name)
+            except Exception:  # noqa: BLE001
+                pass
+            if dead:
+                row["dead_expressions"] = dead
+            if binds:
+                row["dead_binds"] = binds
+        ops.append(row)
+    if scanned < len(nodes):
+        note = "expressions read on %d of %d operators" % (scanned, len(nodes))
+        partial = "%s; %s" % (partial, note) if partial else note
+    return {"fps_target": fps_target, "realtime": realtime, "playing": playing,
+            "seconds": seconds,
+            "frames_advanced": (now_frame - first["frame"]
+                                if now_frame is not None and first.get("frame") is not None
+                                else None),
+            "partial": partial, "errors": errors, "warnings": warnings, "ops": ops,
+            "scope": start.path}
+
+
+def _health_across_frames(args):
+    """HTTP thread: ``health`` -- two samples with real frames between them."""
+    path = args.get("path")
+    try:
+        seconds = min(3.0, max(0.2, float(args.get("seconds") or 0.5)))
+    except (TypeError, ValueError):
+        seconds = 0.5
+    first = _call_on_main(_health_first, path)
+    if first.get("error"):
+        return _wrap({"ok": False, "error": first["error"]})
+    time.sleep(seconds)
+    raw = _call_on_main(_health_second, path, first)
+    if raw.get("error"):
+        return _wrap({"ok": False, "error": raw["error"]})
+    out = health_report(raw)
+    out["path"] = raw["scope"]
+    return _wrap(out)
+
+
+def _do_health(path=None, seconds=0.5):
+    """Report what TouchDesigner does not call an error: dead expressions and
+    binds, failed extensions, COMPs with cooking off, bypassed and never-cooked
+    operators, a paused or stalled timeline, plus errors and warnings."""
+    first = _health_first(path)
+    if first.get("error"):
+        return {"ok": False, "error": first["error"]}
+    raw = _health_second(path, first)
+    if raw.get("error"):
+        return {"ok": False, "error": raw["error"]}
+    # Same thread, same frame: no frames passed, so cooking cannot be judged.
+    raw["playing"] = False if raw["frames_advanced"] in (0, None) else raw["playing"]
+    out = health_report(raw)
+    out["path"] = raw["scope"]
+    return out
+
+
 _DISPATCH = {
     "create_node": lambda a: _do_create(a.get("path"), a.get("type"), a.get("name"),
                                          a.get("nodeX"), a.get("nodeY")),
@@ -4515,7 +5402,12 @@ _DISPATCH = {
     "build_network": lambda a: _do_build_network(a.get("spec"), a.get("target_parent"),
                                                  a.get("replace", False)),
     "save_tox": lambda a: _do_save_tox(a.get("path"), a.get("file_path")),
+    "annotate": lambda a: _do_annotate(a.get("action", "list"), a.get("path"), a.get("mode"),
+                                       a.get("title"), a.get("body"), a.get("around"),
+                                       a.get("rect"), a.get("color"), a.get("name")),
+    "health": lambda a: _do_health(a.get("path"), a.get("seconds", 0.5)),
 }
+_MULTI_FRAME_TOOLS["health"] = _health_across_frames
 
 
 def _redact_paths(text):

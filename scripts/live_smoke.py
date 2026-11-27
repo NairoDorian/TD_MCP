@@ -79,6 +79,26 @@ async def offline() -> None:
             text = json.dumps(_text(res))
             check("offline: validator catches a bad menu value and a friendly name",
                   "MENU_INVALID" in text and "PARAM_RENAMED" in text, text[:400])
+            # Saved project files, read with TouchDesigner's own toeexpand.
+            toe = ROOT.parent / "TD_MCP_TESTS" / "TEST-01" / "NewProject.toe"
+            if toe.exists():
+                info = _text(await s.call_tool("td_project_read", {"file": str(toe)}))
+                check("offline: td_project_read summarises a saved .toe",
+                      info.get("ok") and any(r["path"] == "/project1" for r in info.get("roots", [])),
+                      {k: info.get(k) for k in ("ok", "error", "roots")})
+                net = _text(await s.call_tool("td_project_read", {
+                    "file": str(toe), "path": "/project1/feedback_trails"}))
+                by = {o["path"].rsplit("/", 1)[-1]: o for o in net.get("operators", [])}
+                check("offline: ...lists a network with real opTypes, wires and expressions",
+                      by.get("composite_trails", {}).get("type") == "compositeTOP"
+                      and by.get("noise_field", {}).get("params", {}).get("tz", {}).get("expr"),
+                      {k: net.get(k) for k in ("ok", "error", "count")})
+                hit = _text(await s.call_tool("td_project_grep", {"file": str(toe),
+                                                                  "pattern": "null_ctrl"}))
+                check("offline: td_project_grep finds an expression inside the file",
+                      hit.get("count", 0) >= 1, hit)
+            else:
+                print("[SKIP] offline: no TEST-01 project file for the .toe reader")
 
 
 async def live() -> None:
@@ -173,6 +193,26 @@ async def live() -> None:
                       denied.get("error_code") == "consent_needed", denied)
                 errs = _text(await s.call_tool("get_errors", {"path": SCRATCH, "recurse": True}))
                 check("live: get_errors recurse answers", errs.get("ok"), errs)
+                wild = _text(await s.call_tool("delete_node", {"path": SCRATCH + "/noise*"}))
+                check("live: a wildcard path is refused, not resolved to one match",
+                      wild.get("error_code") == "wildcard_path", wild)
+                await s.call_tool("set_parameters", {"path": SCRATCH + "/level1",
+                                                     "params": {"opacity": {"expr": "op('nope').par.x"}}})
+                health = _text(await s.call_tool("health", {"path": SCRATCH}))
+                kinds = {f["kind"] for f in health.get("findings", [])}
+                check("live: health reports a dead expression get_errors cannot see yet",
+                      health.get("ok") and "dead-expression" in kinds, health)
+                note = _text(await s.call_tool("annotate", {
+                    "action": "create", "path": SCRATCH, "title": "smoke",
+                    "around": ["noise1", "level1"]}))
+                listed = _text(await s.call_tool("annotate", {"action": "list", "path": SCRATCH}))
+                check("live: annotate creates a box and lists it",
+                      note.get("ok") and listed.get("count") == 1, {"note": note, "list": listed})
+                seq = _text(await s.call_tool("describe_op_type", {"op_type": "primitivePOP",
+                                                                   "pattern": "pt0pos*"}))
+                check("live: describe_op_type lists sequence blocks a fresh instance hides",
+                      [p["name"] for p in seq.get("parameters", [])] == ["pt0posx", "pt0posy", "pt0posz"],
+                      seq)
             finally:
                 done = _text(await s.call_tool("delete_node", {"path": SCRATCH}))
                 check("live: cleanup", done.get("ok"), done)
