@@ -54,14 +54,10 @@ closed without saving and deleted.
 
 **From the design comparison (TD_MCP code read, file:line checked by the reader):**
 
-- **Call journal with old values.** No live call is recorded today
-  (`td_activity_log` is an in-memory list of offline calls). Plan: hook the
-  bridge's `_invoke` (all transports go through it), JSONL under
-  `~/.td_mcp/journal/`, handlers return `before` (mode/val/expr/bind per
-  parameter, flags, wires, names, positions, a DAT text hash with the text
-  in a blob), bounded lines and rotation, token and home paths scrubbed; a
-  `td_journal` query tool on both servers; `undo_agent(n, dry_run)` that
-  builds inverse calls and stops at a conflict or an irreversible call.
+- ~~Call journal with old values~~ -- built in 1.18.0 (`td_journal`,
+  `scripts/live_journal.py` 9/9, twice in one session). Not taken from the design: a conflict
+  check before a revert (the plan is built from the journal alone and is
+  reviewed before it is sent), and a host-side query on the live server.
 - ~~Documented gates with no code behind them, the snapshot "sandbox",
   protected-path parents, unfenced tools, `exec_node_method` classed
   additive, `save_tox` writing any path, colliding snapshot names,
@@ -112,4 +108,14 @@ closed without saving and deleted.
 The component's **Allow Python Execution** toggle overrides `TD_MCP_ALLOW_EXEC`
 in the environment (like the token): `TD_MCP_ALLOW_EXEC=0` at launch did not
 turn exec off while the toggle was on.
+
+## 1.18.0 — the call journal, measured
+
+Recorded live in TEST-01 and reverted through the bridge's own `batch`:
+`set_parameters` over a constant and an expression (`seed` came back in
+EXPRESSION mode with `absTime.frame`), `set_flags`, `connect_nodes`,
+`set_dat_text`, `delete_node` of a COMP holding a Constant CHOP, `rename_node`.
+A COMP saved with `COMP.save()` to `<sha>/inner.tox` and loaded back with
+`loadTox` returns as `inner`, with its children -- the file name gives the
+operator its name, so the journal keeps a deleted COMP under its own name.
 

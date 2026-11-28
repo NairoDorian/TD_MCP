@@ -43,6 +43,7 @@ from td_mcp import safety_registry as safety_registry_mod
 from td_mcp import activity as activity_mod
 from td_mcp import toe_reader as toe_reader_mod
 from td_mcp import toe_writer as toe_writer_mod
+from td_mcp import journal as journal_mod
 
 DEFAULT_CHUNKS = os.path.join(os.path.dirname(__file__), "kb", "chunks.jsonl")
 
@@ -726,7 +727,7 @@ def _register_offline():
                td_build_video_pipeline, td_build_midi_rig,
                td_build_kinect_skeleton,
                td_project_read, td_project_grep, td_project_diff,
-               td_project_check, td_project_edit, td_project_extract):
+               td_project_check, td_project_edit, td_project_extract, td_journal):
         name = "td_" + fn.__name__[3:] if not fn.__name__.startswith("td_") else fn.__name__
         _OFFLINE_DISPATCH[name] = fn
 
@@ -1148,6 +1149,23 @@ def td_project_edit(file=None, edits=None, out=None, dry_run=False, new=None, fo
                                         new=new, force=bool(force)))
 
 
+def td_journal(action="list", limit=20, changes_only=True, tool=None, path=None, since=None,
+               failures=False, session=None, n=1):
+    """The live bridge's record of every change, with the state before it.
+
+    ``action="list"``: newest entries first, filtered by ``tool``, ``path``
+    (the operator or anything under it), ``since`` (epoch seconds or '30m' /
+    '2h' / '1d'), ``failures``, ``session`` (one bridge run). ``action=
+    "revert"``: the calls that undo the newest ``n`` changes (touching
+    ``path`` if given), as a ``batch`` to review and send -- nothing is sent.
+    """
+    if action == "revert":
+        return _compact(journal_mod.revert_plan(int(n or 1), path=path, session=session))
+    return _compact(journal_mod.query(int(limit or 20), changes_only=bool(changes_only), tool=tool,
+                                      path=path, since=since, failures=bool(failures),
+                                      session=session))
+
+
 def td_project_extract(file, path, out=None, dry_run=False):
     """Save one COMP of a .toe/.tox as its own .tox, with TouchDesigner closed."""
     return _compact(toe_writer_mod.extract(file, path, out=out, dry_run=bool(dry_run)))
@@ -1457,6 +1475,24 @@ async def _offline_list_tools(ctx, params):
                      "new": {"type": "string", "optional": True},
                      "force": {"type": "boolean", "optional": True}},
                     annotations=additive),
+            _tool("td_journal", "What the agent CHANGED in TouchDesigner, from the live bridge's journal "
+                    "(one line per mutating call, kept on disk across restarts, with the state before each "
+                    "change: parameter mode/value/expression/bind, flags, DAT text, wiring, names, a deleted "
+                    "COMP as a .tox). action='list' (default): newest first, filter by tool, path, since "
+                    "('30m', '2h', '1d' or epoch seconds), failures, session. action='revert': the calls "
+                    "that undo the newest `n` changes (touching `path`), as `ops` for the live `batch` tool "
+                    "-- review them; nothing is sent. Stops at a change it cannot invert (execute_python, "
+                    "a pulse, a method call).",
+                    {"action": {"type": "string", "enum": ["list", "revert"], "optional": True},
+                     "limit": {"type": "integer", "optional": True},
+                     "changes_only": {"type": "boolean", "optional": True},
+                     "tool": {"type": "string", "optional": True},
+                     "path": {"type": "string", "optional": True},
+                     "since": {"type": "string", "optional": True},
+                     "failures": {"type": "boolean", "optional": True},
+                     "session": {"type": "string", "optional": True},
+                     "n": {"type": "integer", "optional": True}},
+                    annotations=read_only),
             _tool("td_project_extract", "Save one COMP of a saved .toe/.tox as its own .tox, with TouchDesigner "
                     "closed (the source is untouched). Reports wires and parameter paths that leave the component.",
                     {"file": {"type": "string"}, "path": {"type": "string"},
@@ -1626,6 +1662,10 @@ async def _offline_call_tool(ctx, params):
             elif name == "td_project_edit":
                 out = (td_project_edit(a.get("file"), a.get("edits"), a.get("out"), a.get("dry_run", False),
                                        a.get("new"), a.get("force", False)), "")
+            elif name == "td_journal":
+                out = (td_journal(a.get("action", "list"), a.get("limit", 20), a.get("changes_only", True),
+                                  a.get("tool"), a.get("path"), a.get("since"), a.get("failures", False),
+                                  a.get("session"), a.get("n", 1)), "")
             elif name == "td_project_extract":
                 out = (td_project_extract(a.get("file"), a.get("path"), a.get("out"),
                                           a.get("dry_run", False)), "")

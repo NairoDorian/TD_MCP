@@ -174,7 +174,7 @@ numbers answers that badly and expensively. Every reader reduces by default.
 
 ---
 
-## Offline server — 65 tools
+## Offline server — 66 tools
 
 No TouchDesigner required. Every one is a pure function over a description or
 the knowledge base.
@@ -259,7 +259,8 @@ install. See [PROJECT_FILES.md](PROJECT_FILES.md).
 |---|---|
 | `td_memory_save` / `td_memory_recall` | SQLite FTS5 session memory that survives restarts. |
 | `td_history_recall` | Across session memory *and* the technique store. |
-| `td_activity_log` | Recent tool calls. |
+| `td_activity_log` | Recent offline tool calls (this server process only). |
+| `td_journal` | What the agent **changed** in TouchDesigner, from the live bridge's journal on disk (survives restarts): one entry per mutating call with the state before it. `action="list"` filters by tool, path, since (`30m`, `2h`, `1d`), failures, session; `action="revert"` returns the calls that undo the newest `n` changes as `ops` for the live `batch` -- nothing is sent. READ_ONLY. |
 | `td_tool_batch` | Multiple offline tools in one round-trip. |
 
 ---

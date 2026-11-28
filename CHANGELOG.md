@@ -4,6 +4,48 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.18.0] - 2026-11-28 — A journal of every change, and its undo
+
+### Added
+- **Call journal** (bridge): one JSON line per mutating tool call -- batch
+  steps one by one -- in `<TD_MCP_HOME>/journal/calls.jsonl` (default
+  `~/.td_mcp`), with the state the call was about to change: each
+  parameter's mode, constant, expression and bind; flags; the previous DAT
+  text (kept by hash in `journal/blobs/`); the wiring of the input it
+  touched; the old name, position, colour, comment; a deleted operator's
+  type, non-default parameters, position and inputs, and a deleted COMP as a
+  `.tox` saved under its own name. Capturing reads the way the read tools
+  read: no sequence parameter is looked up past its last block, nothing is
+  cooked. Arguments are cut at 1,000 characters with the home folder
+  replaced by `~`; the log rotates at 8 MB, blobs are capped at 64 MB.
+  Read-only calls are not recorded (`TD_MCP_JOURNAL_READS=1`);
+  `TD_MCP_JOURNAL=0` switches it off. TouchDesigner's undo stack forgets
+  everything when it closes; the journal does not.
+- **`td_journal`** (offline, read-only): `action="list"` -- the newest
+  changes, filtered by tool, operator path (and below), `since` (`30m`,
+  `2h`, `1d`), failures, session. `action="revert"` -- the calls that undo
+  the newest `n` changes (touching `path`), as `ops` for the live `batch`;
+  nothing is sent. It stops at a change it cannot invert
+  (`execute_python`, a pulse, a method call), because what came after may
+  depend on it. It works like an undo stack: each step of a plan carries
+  `undoes`, the bridge records it, and the next plan skips the revert and
+  what it undid -- asking twice walks further back instead of undoing the
+  undo (found by running the live check twice). New `td_mcp/journal.py`.
+- `scripts/live_journal.py`: changes a network through the bridge
+  (parameters with an expression, a flag, a wire, DAT text, a deleted COMP,
+  a rename), sends the journal's revert plan and reads every value back --
+  9/9 in TEST-01, twice in one session; reverting the setup deletes what it
+  created.
+- `tests/conftest.py`: every test runs with its own `TD_MCP_HOME`, so the
+  suite never writes into the developer's `~/.td_mcp`.
+
+### Changed
+- `restore_network` with the exec gate closed also loads from
+  `journal/blobs/` (files the bridge wrote), so a deleted COMP can come back.
+- Tools: offline 66, live 57. Tests: 1,117.
+
+---
+
 ## [1.17.0] - 2026-11-28 — The safety controls the docs promised, enforced
 
 A code review (UPSTREAM_SYNC_2026-11-28.md) listed controls that the

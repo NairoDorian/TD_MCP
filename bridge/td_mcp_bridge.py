@@ -547,6 +547,315 @@ def _guard_call(tool, args):
     return _self_guard(target, tool, ancestors=ancestors)
 
 
+# ---------------------------------------------------------------------------
+# Call journal: every change, with what was there before it
+# ---------------------------------------------------------------------------
+# One JSON line per mutating tool call in <TD_MCP_HOME>/journal/calls.jsonl
+# (default ~/.td_mcp), with the state the call was about to change -- the
+# parameter's mode, constant, expression and bind; the flags; the DAT text
+# (kept in journal/blobs/ by hash); the wiring; the name; a deleted COMP as a
+# .tox. Undo in TouchDesigner forgets all of it on restart; the journal does
+# not. ``td_journal`` (offline) reads it and turns entries back into calls.
+# Read-only calls are not recorded (TD_MCP_JOURNAL_READS=1 records them too).
+# Capturing reads state the way the read tools do: it never looks up a
+# sequence parameter past its last block and never cooks anything.
+JOURNAL_ENABLED = os.environ.get("TD_MCP_JOURNAL", "1") != "0"
+JOURNAL_READS = os.environ.get("TD_MCP_JOURNAL_READS", "0") == "1"
+JOURNAL_MAX_BYTES = int(os.environ.get("TD_MCP_JOURNAL_MAX_MB", "8")) * 1024 * 1024
+JOURNAL_BLOBS_MAX_BYTES = int(os.environ.get("TD_MCP_JOURNAL_BLOBS_MB", "64")) * 1024 * 1024
+JOURNAL_BLOB_MAX = 4 * 1024 * 1024       # one DAT text or one deleted COMP
+JOURNAL_VALUE_CHARS = 1000
+JOURNAL_LINE_MAX = 32 * 1024
+_journal_lock = threading.Lock()
+_JOURNAL_BOOT = secrets.token_hex(4)      # one per module load: entries of one session
+_journal_seq = [0]
+
+#: Tools whose calls change the project (or the UI) and are recorded.
+_JOURNAL_SKIP = {"batch"}                 # its steps are recorded one by one
+
+
+def journal_dir():
+    base = os.environ.get("TD_MCP_HOME") or os.path.join(os.path.expanduser("~"), ".td_mcp")
+    return os.path.join(base, "journal")
+
+
+def _jtrim(value, limit=JOURNAL_VALUE_CHARS):
+    """A JSON-safe copy of ``value`` with long strings cut and home paths
+    redacted (both separator forms)."""
+    v = _json_safe(value)
+    if isinstance(v, str):
+        v = _redact_home(v)
+        return v if len(v) <= limit else v[:limit] + "... [%d chars]" % len(v)
+    if isinstance(v, dict):
+        return {str(k): _jtrim(x, limit) for k, x in list(v.items())[:200]}
+    if isinstance(v, (list, tuple)):
+        return [_jtrim(x, limit) for x in list(v)[:200]]
+    return v
+
+
+def _redact_home(text):
+    home = os.path.expanduser("~")
+    if not home or home in ("", "/"):
+        return text
+    for form in {home, home.replace("\\", "/"), home.replace("/", "\\")}:
+        text = text.replace(form, "~")
+    return text
+
+
+def _par_state(par):
+    """What one parameter holds -- enough to put it back."""
+    state = {"mode": _par_mode_name(par) or "CONSTANT"}
+    try:
+        state["val"] = _json_safe(par.val)
+    except Exception:  # noqa: BLE001
+        pass
+    expr = getattr(par, "expr", "") or ""
+    bind = getattr(par, "bindExpr", "") or ""
+    if expr:
+        state["expr"] = expr
+    if bind:
+        state["bind"] = bind
+    return state
+
+
+def _tuplet_members(node, name):
+    try:
+        return [p for p in node.pars() if getattr(p, "tupletName", None) == name]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _blob(data, suffix, name=None):
+    """Store ``data`` (bytes) under journal/blobs/<sha256><suffix> -- or
+    blobs/<sha256>/<name><suffix> for a COMP, so a restore loads it under its
+    own name -- and return that relative name."""
+    if data is None or len(data) > JOURNAL_BLOB_MAX:
+        return None
+    digest = hashlib.sha256(data).hexdigest()
+    folder = os.path.join(journal_dir(), "blobs")
+    if name:
+        folder = os.path.join(folder, digest)
+    try:
+        os.makedirs(folder, exist_ok=True)
+        _prune_blobs()
+        target = os.path.join(folder, (name or digest) + suffix)
+        if not os.path.exists(target):
+            with open(target, "wb") as fh:  # noqa: SIM115 - bridge-internal file
+                fh.write(data)
+        return ("%s/%s%s" % (digest, name, suffix)) if name else digest + suffix
+    except OSError:
+        return None
+
+
+def _prune_blobs():
+    """Keep journal/blobs under JOURNAL_BLOBS_MAX_BYTES, oldest out first."""
+    root = os.path.join(journal_dir(), "blobs")
+    files = []
+    for folder, _dirs, names in os.walk(root):
+        for n in names:
+            f = os.path.join(folder, n)
+            try:
+                files.append((os.path.getmtime(f), os.path.getsize(f), f))
+            except OSError:
+                pass
+    total = sum(size for _t, size, _f in files)
+    for _t, size, f in sorted(files):
+        if total <= JOURNAL_BLOBS_MAX_BYTES:
+            break
+        try:
+            os.remove(f)
+            total -= size
+        except OSError:
+            pass
+
+
+def _wiring(node):
+    out = []
+    try:
+        for conn in node.inputConnectors:
+            srcs = [getattr(c.owner, "path", None) for c in (conn.connections or [])]
+            out.append(srcs[0] if srcs else None)
+    except Exception:  # noqa: BLE001
+        return None
+    while out and out[-1] is None:
+        out.pop()
+    return out
+
+
+def _journal_before(tool, args):
+    """The state ``tool`` is about to change. Main thread; reads only."""
+    a = args or {}
+    node = _op(a.get("path")) if isinstance(a.get("path"), str) else None
+    try:
+        if tool == "set_parameters" and node is not None:
+            pars = {}
+            for name in list((a.get("params") or {}).keys())[:200]:
+                par = _read_par(node, name)
+                if par is not None:
+                    pars[name] = _par_state(par)
+                    continue
+                members = _tuplet_members(node, name)
+                if members:
+                    for m in members:
+                        pars[m.name] = _par_state(m)
+                else:
+                    pars[name] = {"missing": True}  # an unknown name, or a block not there yet
+            return {"pars": pars}
+        if tool == "bind_parameter_expression" and node is not None:
+            par = _read_par(node, a.get("param"))
+            return {"pars": {a.get("param"): _par_state(par)}} if par is not None else None
+        if tool == "set_flags" and node is not None:
+            flags = {}
+            for k in (a.get("flags") or {}):
+                if k in _NODE_FLAGS:
+                    try:
+                        flags[k] = bool(getattr(node, k))
+                    except Exception:  # noqa: BLE001
+                        pass
+            return {"flags": flags}
+        if tool == "set_dat_text" and node is not None:
+            text = getattr(node, "text", None)
+            if text is None:
+                return None
+            data = text.encode("utf-8")
+            return {"text_sha256": hashlib.sha256(data).hexdigest(), "text_lines": text.count("\n"),
+                    "text_blob": _blob(data, ".txt")}
+        if tool == "rename_node" and node is not None:
+            return {"name": node.name}
+        if tool == "set_node_position" and node is not None:
+            return {"x": node.nodeX, "y": node.nodeY}
+        if tool == "set_node_color" and node is not None:
+            return {"color": [round(float(c), 4) for c in node.color]}
+        if tool == "set_node_comment" and node is not None:
+            return {"comment": node.comment, "tags": sorted(node.tags)}
+        if tool in ("connect_nodes", "disconnect_nodes"):
+            dst = _op(a.get("to_path")) if isinstance(a.get("to_path"), str) else None
+            return {"inputs": _wiring(dst)} if dst is not None else None
+        if tool == "delete_node" and node is not None:
+            rec = {"type": _op_type(node), "parent": node.parent().path if node.parent() else None,
+                   "name": node.name, "x": node.nodeX, "y": node.nodeY, "inputs": _wiring(node)}
+            pars = {}
+            try:
+                for par in node.pars():
+                    if not par.isDefault and not getattr(par, "readOnly", False):
+                        pars[par.name] = _par_state(par)
+                    if len(pars) >= 300:
+                        break
+            except Exception:  # noqa: BLE001
+                pass
+            rec["pars"] = pars
+            if getattr(node, "isCOMP", False):
+                import tempfile
+                tmp = os.path.join(tempfile.gettempdir(), "td_mcp_journal_%s.tox" % secrets.token_hex(4))
+                try:
+                    node.save(tmp)
+                    with open(tmp, "rb") as fh:  # noqa: SIM115
+                        rec["tox_blob"] = _blob(fh.read(), ".tox", name=node.name)
+                except Exception:  # noqa: BLE001
+                    pass
+                finally:
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+            elif getattr(node, "text", None) is not None:
+                rec["text_blob"] = _blob(node.text.encode("utf-8"), ".txt")
+            return rec
+        if tool == "build_network" and a.get("replace"):
+            parent = _op(a.get("target_parent")) if a.get("target_parent") else None
+            spec = a.get("spec") if isinstance(a.get("spec"), dict) else {}
+            names = [o.get("name") for o in spec.get("operators") or [] if isinstance(o, dict)]
+            if parent is not None:
+                return {"replaced": [parent.op(n).path for n in names if n and parent.op(n)]}
+        if tool == "timeline":
+            return {"play": bool(root.time.play), "frame": root.time.frame}  # noqa: F821
+    except Exception as exc:  # noqa: BLE001 - recording must never break a call
+        return {"capture_error": str(exc)[:200]}
+    return None
+
+
+def _journal_created(tool, result):
+    """Operators a successful call created (what undoing it deletes)."""
+    if not isinstance(result, dict) or result.get("ok") is False:
+        return None
+    if tool in ("create_node", "copy_node", "restore_network", "build_and_verify"):
+        return [result["path"]] if result.get("path") else None
+    if tool == "build_network":
+        return [o.get("path") for o in (result.get("operators") or {}).values()
+                if isinstance(o, dict) and o.get("path") and o.get("ok") is not False]
+    if tool == "import_recipe":
+        made = result.get("created") or result.get("paths")
+        return list(made) if isinstance(made, list) else None
+    return None
+
+
+def _journal_write(entry):
+    line = json.dumps(entry, ensure_ascii=False, default=str)
+    if len(line) > JOURNAL_LINE_MAX:
+        entry = dict(entry)
+        entry["args"] = {"truncated": True}
+        entry.pop("result", None)
+        line = json.dumps(entry, ensure_ascii=False, default=str)[:JOURNAL_LINE_MAX]
+    folder = journal_dir()
+    path = os.path.join(folder, "calls.jsonl")
+    with _journal_lock:
+        try:
+            os.makedirs(folder, exist_ok=True)
+            if os.path.exists(path) and os.path.getsize(path) > JOURNAL_MAX_BYTES:
+                older = os.path.join(folder, "calls.1.jsonl")
+                if os.path.exists(older):
+                    os.remove(older)
+                os.replace(path, older)
+            with open(path, "a", encoding="utf-8") as fh:  # noqa: SIM115
+                fh.write(line + "\n")
+        except OSError:
+            pass
+
+
+def _journal_project():
+    try:
+        return {"name": project.name}  # noqa: F821 - TD global
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _journaled(tool, args, run, parent=None, undoes=None):
+    """Run ``run()`` and record it with the state from just before.
+    ``undoes``: the journal entry this call reverts (a revert-plan step)."""
+    if not JOURNAL_ENABLED or tool in _JOURNAL_SKIP:
+        return run()
+    reading = effective_risk(tool, args) == "READ_ONLY"
+    if reading and not JOURNAL_READS:
+        return run()
+    before = None if reading else _journal_before(tool, args)
+    t0 = time.perf_counter()
+    result = run()
+    _journal_seq[0] += 1
+    entry = {"id": "%s-%d" % (_JOURNAL_BOOT, _journal_seq[0]), "ts": round(time.time(), 3),
+             "boot": _JOURNAL_BOOT, "tool": tool, "risk": effective_risk(tool, args),
+             "ok": not (isinstance(result, dict) and result.get("ok") is False),
+             "ms": round((time.perf_counter() - t0) * 1000.0, 1),
+             "args": _jtrim(args or {})}
+    if parent:
+        entry["batch"] = parent
+    if undoes:
+        entry["undoes"] = str(undoes)[:64]
+    proj = _journal_project()
+    if proj:
+        entry["project"] = proj
+    if before is not None:
+        entry["before"] = before
+    created = _journal_created(tool, result)
+    if created:
+        entry["created"] = created
+    if isinstance(result, dict):
+        for key in ("error", "error_code", "path", "new_path", "deleted", "rewired", "notes"):
+            if key in result:
+                entry.setdefault("result", {})[key] = _jtrim(result[key], 400)
+    _journal_write(entry)
+    return result
+
+
 def _run_tool(tool, args):
     """Execute one tool inside its undo block. Main thread only."""
     fn = _DISPATCH.get(tool)
@@ -557,7 +866,7 @@ def _run_tool(tool, args):
     if refused is not None:
         return _wrap(refused)
     with _undo_block(tool):
-        result = _wrap(fn(args or {}))
+        result = _journaled(tool, args, lambda: _wrap(fn(args or {})))
     view = _follow(tool, args, result)
     if view is not None:
         result["view"] = view
@@ -621,7 +930,7 @@ def _ws_push(event):
 # version lets the live server say so on the first call instead. Keep in sync
 # with pyproject.toml [project].version -- scripts/check_bridge_stale.py fails
 # CI when they diverge.
-BRIDGE_VERSION = "1.17.0"
+BRIDGE_VERSION = "1.18.0"
 
 
 # Server identity lives ON THE SERVER OBJECT (td_mcp_started_at / td_mcp_version),
@@ -3220,9 +3529,17 @@ def _do_restore_network(snapshot, target_parent="*here"):
         # arbitrary one is a code route: with the exec gate closed only the
         # bridge's own snapshots load.
         import tempfile
-        home = os.path.realpath(os.path.join(tempfile.gettempdir(), "td_mcp_snapshots"))
         real = os.path.realpath(snapshot)
-        if os.path.commonpath([home, real]) != home:
+        homes = [os.path.realpath(os.path.join(tempfile.gettempdir(), "td_mcp_snapshots")),
+                 os.path.realpath(os.path.join(journal_dir(), "blobs"))]
+
+        def inside(home):
+            try:
+                return os.path.commonpath([home, real]) == home
+            except ValueError:  # another drive
+                return False
+
+        if not any(inside(h) for h in homes):
             return code_route_denied("restore_network",
                                      ["a .tox outside the snapshot folder (it may run code on load)"])
     try:
@@ -4763,6 +5080,7 @@ def _do_batch(ops):
                 "error": f"batch too large: {len(ops)} > {MAX_BATCH_SIZE} "
                           "(TD_MCP_MAX_BATCH)"}
     results = []
+    batch_id = "batch-%s" % secrets.token_hex(3)
     for call in ops:
         tool = call.get("tool")
         fn = _DISPATCH.get(tool)
@@ -4777,7 +5095,9 @@ def _do_batch(ops):
             continue
         try:
             with _undo_block(tool):
-                res = fn(call.get("args", {}))
+                res = _journaled(tool, call.get("args", {}),
+                                 lambda: fn(call.get("args", {})), parent=batch_id,
+                                 undoes=call.get("undoes"))
             results.append({"tool": tool, "result": res})
             _follow(tool, call.get("args", {}), res)
         except Exception as e:  # noqa: BLE001

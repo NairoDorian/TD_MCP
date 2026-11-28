@@ -340,10 +340,11 @@ td-mcp/
 ├── scripts/
 │   └── generate_summary.py   # generates SUMMARY.md (code-free file/architecture overview)
 ├── td_mcp/
-│   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (65 tools)
+│   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (66 tools)
 │   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server for the bridge (57 tools)
 │   ├── toe_reader.py         # read saved .toe/.tox files offline (toeexpand on a cached copy)
 │   ├── toe_writer.py         # edit them offline into a NEW file (toecollapse, re-expanded to prove it)
+│   ├── journal.py            # read the bridge's call journal; build the calls that undo changes
 │   ├── heal.py                # self-healing orchestrator: validate → score → auto-repair → hints
 │   ├── validation.py          # 5-stage build validation + auto-repair (pure, TD-free)
 │   ├── scoring.py             # score_build (0..100 A–F) + repair_network
@@ -388,7 +389,7 @@ td-mcp/
 
 ## Tool catalog
 
-**Offline server (65 tools)** — `td_docs_search`, `td_docs_operator`, `td_docs_python`,
+**Offline server (66 tools)** — `td_docs_search`, `td_docs_operator`, `td_docs_python`,
 `td_docs_glsl`, `td_docs_template`, `td_docs_version`, `td_docs_family`, `td_docs_parameter`,
 `td_docs_compare`, `td_docs_connections`, `td_docs_workflow`, `td_docs_version_info`,
 `td_docs_related`, `td_docs_glossary`, `td_build_network`, `td_showcontrol_plan`, `td_led_map`,
@@ -399,7 +400,8 @@ td-mcp/
 `td_mediaserver`, `td_analyze_performance`, `td_discover`, `td_memory_save`, `td_memory_recall`,
 `td_scaffold_recipe`, `td_analyze_build`, `td_diff_networks`, `td_optimize_layout`,
 `td_resolve_params`, `td_docs_combos`, and for saved project files `td_project_read`,
-`td_project_grep`, `td_project_diff`, `td_project_check`, `td_project_edit`, `td_project_extract`.
+`td_project_grep`, `td_project_diff`, `td_project_check`, `td_project_edit`, `td_project_extract`,
+and `td_journal` for what the agent changed live.
 
 **Live server (57 tools)** — `build_network`, `health`, `annotate`, `screenshot`, `open_viewer`, `show_in_editor`, `ui_state`, `move_window`, `create_node`, `delete_node`, `set_parameters`, `get_parameters`,
 `describe_op_type`, `pulse_parameter`,
@@ -411,6 +413,15 @@ td-mcp/
 `map_network`, `disconnect_nodes`, `get_connections`, `exec_node_method`, `snapshot_network`,
 `restore_network`, `get_performance`, `validate_network`, `set_flags`, `find_nodes`,
 `set_node_position`, `timeline`, `export_recipe`, `import_recipe`, `save_tox`.
+
+**A journal of every change, and its undo (v1.18.0).** The bridge writes one
+line per mutating call to `~/.td_mcp/journal/` with the state the call was
+about to change -- parameter mode, value, expression and bind; flags; DAT
+text; wiring; names; a deleted COMP as a `.tox`. TouchDesigner's undo stack
+forgets everything when it closes; the journal does not. `td_journal` lists
+what changed (by operator, tool, time) and builds the calls that put it back,
+for review and one `batch`. Verified by changing a network, sending the
+journal's revert plan and reading every value back (`scripts/live_journal.py`).
 
 **Safety controls enforced (v1.17.0).** The risk ceiling
 (`TD_MCP_MAX_RISK`, `TD_BUILDER_LIVE_READONLY`) is now applied by both servers

@@ -92,6 +92,8 @@ RISK_CLASS = {
     "td_project_check":      "READ_ONLY",
     # Writes a NEW file only; refuses to replace any existing file.
     "td_project_edit":       "WRITE_ADDITIVE",
+    # Reads the bridge's journal file; a revert plan is returned, never sent.
+    "td_journal":            "READ_ONLY",
     "td_project_extract":    "WRITE_ADDITIVE",
 
     # Live bridge tools — read-only inspectors

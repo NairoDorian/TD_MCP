@@ -91,6 +91,7 @@ td-mcp/
 │   ├── demo_build.py
 │   ├── generate_summary.py
 │   ├── install_all.py
+│   ├── live_journal.py
 │   ├── live_smoke.py
 │   ├── live_toe_edit.py
 │   ├── probe_param_catalog_td.py
@@ -191,6 +192,7 @@ td-mcp/
 │   ├── heal.py
 │   ├── install.py
 │   ├── instructions.py
+│   ├── journal.py
 │   ├── macro.py
 │   ├── memory.py
 │   ├── observability.py
@@ -214,6 +216,7 @@ td-mcp/
 ├── tests
 │   ├── __init__.py
 │   ├── bridge_pure.py
+│   ├── conftest.py
 │   ├── fake_remote_mcp.py
 │   ├── td_double.py
 │   ├── test_agent.py
@@ -239,6 +242,7 @@ td-mcp/
 │   ├── test_glsl.py
 │   ├── test_heal.py
 │   ├── test_install_lifecycle.py
+│   ├── test_journal.py
 │   ├── test_json_safe.py
 │   ├── test_layout.py
 │   ├── test_live_offline_loop.py
@@ -355,6 +359,7 @@ td-mcp/
 - **`scripts/demo_build.py`** — Build a template network from ``examples/`` the way an agent should.
 - **`scripts/generate_summary.py`** — Generate a clean, code-free summary of the td-mcp repository.
 - **`scripts/install_all.py`** — One-command install (ai-brain / johnsabath / 8beeeaaat idea).
+- **`scripts/live_journal.py`** — Prove the call journal against TouchDesigner: change things through the bridge, read the journal, send its revert plan, and find the old state.
 - **`scripts/live_smoke.py`** — Use TD_MCP the way an agent does, and check that it works.
 - **`scripts/live_toe_edit.py`** — Prove the offline .toe/.tox editor against TouchDesigner itself.
 - **`scripts/probe_param_catalog_td.py`** — Probe every operator type in a running TouchDesigner into a parameter catalog.
@@ -389,6 +394,7 @@ td-mcp/
 - **`td_mcp/heal.py`** — Self-healing build orchestrator (capstone of the self-healing theme).
 - **`td_mcp/install.py`** — Install SOP v1 — an install lifecycle designed for an agent to drive.
 - **`td_mcp/instructions.py`** — MCP ``instructions`` served at initialize by both TD_MCP servers.
+- **`td_mcp/journal.py`** — Read the bridge's call journal and turn entries back into calls.
 - **`td_mcp/kb/__init__.py`** — KB subpackage marker (runtime corpus access lives in `corpus.py`).
 - **`td_mcp/kb/build_index.py`** — Build a (optionally dense) index over the KB chunks.
 - **`td_mcp/kb/build_kb.py`** — Build the ultimate local TouchDesigner knowledge base.
@@ -464,6 +470,7 @@ td-mcp/
 
 - **`tests/__init__.py`** — Project file.
 - **`tests/bridge_pure.py`** — Load the bridge's pure helpers straight out of the shipped source.
+- **`tests/conftest.py`** — Suite-wide isolation.
 - **`tests/fake_remote_mcp.py`** — Minimal stdio MCP doc-RAG server used by the integration tests to prove multi-process RAG fusion. Returns a synthetic remote doc so RemoteMCPStrategy can be exercised without a real external server.
 - **`tests/td_double.py`** — A deterministic TouchDesigner API double, and a loader for the whole bridge.
 - **`tests/test_agent.py`** — Test agent script compilation and schemas.
@@ -489,6 +496,7 @@ td-mcp/
 - **`tests/test_glsl.py`** — Tests for td_mcp.glsl_patterns (named shaders + network templates).
 - **`tests/test_heal.py`** — Tests for td_mcp.heal (self-healing orchestrator).
 - **`tests/test_install_lifecycle.py`** — Install SOP v1 (Wave 12, adapted from dcc-mcp-touchdesigner 0.1.2).
+- **`tests/test_journal.py`** — The call journal: the bridge records each change with the state before it, ``td_mcp.journal`` lists entries and builds the calls that undo them.
 - **`tests/test_json_safe.py`** — Tests for JSON-safe serialization: non-finite floats and numpy types.
 - **`tests/test_layout.py`** — Tests for td_mcp.tools.layout (Embody-style layout hygiene).
 - **`tests/test_live_offline_loop.py`** — Tests for the live↔offline validation loop (§3.1).

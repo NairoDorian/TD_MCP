@@ -56,5 +56,8 @@ OFFLINE = (
     "inside the file), td_project_diff (two saves), td_project_check (names this "
     "build does not have). td_project_edit changes one into a NEW file (never "
     "overwrites; all edits or none; parameter names and menu tokens checked; the "
-    "result is re-read to prove it) and td_project_extract saves one COMP as a .tox."
+    "result is re-read to prove it) and td_project_extract saves one COMP as a .tox. "
+    "td_journal lists what the live bridge changed (kept on disk across restarts, "
+    "with the state before each change) and action='revert' builds the calls that "
+    "undo the newest changes, for the live batch tool."
 )

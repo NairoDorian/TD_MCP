@@ -218,6 +218,15 @@ directory into a transcript.
   for a risk ceiling). Without `file_path` it picks a free name under
   `<temp>/td_mcp_tox/`.
 - `td_project_edit` / `td_project_extract` (offline) write only new files.
+- **The call journal** (`<TD_MCP_HOME>/journal/`, default `~/.td_mcp`): one
+  JSON line per mutating call -- its arguments (strings over 1,000 characters
+  cut, the home folder replaced by `~`), the state it changed, the result's
+  error. Previous DAT text and deleted COMPs are kept under `journal/blobs/`
+  (4 MB each, 64 MB in all, oldest pruned); the log rotates at 8 MB to
+  `calls.1.jsonl`. It is on your machine only and holds what your project
+  holds. `TD_MCP_JOURNAL=0` in TouchDesigner's environment turns it off.
+  With the exec gate closed, `restore_network` also loads from
+  `journal/blobs/` (the bridge wrote those files).
 
 ---
 

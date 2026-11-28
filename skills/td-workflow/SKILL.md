@@ -23,6 +23,10 @@ The **live** bridge acts inside a running TouchDesigner, one undo step per call.
    checked; review the `changed` it returns), `td_project_extract` saves a COMP
    as a `.tox`. Edit offline only when TouchDesigner does not have the file open:
    a running TouchDesigner saving it later would write over the edit.
+   `td_journal` answers "what did the agent change here?" -- every live change is
+   on disk with the state before it -- and `td_journal(action="revert", n=...,
+   path=...)` returns the calls that undo the newest ones; review them, then send
+   them with `batch` (one Ctrl+Z undoes the revert).
 2. **Plan** -- name every operator before creating one. For each unfamiliar type call
    `describe_op_type` (live) or `td_describe_op_type` (offline): it returns the exact
    parameter names, menu tokens and creation defaults. Draft bigger builds as a spec
