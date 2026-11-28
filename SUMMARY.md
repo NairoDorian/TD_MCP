@@ -225,6 +225,7 @@ td-mcp/
 │   ├── test_bridge_wave13.py
 │   ├── test_bridge_wave14.py
 │   ├── test_bridge_wave15.py
+│   ├── test_bridge_wave16.py
 │   ├── test_bundle.py
 │   ├── test_codeguard.py
 │   ├── test_compat.py
@@ -474,6 +475,7 @@ td-mcp/
 - **`tests/test_bridge_wave13.py`** — Wave 13 bridge behaviour, each case verified live on TouchDesigner 2025.33230 before it was modelled in the double (see UPSTREAM_SYNC_2026-11-22.md).
 - **`tests/test_bridge_wave14.py`** — Wave 14 bridge behaviour. Each case was reproduced on TouchDesigner 2025.33230 (TEST-01, through the HTTP tool layer) before it was modelled in the double -- see UPSTREAM_SYNC_2026-11-26.md for the probes.
 - **`tests/test_bridge_wave15.py`** — Wave 15: menu parameters, re-measured on TouchDesigner 2025.33230 (TEST-01, 2026-11-28; UPSTREAM_SYNC_2026-11-28.md).
+- **`tests/test_bridge_wave16.py`** — Wave 16: the safety controls the documentation promised, enforced.
 - **`tests/test_bundle.py`** — Tests for td_mcp.bundle (.mcpb packaging).
 - **`tests/test_codeguard.py`** — Bridge hardening absorbed from the ecosystem's last-15-days commits.
 - **`tests/test_compat.py`** — Tests for td_mcp.compat (version compat + error cache).

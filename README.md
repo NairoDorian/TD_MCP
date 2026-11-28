@@ -412,6 +412,13 @@ td-mcp/
 `restore_network`, `get_performance`, `validate_network`, `set_flags`, `find_nodes`,
 `set_node_position`, `timeline`, `export_recipe`, `import_recipe`, `save_tox`.
 
+**Safety controls enforced (v1.17.0).** The risk ceiling
+(`TD_MCP_MAX_RISK`, `TD_BUILDER_LIVE_READONLY`) is now applied by both servers
+and by the bridge itself; one unauthenticated event-stream request can no
+longer freeze the bridge; switching **Allow Python Execution** off takes
+effect on the restart it triggers; `save_tox` never writes over a file by
+accident. See `docs/SECURITY.md`.
+
 **Edit saved projects with TouchDesigner closed (v1.16.0).** `td_project_edit`
 changes a `.toe`/`.tox` -- parameters, expressions, binds, DAT code and
 tables, flags, wires, renames, deletes, new operators or whole networks from a

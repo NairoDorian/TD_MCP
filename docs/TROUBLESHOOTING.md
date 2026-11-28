@@ -340,9 +340,21 @@ you are on an older version.
 
 ### A client refuses read-only tools
 
-Check `TD_MCP_MAX_RISK` and `TD_BUILDER_LIVE_READONLY`. Before v1.12.0 the
-offline tools had no explicit risk class and inherited the `WRITE_ADDITIVE`
-fallback, so a read-only policy refused plain documentation lookups. Upgrade.
+Check `TD_MCP_MAX_RISK` and `TD_BUILDER_LIVE_READONLY` -- in the environment
+of the MCP server process *and* of TouchDesigner (the bridge enforces them
+too). The refusal says which (`error_code: "policy"`). A value that is not a
+risk class (a typo) makes everything but read-only tools refuse. Before
+v1.12.0 the offline tools had no explicit risk class and inherited the
+`WRITE_ADDITIVE` fallback, so a read-only policy refused plain documentation
+lookups. Upgrade.
+
+### The bridge stops answering after a client connects
+
+Before 1.17 one open SSE stream (`GET` with `Accept: text/event-stream`, the
+stream an MCP Streamable HTTP client opens) froze the bridge until
+TouchDesigner restarted. Upgrade the bridge (`python scripts/td_live.py
+deploy`); it now serves each connection on its own thread and needs the token
+for a stream.
 
 ---
 

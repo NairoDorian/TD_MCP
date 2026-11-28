@@ -23,13 +23,27 @@ below make that a deliberate choice rather than an accident.
 
 ## Transport
 
-**Loopback only.** `HTTPServer(("127.0.0.1", port))`. Not reachable off-machine
-without an explicit tunnel you set up yourself.
+**Loopback only.** The server binds `127.0.0.1`. Not reachable off-machine
+without an explicit tunnel you set up yourself. It serves each connection on
+its own thread; tool calls still run one at a time on TouchDesigner's main
+thread through the job queue.
 
-**Bearer token on every request.** Auto-generated with `secrets.token_urlsafe(24)`
-at start and printed to the Textport; compared with `hmac.compare_digest` so a
-wrong token takes constant time. Pin it via the component's **Auth Token**
-parameter or `TD_MCP_AUTH_TOKEN` if you want it stable across restarts.
+**Bearer token on every request that reads or changes the project.**
+Auto-generated with `secrets.token_urlsafe(24)` at start and printed to the
+Textport; compared with `hmac.compare_digest` so a wrong token takes constant
+time. Pin it via the component's **Auth Token** parameter or
+`TD_MCP_AUTH_TOKEN` if you want it stable across restarts. Only `/api/status`
+(version, port, whether exec is on) and the chat page answer without it.
+
+Until 1.17 this paragraph was not true: `GET /api/resource` read operators
+without a token, and an SSE stream (`Accept: text/event-stream`) opened
+without one. That stream also **froze the bridge for good** -- measured in
+TEST-01: the server was single-threaded, so the open stream held its only
+thread, every tool call after it timed out, and the stream loop ignored the
+failed writes after the client left. Any local program, or an MCP client that
+opens the standard GET stream, could stop the bridge with one request. Fixed:
+threaded server, token on both, streams end when their client leaves and are
+capped (`TD_MCP_MAX_STREAMS`, default 8).
 
 **CORS is loopback-reflecting, not `*`.** A wildcard let any page that could
 persuade your browser to hit `127.0.0.1` reach the bridge. Only a `localhost` /
@@ -39,7 +53,8 @@ value.
 **DNS-rebind protection.** The `Host` header must be a loopback name. Pin exact
 origins with `TD_MCP_ALLOWED_ORIGINS`.
 
-**WebSocket requires an auth handshake** before any frame is dispatched.
+**WebSocket requires an auth handshake** before any frame is dispatched; every
+GET -- WebSocket and SSE included -- passes the `Host` check first.
 
 ---
 
@@ -93,15 +108,30 @@ capability reaching the model without anyone deciding what it may do is how an
 unreviewed tool ships.
 
 ```bash
-TD_MCP_MAX_RISK=WRITE_ADDITIVE   # refuse DESTRUCTIVE
-TD_BUILDER_LIVE_READONLY=1       # everything becomes READ_ONLY
+TD_MCP_MAX_RISK=WRITE_ADDITIVE   # refuse DESTRUCTIVE calls
+TD_BUILDER_LIVE_READONLY=1       # only READ_ONLY calls run
 ```
 
-The four `DESTRUCTIVE` tools are `delete_node`, `execute_python`,
-`set_dat_text` and `bind_parameter_expression`. The last two are there because
-they hand TouchDesigner caller-supplied Python by another name; classifying
-either below `execute_python` would let a max-risk policy admit code it meant to
-block.
+A ceiling is enforced in three places: the live MCP server and the offline
+server (in the environment of the MCP client's server process -- the offline
+tools that write files are covered too), and the bridge itself, from
+TouchDesigner's own environment, so a client talking to the bridge directly
+meets it as well. A refused call answers `error_code: "policy"` with the
+tool, its class and the ceiling. A **batch is judged by its steps**. A value
+that is not a class (`WRITE_ADITIVE`) fails closed: only read-only tools run.
+(Before 1.17 the policy function existed but nothing called it: neither
+variable did anything.)
+
+The `DESTRUCTIVE` tools are `delete_node`, `execute_python`, `set_dat_text`,
+`bind_parameter_expression` and `exec_node_method` (it calls any method,
+`destroy()` included; it was classed additive until 1.17). `set_dat_text`
+and `bind_parameter_expression` are there because they hand TouchDesigner
+caller-supplied Python by another name. Some calls are destructive because of
+their arguments: `build_network(replace=true)`, `annotate(action="delete")`,
+`save_tox(overwrite=true)`.
+
+With a ceiling below DESTRUCTIVE, `scripts/td_live.py close` cannot save
+(it saves through `execute_python`): save in TouchDesigner, then close it.
 
 ---
 
@@ -172,8 +202,22 @@ deliberately not matched.
 
 Tracebacks are **redacted** before leaving the process: user paths are stripped
 (`C:/Users/alice/...` → `~/...`) so an error message does not leak a home
-directory into a transcript. Snapshot and restore paths are sandboxed to a
-snapshots directory with symlink-aware containment checks.
+directory into a transcript.
+
+## Files the bridge writes or loads
+
+- `snapshot_network` writes to `<temp>/td_mcp_snapshots/` with a
+  millisecond-stamped, never-reused name (two snapshots in one second used to
+  share one), keeping the newest `TD_MCP_SNAPSHOT_KEEP` (50).
+- `restore_network` loads a `.tox`, and a `.tox` can carry Execute DATs that
+  run when it loads. With the exec gate closed it loads **only** files inside
+  the snapshot folder (real-path containment); with it open, any `.tox`.
+  (Earlier versions of this page claimed that containment; it did not exist.)
+- `save_tox` writes only a `.tox`, never the open project file, and refuses
+  an existing file unless `overwrite=true` (which makes the call DESTRUCTIVE
+  for a risk ceiling). Without `file_path` it picks a free name under
+  `<temp>/td_mcp_tox/`.
+- `td_project_edit` / `td_project_extract` (offline) write only new files.
 
 ---
 

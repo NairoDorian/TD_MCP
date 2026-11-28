@@ -142,7 +142,6 @@ RISK_CLASS = {
     "set_node_color":        "WRITE_ADDITIVE",
     "set_node_comment":      "WRITE_ADDITIVE",
     "disconnect_nodes":      "WRITE_ADDITIVE",
-    "exec_node_method":      "WRITE_ADDITIVE",
     "snapshot_network":      "WRITE_ADDITIVE",
     "restore_network":       "WRITE_ADDITIVE",
     "set_flags":             "WRITE_ADDITIVE",
@@ -167,7 +166,16 @@ RISK_CLASS = {
     # are gated by TD_MCP_ALLOW_EXEC for the same reason.
     "bind_parameter_expression": "DESTRUCTIVE",
     "set_dat_text":          "DESTRUCTIVE",
+    # Calls any method on an operator -- destroy() included. It was classed
+    # additive, so a WRITE_ADDITIVE ceiling would have admitted a delete.
+    "exec_node_method":      "DESTRUCTIVE",
 }
+
+#: Least to most dangerous.
+RISK_ORDER = ("READ_ONLY", "WRITE_ADDITIVE", "WRITE_CHECKPOINT", "DESTRUCTIVE")
+
+#: Tools that run other tools: a policy judges each step, not the wrapper.
+BATCH_TOOLS = {"batch": "ops", "td_tool_batch": "ops"}
 
 
 # MCP annotation mapping per risk class
@@ -196,7 +204,83 @@ def tool_annotations(tool_name):
     return ANNOTATIONS[risk_class(tool_name)]
 
 
-# Optional: live bridge can enforce a global policy
+def effective_class(tool_name, args=None):
+    """The class of one call: some arguments make an additive tool destructive
+    (``build_network(replace=true)`` destroys same-named operators,
+    ``annotate(action='delete')`` removes one, ``save_tox(overwrite=true)``
+    replaces a file)."""
+    a = args if isinstance(args, dict) else {}
+    if tool_name == "build_network" and a.get("replace"):
+        return "DESTRUCTIVE"
+    if tool_name == "annotate" and str(a.get("action", "")).lower() == "delete":
+        return "DESTRUCTIVE"
+    if tool_name == "save_tox" and a.get("overwrite"):
+        return "DESTRUCTIVE"
+    return risk_class(tool_name)
+
+
+def policy_ceiling(env=None):
+    """``(ceiling, reason)`` from the environment, or ``(None, None)``.
+
+    ``TD_BUILDER_LIVE_READONLY=1`` -> READ_ONLY; ``TD_MCP_MAX_RISK=<class>``
+    -> that class. A value that is not a class fails closed to READ_ONLY:
+    a typo must not lift the ceiling.
+    """
+    import os
+    env = os.environ if env is None else env
+    if str(env.get("TD_BUILDER_LIVE_READONLY", "")).strip().lower() in ("1", "true", "yes", "on"):
+        return "READ_ONLY", "TD_BUILDER_LIVE_READONLY=1"
+    raw = env.get("TD_MCP_MAX_RISK")
+    if raw is None or not str(raw).strip():
+        return None, None
+    value = str(raw).strip().upper()
+    if value not in RISK_ORDER:
+        return "READ_ONLY", ("TD_MCP_MAX_RISK=%r is not one of %s, so only read-only tools run"
+                             % (raw, ", ".join(RISK_ORDER)))
+    return value, "TD_MCP_MAX_RISK=%s" % value
+
+
+def _batch_steps(tool_name, args):
+    import json
+    key = BATCH_TOOLS.get(tool_name)
+    if key is None:
+        return None
+    ops = (args or {}).get(key) if isinstance(args, dict) else None
+    if isinstance(ops, str):
+        try:
+            ops = json.loads(ops)
+        except ValueError:
+            return None
+    if not isinstance(ops, list):
+        return None
+    return [(op.get("tool"), op.get("args") or {}) for op in ops if isinstance(op, dict)]
+
+
+def policy_refusal(tool_name, args=None, env=None):
+    """None when the call is allowed, else the refusal to return.
+
+    Enforced by the live server, the offline server and the bridge itself
+    (``TD_MCP_MAX_RISK`` / ``TD_BUILDER_LIVE_READONLY``). A batch is judged by
+    its steps.
+    """
+    ceiling, why = policy_ceiling(env)
+    if ceiling is None:
+        return None
+    steps = _batch_steps(tool_name, args)
+    if steps is None:
+        steps = [(tool_name, args)]
+    limit = RISK_ORDER.index(ceiling)
+    for name, step_args in steps:
+        cls = effective_class(name, step_args)
+        if RISK_ORDER.index(cls) > limit:
+            where = "" if name == tool_name else " (a step of %s)" % tool_name
+            return {"ok": False, "error_code": "policy", "tool": name, "risk": cls,
+                    "ceiling": ceiling,
+                    "error": "%s%s is %s; refused by %s" % (name, where, cls, why)}
+    return None
+
+
+# Older helper, kept for callers: the class a policy lets a tool run as.
 #   TD_BUILDER_LIVE_READONLY=1  -> all live tools become READ_ONLY
 #   TD_MCP_MAX_RISK=WRITE_ADDITIVE  -> block DESTRUCTIVE
 def enforce_policy(tool_name, env=None):

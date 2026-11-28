@@ -4,6 +4,59 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.17.0] - 2026-11-28 — The safety controls the docs promised, enforced
+
+A code review (UPSTREAM_SYNC_2026-11-28.md) listed controls that the
+documentation described and no code applied. Each was reproduced in TEST-01
+on 2025.33230 before it was fixed, and each fix was checked there.
+
+### Fixed (each verified live)
+- **One request could stop the bridge for good.** A `GET` with
+  `Accept: text/event-stream` -- no token needed -- held the bridge's only
+  thread (the server was single-threaded); every tool call after it timed
+  out, and the bridge never recovered, because the stream loop ignored the
+  failed writes after the client left. An MCP Streamable HTTP client opens
+  exactly that stream. The bridge now serves each connection on its own
+  thread (tool calls still run one at a time on TouchDesigner's main thread),
+  needs the token for a stream, ends a stream when its client leaves, and
+  caps open streams (`TD_MCP_MAX_STREAMS`, 8). Live: a call answers in 0.03 s
+  while a stream is open.
+- **`GET /api/resource` read the project without a token**; it needs one now,
+  and every GET passes the `Host` check.
+- **`TD_MCP_MAX_RISK` / `TD_BUILDER_LIVE_READONLY` did nothing**: the policy
+  function had no caller. Now enforced by the live server, the offline server
+  (its file-writing tools too) and the bridge, from TouchDesigner's own
+  environment; a batch is judged by its steps; an unknown value fails closed
+  to read-only. `build_network(replace=true)`, `annotate(action="delete")`
+  and `save_tox(overwrite=true)` count as destructive; `exec_node_method`
+  (any method, `destroy()` included) is DESTRUCTIVE, it was additive. Live:
+  `delete_node` and `execute_python`, alone or in a batch, refused under
+  `WRITE_ADDITIVE`.
+- **Switching Allow Python Execution off did not switch execution off**: the
+  panel restarts the bridge, but the module read the setting (and Protected
+  Paths, Port, Token) only at import. `start()` re-reads them. Live: toggle
+  off -> `allow_exec: false`, `execute_python` refused.
+- **`restore_network` loaded any `.tox` with the exec gate closed** -- a
+  `.tox` can run Execute DATs on load. With exec off it loads only the
+  bridge's own snapshots (real-path containment). SECURITY.md claimed this
+  containment already; it did not exist.
+- **`save_tox` wrote any path**, the open `.toe` included: now only a `.tox`,
+  never the open project, an existing file only with `overwrite=true`
+  (`replaced` reported); the default is a free name in `<temp>/td_mcp_tox/`.
+- **Two snapshots in one second shared a file name**: millisecond stamps and
+  free-name suffixes in `<temp>/td_mcp_snapshots/`, newest 50 kept
+  (`TD_MCP_SNAPSHOT_KEEP`).
+- **Deleting the parent of a protected path was allowed**; refused now.
+  `build_and_verify`, `auto_layout` and `set_node_color/comment/position`
+  are fenced off the bridge's own component like every other writer.
+
+### Changed
+- `docs/SECURITY.md` corrected (token, streams, risk ceiling, files the
+  bridge writes and loads), TOOLS.md, TROUBLESHOOTING.md. Tests: 1,107
+  (+14 in `tests/test_bridge_wave16.py`, one running the real HTTP server).
+
+---
+
 ## [1.16.0] - 2026-11-28 — Edit saved projects with TouchDesigner closed; menus re-measured
 
 See `UPSTREAM_SYNC_2026-11-28.md`. Every fact below was measured on

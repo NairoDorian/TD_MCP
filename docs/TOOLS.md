@@ -28,7 +28,11 @@ is how an unreviewed tool ships.
 | `DESTRUCTIVE` | Deletes, overwrites, or executes code | destructive |
 
 Enforce a ceiling with `TD_MCP_MAX_RISK=WRITE_ADDITIVE`, or make everything
-read-only with `TD_BUILDER_LIVE_READONLY=1`.
+read-only with `TD_BUILDER_LIVE_READONLY=1` -- checked by the live server, the
+offline server and the bridge (from TouchDesigner's environment); a batch is
+judged by its steps, an unknown value fails closed. `build_network(replace=true)`,
+`annotate(action="delete")` and `save_tox(overwrite=true)` count as
+DESTRUCTIVE. See [SECURITY.md](SECURITY.md#risk-classes).
 
 **The four DESTRUCTIVE tools** are `delete_node`, `execute_python`,
 `set_dat_text` and `bind_parameter_expression`. The last two are there because
@@ -165,7 +169,7 @@ numbers answers that badly and expensively. Every reader reduces by default.
 | `export_recipe` / `import_recipe` | WRITE_ADDITIVE | Portable JSON blueprint carrying params, **expressions**, **binds** and **authored DAT text**. |
 | `save_tox` | WRITE_ADDITIVE | |
 | `timeline` | WRITE_ADDITIVE | status / play / pause / frame / seek / rate. **Pausing is refused by default** — see below. |
-| `exec_node_method` | WRITE_ADDITIVE | Gated by the exec flag. |
+| `exec_node_method` | **DESTRUCTIVE** | Gated by the exec flag. Calls any method, `destroy()` included (classed additive before 1.17). |
 | `execute_python` | **DESTRUCTIVE** | Gated. Statically lints for TD's global `run()` on a worker thread. |
 
 ---

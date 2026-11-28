@@ -85,6 +85,7 @@ import struct
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 from urllib.parse import unquote
 
 # The bridge imports NOTHING from td_mcp. It runs inside TouchDesigner as a
@@ -402,7 +403,76 @@ _SELF_GUARDED = {
     "restore_network": ("target_parent", False),
     "edit_custom_parameters": ("path", False),
     "annotate": ("path", False),
+    # Unfenced before 1.17: build_and_verify creates in `path`, the rest move,
+    # recolour or comment an operator -- the bridge's own included.
+    "build_and_verify": ("path", False),
+    "auto_layout": ("path", False),
+    "set_node_color": ("path", False),
+    "set_node_comment": ("path", False),
+    "set_node_position": ("path", False),
 }
+
+#: Risk classes of the bridge's tools that are not WRITE_ADDITIVE. The bridge
+#: cannot import td_mcp, so this is a copy of td_mcp/tools/risk.py, held equal
+#: to it by tests/test_bridge_wave16.py.
+_RISK = {
+    "bind_parameter_expression": "DESTRUCTIVE", "delete_node": "DESTRUCTIVE",
+    "exec_node_method": "DESTRUCTIVE", "execute_python": "DESTRUCTIVE",
+    "set_dat_text": "DESTRUCTIVE",
+    "clear_script_errors": "WRITE_CHECKPOINT",
+    "capture_viewport": "READ_ONLY", "describe_op_type": "READ_ONLY",
+    "describe_td_tools": "READ_ONLY", "diff_chop": "READ_ONLY", "find_nodes": "READ_ONLY",
+    "get_connections": "READ_ONLY", "get_errors": "READ_ONLY", "get_node": "READ_ONLY",
+    "get_parameter_info": "READ_ONLY", "get_parameters": "READ_ONLY",
+    "get_performance": "READ_ONLY", "get_resource": "READ_ONLY", "health": "READ_ONLY",
+    "list_nodes": "READ_ONLY", "map_network": "READ_ONLY", "observe": "READ_ONLY",
+    "project_info": "READ_ONLY", "read_chop": "READ_ONLY", "read_dat": "READ_ONLY",
+    "read_pop": "READ_ONLY", "read_top": "READ_ONLY", "scan_network": "READ_ONLY",
+    "screenshot": "READ_ONLY", "ui_state": "READ_ONLY", "validate_network": "READ_ONLY",
+}
+_RISK_ORDER = ("READ_ONLY", "WRITE_ADDITIVE", "WRITE_CHECKPOINT", "DESTRUCTIVE")
+
+
+def effective_risk(tool, args=None):
+    """The class of one call (``td_mcp.tools.risk.effective_class``)."""
+    a = args if isinstance(args, dict) else {}
+    if tool == "build_network" and a.get("replace"):
+        return "DESTRUCTIVE"
+    if tool == "annotate" and str(a.get("action", "")).lower() == "delete":
+        return "DESTRUCTIVE"
+    if tool == "save_tox" and a.get("overwrite"):
+        return "DESTRUCTIVE"
+    return _RISK.get(tool, "WRITE_ADDITIVE")
+
+
+def policy_refusal(tool, args=None, env=None):
+    """``TD_MCP_MAX_RISK`` / ``TD_BUILDER_LIVE_READONLY`` read from
+    TouchDesigner's environment -- the same rule the MCP servers apply, so a
+    client talking to the bridge directly meets it too. A batch is judged by
+    its steps; a ceiling that is not a risk class fails closed."""
+    env = os.environ if env is None else env
+    if str(env.get("TD_BUILDER_LIVE_READONLY", "")).strip().lower() in ("1", "true", "yes", "on"):
+        ceiling, why = "READ_ONLY", "TD_BUILDER_LIVE_READONLY=1"
+    else:
+        raw = env.get("TD_MCP_MAX_RISK")
+        if raw is None or not str(raw).strip():
+            return None
+        ceiling = str(raw).strip().upper()
+        why = "TD_MCP_MAX_RISK=%s" % ceiling
+        if ceiling not in _RISK_ORDER:
+            ceiling, why = "READ_ONLY", ("TD_MCP_MAX_RISK=%r is not one of %s, so only read-only "
+                                         "tools run" % (raw, ", ".join(_RISK_ORDER)))
+    steps = [(tool, args)]
+    if tool == "batch" and isinstance(args, dict) and isinstance(args.get("ops"), list):
+        steps = [(o.get("tool"), o.get("args") or {}) for o in args["ops"] if isinstance(o, dict)]
+    limit = _RISK_ORDER.index(ceiling)
+    for name, step_args in steps:
+        cls = effective_risk(name, step_args)
+        if _RISK_ORDER.index(cls) > limit:
+            where = "" if name == tool else " (a step of %s)" % tool
+            return {"ok": False, "error_code": "policy", "tool": name, "risk": cls,
+                    "ceiling": ceiling, "error": "%s%s is %s; refused by %s" % (name, where, cls, why)}
+    return None
 
 
 #: Follow the work in the user's network editor (user rule, 2026-11-23: "always
@@ -482,7 +552,8 @@ def _run_tool(tool, args):
     fn = _DISPATCH.get(tool)
     if fn is None:
         return {"ok": False, "error": f"unknown tool: {tool}"}
-    refused = path_argument_error(tool, args) or _guard_call(tool, args)
+    refused = (policy_refusal(tool, args) or path_argument_error(tool, args)
+               or _guard_call(tool, args))
     if refused is not None:
         return _wrap(refused)
     with _undo_block(tool):
@@ -501,7 +572,7 @@ def _invoke(tool, args):
     """
     multi = _MULTI_FRAME_TOOLS.get(tool)
     if multi is not None and not on_main_thread():
-        refused = path_argument_error(tool, args or {})
+        refused = policy_refusal(tool, args or {}) or path_argument_error(tool, args or {})
         if refused is not None:
             return _wrap(refused)
         return multi(args or {})
@@ -550,7 +621,7 @@ def _ws_push(event):
 # version lets the live server say so on the first call instead. Keep in sync
 # with pyproject.toml [project].version -- scripts/check_bridge_stale.py fails
 # CI when they diverge.
-BRIDGE_VERSION = "1.16.0"
+BRIDGE_VERSION = "1.17.0"
 
 
 # Server identity lives ON THE SERVER OBJECT (td_mcp_started_at / td_mcp_version),
@@ -583,6 +654,29 @@ if EXEC_MODE == "off":
 # Always-refused builtins when exec is on (defensive, not a separate mode).
 PROTECTED = [p.strip() for p in os.environ.get("TD_MCP_PROTECTED_PATHS", "").split(",") if p.strip()]
 AUTH_TOKEN = os.environ.get("TD_MCP_AUTH_TOKEN") or secrets.token_urlsafe(24)
+
+
+def reload_settings(env=None):
+    """Re-read port, exec gate, protected paths and token from the environment.
+
+    The component's panel writes them into ``os.environ`` and restarts the
+    bridge -- but the module read them once, at import, so a restart kept the
+    old values. Verified on 2025.33230 (2026-11-28): with **Allow Python
+    Execution** switched off, ``/api/status`` still said ``allow_exec: true``
+    and ``execute_python`` still ran. ``start()`` calls this first.
+    """
+    global TD_MCP_PORT, ALLOW_EXEC, EXEC_MODE, PROTECTED, AUTH_TOKEN
+    env = os.environ if env is None else env
+    TD_MCP_PORT = int(env.get("TD_MCP_PORT", "9980"))
+    mode = env.get("TD_MCP_EXEC_MODE", "on")
+    if mode in ("restricted", "standard", "full") or mode not in ("off", "on"):
+        mode = "on"
+    EXEC_MODE = mode
+    ALLOW_EXEC = env.get("TD_MCP_ALLOW_EXEC", "1") != "0" and mode != "off"
+    PROTECTED = [p.strip() for p in env.get("TD_MCP_PROTECTED_PATHS", "").split(",") if p.strip()]
+    token = env.get("TD_MCP_AUTH_TOKEN")
+    if token:
+        AUTH_TOKEN = token
 
 # Bounded operations (dcc-mcp pattern, §6.1): cap the size/scope of reads and
 # writes so an agent cannot balloon the context or freeze the bridge. All caps
@@ -1631,6 +1725,14 @@ def _self_guard(path, tool, ancestors=False):
     if _is_protected(target or path):
         return {"ok": False, "error_code": "protected",
                 "error": "%s refused: path is protected: %s" % (tool, target or path)}
+    if ancestors and target:
+        # Deleting /project1 deletes every protected path inside it.
+        base = target.rstrip("/") + "/"
+        inner = [p for p in PROTECTED if target == "/" or p.startswith(base)]
+        if inner:
+            return {"ok": False, "error_code": "protected",
+                    "error": "%s refused: %s contains protected path(s) %s"
+                             % (tool, target, ", ".join(inner[:5]))}
     return None
 
 
@@ -2567,18 +2669,58 @@ def _do_set_node_comment(path, comment=None, tags=None):
         return {"ok": False, "error": str(e)}
 
 
-def _do_save_tox(path, file_path=None):
-    """Save a COMP as a .tox file."""
+def _free_file(path):
+    """``path`` if nothing is there, else ``stem-2.ext``, ``stem-3.ext`` ..."""
+    if not os.path.exists(path):
+        return path
+    stem, ext = os.path.splitext(path)
+    n = 2
+    while os.path.exists("%s-%d%s" % (stem, n, ext)):
+        n += 1
+    return "%s-%d%s" % (stem, n, ext)
+
+
+def _open_project_file():
+    try:
+        return os.path.normcase(os.path.abspath(os.path.join(project.folder, project.name)))  # noqa: F821
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _do_save_tox(path, file_path=None, overwrite=False):
+    """Save a COMP as a .tox file. Refuses anything but a .tox, and an
+    existing file unless ``overwrite=true`` (before 1.17 any path was written,
+    the open project's .toe included)."""
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
+    if not getattr(node, "isCOMP", False):
+        return {"ok": False, "error": "%s is not a COMP; only a COMP saves as a .tox" % node.path}
     import tempfile
-    out = file_path or os.path.join(tempfile.gettempdir(), f"{node.name}.tox")
+    if file_path:
+        out = os.path.abspath(os.path.expanduser(str(file_path)))
+    else:
+        folder = os.path.join(tempfile.gettempdir(), "td_mcp_tox")
+        os.makedirs(folder, exist_ok=True)
+        out = _free_file(os.path.join(folder, "%s.tox" % node.name))
+    if not out.lower().endswith(".tox"):
+        return {"ok": False, "error_code": "bad_path",
+                "error": "file_path must end in .tox (got %s)" % os.path.basename(out)}
+    if os.path.normcase(out) == _open_project_file():
+        return {"ok": False, "error_code": "bad_path", "error": "that is the open project file"}
+    replaced = os.path.exists(out)
+    if replaced and not overwrite:
+        return {"ok": False, "error_code": "exists",
+                "error": "%s already exists; pass overwrite=true to replace it, or another name "
+                         "(free: %s)" % (os.path.basename(out), os.path.basename(_free_file(out)))}
     try:
         node.save(out)
-        return {"ok": True, "file": out}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)}
+    result = {"ok": True, "file": out}
+    if replaced:
+        result["replaced"] = True
+    return result
 
 
 def _force_cook(node):
@@ -3028,13 +3170,42 @@ def _do_snapshot_network(path):
     node = _op(path)
     if node is None:
         return {"ok": False, "error": "not found"}
-    import tempfile, time
-    out = os.path.join(tempfile.gettempdir(), f"td_mcp_snap_{node.name}_{int(time.time())}.tox")
+    import tempfile
+    folder = os.path.join(tempfile.gettempdir(), "td_mcp_snapshots")
+    os.makedirs(folder, exist_ok=True)
+    # Milliseconds + a free-name suffix: two snapshots in one second used to
+    # share a file name, the second silently replacing the first.
+    stamp = time.strftime("%Y%m%d-%H%M%S") + "-%03d" % (int(time.time() * 1000) % 1000)
+    out = _free_file(os.path.join(folder, "%s_%s.tox" % (node.name, stamp)))
     try:
         node.save(out)
-        return {"ok": True, "snapshot": out}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)}
+    pruned = _prune_snapshots(folder, SNAPSHOT_KEEP)
+    result = {"ok": True, "snapshot": out}
+    if pruned:
+        result["pruned_oldest"] = pruned
+    return result
+
+
+#: Snapshots kept in the temp folder; older ones are deleted (oldest first).
+SNAPSHOT_KEEP = int(os.environ.get("TD_MCP_SNAPSHOT_KEEP", "50"))
+
+
+def _prune_snapshots(folder, keep):
+    try:
+        files = sorted((os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(".tox")),
+                       key=os.path.getmtime)
+    except OSError:
+        return 0
+    gone = 0
+    for f in files[:max(0, len(files) - keep)]:
+        try:
+            os.remove(f)
+            gone += 1
+        except OSError:
+            pass
+    return gone
 
 
 def _do_restore_network(snapshot, target_parent="*here"):
@@ -3044,6 +3215,16 @@ def _do_restore_network(snapshot, target_parent="*here"):
         return {"ok": False, "error": "parent not found"}
     if not snapshot or not os.path.exists(snapshot):
         return {"ok": False, "error": f"snapshot not found: {snapshot}"}
+    if not ALLOW_EXEC:
+        # A .tox can carry Execute DATs that run on load, so loading an
+        # arbitrary one is a code route: with the exec gate closed only the
+        # bridge's own snapshots load.
+        import tempfile
+        home = os.path.realpath(os.path.join(tempfile.gettempdir(), "td_mcp_snapshots"))
+        real = os.path.realpath(snapshot)
+        if os.path.commonpath([home, real]) != home:
+            return code_route_denied("restore_network",
+                                     ["a .tox outside the snapshot folder (it may run code on load)"])
     try:
         loaded = parent.loadTox(snapshot)
         return {"ok": True, "path": loaded.path}
@@ -4588,7 +4769,8 @@ def _do_batch(ops):
         if fn is None:
             results.append({"tool": tool, "ok": False, "error": "unknown tool"})
             continue
-        refused = (path_argument_error(tool, call.get("args", {}))
+        refused = (policy_refusal(tool, call.get("args", {}))
+                   or path_argument_error(tool, call.get("args", {}))
                    or _guard_call(tool, call.get("args", {})))
         if refused is not None:
             results.append({"tool": tool, "result": _wrap(refused)})
@@ -5421,7 +5603,7 @@ _DISPATCH = {
                                                      a.get("allow_other_apps", False)),
     "build_network": lambda a: _do_build_network(a.get("spec"), a.get("target_parent"),
                                                  a.get("replace", False)),
-    "save_tox": lambda a: _do_save_tox(a.get("path"), a.get("file_path")),
+    "save_tox": lambda a: _do_save_tox(a.get("path"), a.get("file_path"), bool(a.get("overwrite"))),
     "annotate": lambda a: _do_annotate(a.get("action", "list"), a.get("path"), a.get("mode"),
                                        a.get("title"), a.get("body"), a.get("around"),
                                        a.get("rect"), a.get("color"), a.get("name")),
@@ -5506,6 +5688,29 @@ def _ws_make_frame(payload, opcode=0x1):
     else:
         header = bytes([0x80 | opcode, 127]) + struct.pack(">Q", length)
     return header + data
+
+
+#: Seconds between keep-alive pings on an SSE stream.
+SSE_PING_SECONDS = float(os.environ.get("TD_MCP_SSE_PING", "15"))
+#: Long-lived streams (SSE, WebSocket) allowed at once. Each holds a thread.
+MAX_STREAMS = int(os.environ.get("TD_MCP_MAX_STREAMS", "8"))
+_streams_lock = threading.Lock()
+_open_streams = [0]
+
+
+class _BridgeServer(ThreadingMixIn, HTTPServer):
+    """One thread per connection.
+
+    Verified on 2025.33230 (2026-11-28): with the plain single-threaded
+    ``HTTPServer``, one ``GET`` with ``Accept: text/event-stream`` -- sent with
+    no token -- held the only request thread, every tool call after it timed
+    out, and the bridge never recovered (the stream loop ignored the failed
+    writes after the client left). Tool calls still run one at a time on
+    TouchDesigner's main thread through the job queue; only the waiting is
+    parallel.
+    """
+
+    daemon_threads = True
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -5729,15 +5934,50 @@ class _Handler(BaseHTTPRequestHandler):
         expected = f"Bearer {session.get('auth_token', self.AUTH_TOKEN)}"
         return hmac.compare_digest(supplied, expected)
 
+    def _stream_slot(self):
+        """Reserve one long-lived stream, or answer 503 and return False."""
+        with _streams_lock:
+            if _open_streams[0] >= MAX_STREAMS:
+                busy = True
+            else:
+                _open_streams[0] += 1
+                busy = False
+        if busy:
+            self._send({"ok": False, "error": "too many open streams (TD_MCP_MAX_STREAMS=%d)"
+                        % MAX_STREAMS}, 503)
+            return False
+        return True
+
+    def _stream_done(self):
+        with _streams_lock:
+            _open_streams[0] = max(0, _open_streams[0] - 1)
+
     def do_GET(self):
-        # WebSocket upgrade
+        # Every GET answers localhost only (DNS-rebind guard), like POST.
+        if not self._check_dns_rebind():
+            return
+        # WebSocket upgrade (authenticates with its first message)
         if self.headers.get("Upgrade", "").lower() == "websocket":
-            self._handle_websocket()
+            if not self._stream_slot():
+                return
+            try:
+                self._handle_websocket()
+            finally:
+                self._stream_done()
             return
 
-        # SSE stream (Accept: text/event-stream)
+        # SSE stream (Accept: text/event-stream): token required -- it holds a
+        # connection open and announces every tool call.
         if self.headers.get("Accept", "").find("text/event-stream") >= 0:
-            self._handle_sse()
+            if not self._auth_ok():
+                self._send({"ok": False, "error": "unauthorized"}, 401)
+                return
+            if not self._stream_slot():
+                return
+            try:
+                self._handle_sse()
+            finally:
+                self._stream_done()
             return
 
         if self.path in ("/", "/ui", "/chat"):
@@ -5752,6 +5992,11 @@ class _Handler(BaseHTTPRequestHandler):
                         "auth": True, "allow_exec": ALLOW_EXEC,
                         **_server_identity(self.server)})
         elif self.path.startswith("/api/resource?"):
+            # Reads the project: same token as a tool call (it was open to any
+            # local process before 1.17).
+            if not self._auth_ok():
+                self._send({"ok": False, "error": "unauthorized"}, 401)
+                return
             m = re.search(r"uri=([^&]+)", self.path)
             uri = _urldecode(m.group(1)) if m else ""
             self._send(_call_on_main(lambda: _wrap(_do_get_resource(uri))))
@@ -5774,10 +6019,11 @@ class _Handler(BaseHTTPRequestHandler):
             # Send initial event
             self._send_sse({"type": "connected", "client_id": client_id}, event="open")
             self.wfile.flush()
-            # Keep connection alive
+            # Keep the connection alive until a write fails: the client left.
             while True:
-                time.sleep(30)
-                self._send_sse({"type": "ping"}, event="ping")
+                time.sleep(SSE_PING_SECONDS)
+                if not self._send_sse({"type": "ping"}, event="ping"):
+                    break
         except Exception:
             pass
         finally:
@@ -5793,8 +6039,9 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             self.wfile.write(frame.encode("utf-8"))
             self.wfile.flush()
-        except Exception:
-            pass
+            return True
+        except Exception:  # noqa: BLE001 - the client went away
+            return False
     def _send(self, obj, code=200):
         if isinstance(obj, dict) and obj.get("ok") is False:
             obj = _wrap(obj)
@@ -5925,6 +6172,7 @@ def start():
     if _server is not None:
         debug("td_mcp already running")
         return
+    reload_settings()
     # A previous load of this DAT may still hold the port (link-mode reload).
     for srv in _orphaned_servers(TD_MCP_PORT):
         debug("stopping a bridge left running by a previous load of this DAT")
@@ -5943,7 +6191,7 @@ def start():
         print(f"[td_mcp] protected paths: {PROTECTED}")
     if not ALLOW_EXEC:
         print("[td_mcp] execute_python DISABLED (TD_MCP_ALLOW_EXEC=0)")
-    _server = HTTPServer(("127.0.0.1", TD_MCP_PORT), _Handler)
+    _server = _BridgeServer(("127.0.0.1", TD_MCP_PORT), _Handler)
     _Handler.AUTH_TOKEN = AUTH_TOKEN  # set auth token on handler class
     # Put TouchDesigner's main window on the chosen screen once it exists.
     _queue_placement(main=True, seconds=20.0)

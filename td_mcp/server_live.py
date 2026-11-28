@@ -441,8 +441,9 @@ class TDClient:
             result["resolver"] = resolver
         return result
 
-    def save_tox(self, path, file_path=None):
-        return self._call("save_tox", {"path": path, "file_path": file_path})
+    def save_tox(self, path, file_path=None, overwrite=False):
+        return self._call("save_tox", {"path": path, "file_path": file_path,
+                                       "overwrite": bool(overwrite)})
 
     def health(self, path=None, seconds=0.5):
         return self._call("health", {"path": path, "seconds": seconds})
@@ -837,7 +838,10 @@ _TOOL_META = [
     ("import_recipe", "Rebuild an export_recipe blueprint inside target_parent; reports "
      "any wire it could not reconnect under `unwired`.",
      {"recipe": _O, "target_parent": _S}),
-    ("save_tox", "Save a COMP as a .tox file.", {"path": _PATH, "file_path": _S}),
+    ("save_tox", "Save a COMP as a .tox file. `file_path` must end in .tox; an existing file is "
+     "refused unless overwrite=true (the open project's file never). Without `file_path` a free "
+     "name in the temp folder is used.",
+     {"path": _PATH, "file_path": _S, "overwrite": _B}),
 ]
 
 #: Arguments a call cannot do without. Advertised as JSON-Schema `required`,
@@ -873,7 +877,22 @@ def _input_schema(name, props):
     return schema
 
 
-TOOL_REGISTRY.update({name: _CLIENT_SIDE.get(name) or _forward(name)
+def _with_policy(name, fn):
+    """Refuse a call above the configured risk ceiling (TD_MCP_MAX_RISK /
+    TD_BUILDER_LIVE_READONLY) before it reaches TouchDesigner. The bridge
+    checks again with TouchDesigner's own environment."""
+    from td_mcp.tools.risk import policy_refusal
+
+    def call(args):
+        refused = policy_refusal(name, args)
+        if refused is not None:
+            return refused
+        return fn(args)
+    call.__name__ = getattr(fn, "__name__", name)
+    return call
+
+
+TOOL_REGISTRY.update({name: _with_policy(name, _CLIENT_SIDE.get(name) or _forward(name))
                       for name, *_ in _TOOL_META})
 
 

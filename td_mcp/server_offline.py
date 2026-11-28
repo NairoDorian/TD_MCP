@@ -33,7 +33,7 @@ from td_mcp import heal as heal_mod
 from td_mcp import validation as validation_mod
 from td_mcp.tools import layout as layout_mod
 from td_mcp import param_resolver as param_resolver_mod
-from td_mcp.tools.risk import risk_class, tool_annotations
+from td_mcp.tools.risk import policy_refusal, risk_class, tool_annotations
 from td_mcp.util import _json_safe
 from td_mcp.util.output_budget import truncate_text, DEFAULT_MAX_CHARS
 from td_mcp.observability import get_trace_log
@@ -754,6 +754,10 @@ def td_tool_batch(ops, max_ops=8):
             results.append({"tool": tool, "error": "unknown tool"})
             continue
         args = call.get("args", {})
+        refused = policy_refusal(tool, args)
+        if refused is not None:
+            results.append({"tool": tool, "result": refused})
+            continue
         try:
             # Signature probing is brittle; invoke with named args only when the
             # function accepts them. Most offline tools take simple kwargs.
@@ -1475,7 +1479,12 @@ async def _offline_call_tool(ctx, params):
     # TD_MCP_OBSERVE is set (no-op otherwise — zero overhead when off).
     with get_trace_log().span("tool_call", tool=name):
         try:
-            if name == "td_docs_search":
+            refused = policy_refusal(name, a)
+            if refused is not None:
+                # A ceiling (TD_MCP_MAX_RISK / TD_BUILDER_LIVE_READONLY) covers
+                # the offline tools that write files too.
+                out = (_json_dumps(refused), "")
+            elif name == "td_docs_search":
                 _max = 500 if a.get("detail") == "brief" else None
                 out = (td_docs_search(a.get("query", ""), family=a.get("family"),
                                       category=a.get("category"), version=a.get("version"),

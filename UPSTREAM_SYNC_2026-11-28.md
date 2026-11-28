@@ -62,15 +62,11 @@ closed without saving and deleted.
   in a blob), bounded lines and rotation, token and home paths scrubbed; a
   `td_journal` query tool on both servers; `undo_agent(n, dry_run)` that
   builds inverse calls and stops at a conflict or an irreversible call.
-- **Documented gates with no code behind them**: `TD_MCP_MAX_RISK`,
-  `TD_BUILDER_LIVE_READONLY` (`risk.enforce_policy` has no caller); the
-  snapshot "sandbox" in `docs/SECURITY.md`.
-- Protected paths are checked on the path itself, not on a parent being
-  deleted; `build_and_verify` reachable through `batch` without the guard;
-  `exec_node_method('destroy')` classed additive.
-- `save_tox` writes any path (could target the open `.toe`);
-  `snapshot_network` names collide within a second and are never cleaned;
-  `GET /api/resource` skips the token (against SECURITY.md).
+- ~~Documented gates with no code behind them, the snapshot "sandbox",
+  protected-path parents, unfenced tools, `exec_node_method` classed
+  additive, `save_tox` writing any path, colliding snapshot names,
+  `/api/resource` without a token~~ -- all confirmed and fixed in 1.17.0
+  (see below).
 - Memory: stemmed FTS hits dropped by the overlap filter, a tie can raise
   comparing `sqlite3.Row`, tags not searchable, no project scope, no delete,
   `TD_MCP_MEMORY_DB` overriding an explicit path; `activity.py` entries carry
@@ -100,3 +96,20 @@ closed without saving and deleted.
 - Floats under ~1e-5 evaluating to 0; `-7 // 2` giving -3 in simple
   expressions; OP-reference parameters on a COMP resolving from its parent --
   doubtful, probe first.
+
+## 1.17.0 — safety controls, measured and enforced
+
+| Fact (2025.33230, TEST-01) | Fix |
+|---|---|
+| `GET /` with `Accept: text/event-stream`, no token: 200, stream opens; an authenticated `project_info` then times out (8 s), and again 40 s after the stream closed; `/api/status` still dead a minute later -- the server is single-threaded and the stream loop swallowed its write errors | threaded server, token required, the loop ends on a failed write, `TD_MCP_MAX_STREAMS`; after: 401 without a token, `project_info` in 0.03 s with a stream open |
+| `GET /api/resource?uri=td://node//project1` with no token: 200 and the operator | 401 |
+| TouchDesigner launched with `TD_MCP_MAX_RISK=WRITE_ADDITIVE` (after the fix): `create_node` ok; `delete_node`, `execute_python`, a batch containing `execute_python` refused (`error_code: policy`) | policy in the live server, offline server and bridge |
+| `op('/project1/td_mcp').par.Allowexec = False`: the panel restarts the bridge, `/api/status` still `allow_exec: true` | `reload_settings()` in `start()`; after: `false`, `execute_python` refused |
+| With exec off, `restore_network` of a copy of a snapshot outside the snapshot folder loaded it | refused (code route); the snapshot itself still restores |
+| `save_tox` to `x.toe`: written before; existing `.tox`: replaced silently | `bad_path`; `exists` unless `overwrite=true` (`replaced: true`) |
+| Two `snapshot_network` calls in one second: one file name | distinct names |
+
+The component's **Allow Python Execution** toggle overrides `TD_MCP_ALLOW_EXEC`
+in the environment (like the token): `TD_MCP_ALLOW_EXEC=0` at launch did not
+turn exec off while the toggle was on.
+

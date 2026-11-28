@@ -366,7 +366,8 @@ TOOLS_SCHEMA = [
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Path to the COMP to save"},
-                    "file_path": {"type": "string", "description": "Optional output file path (defaults to temp dir)"}
+                    "file_path": {"type": "string", "description": "Optional output .tox path (defaults to a free name in the temp dir)"},
+                    "overwrite": {"type": "boolean", "description": "Replace an existing file (refused otherwise)"}
                 },
                 "required": ["path"]
             }
