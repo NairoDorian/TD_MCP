@@ -90,6 +90,9 @@ RISK_CLASS = {
     "td_project_grep":       "READ_ONLY",
     "td_project_diff":       "READ_ONLY",
     "td_project_check":      "READ_ONLY",
+    # Writes a NEW file only; refuses to replace any existing file.
+    "td_project_edit":       "WRITE_ADDITIVE",
+    "td_project_extract":    "WRITE_ADDITIVE",
 
     # Live bridge tools — read-only inspectors
     "get_parameters":        "READ_ONLY",

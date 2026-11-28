@@ -703,7 +703,7 @@ RECORDS += [
        "The `ui` module controls the TouchDesigner UI/runtime. Members: ui.message(text), ui.status, ui.panes, ui.viewers, ui.undo (the undo context manager), ui.performMode. Example: with ui.undo: op('x').par.value0 = 1  — wraps mutations in a single Ctrl+Z-able undo block.",
        ["python", "ui", "undo", "runtime"], aliases=["ui", "undo", "ui module"]),
     py("project module",
-       "The `project` module is the global project object. Members: project.cook (the timeline/cook state), project.name, project.folder, project.save(), project.load(path). project.cook.play toggles playback; project.cook.rate is fps; project.cook.frame is the current frame.",
+       "The `project` object is the open project. Members: project.name, project.folder, project.cookRate (frames per second), project.realTime, project.save(path), project.load(path). The timeline lives on the root COMP's time component: root.time.play toggles playback, root.time.rate is its rate, root.time.frame the current frame of the (looping) timeline; project.cook does not exist. absTime.seconds / absTime.frame count from TouchDesigner's start and do not loop with the timeline.",
        ["python", "project", "cook", "timeline"], aliases=["project", "cook", "project module"]),
     py("me object",
        "The `me` object refers to the operator whose script is executing (the 'current' OP). Members: me.time (the time of the current cook), me.parent(), me.var. In a Text DAT script, `me` is that DAT. In parameter expressions, `me` is the operator owning the parameter.",

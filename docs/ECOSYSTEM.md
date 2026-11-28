@@ -131,7 +131,7 @@ source of `td-mcp`'s schema↔handler parity tests and traceback redaction.
 | `cacheflowe/td-http-api` | HTTP bridge with agent skills (`td-common-mistakes`, process testing) and an in-TD dashboard |
 | `jlopesmo/TDflowMCP` | Permission model, audit store, project memory, 17 architecture decision records |
 | `GaNotchVFX/touchbridge` | Async file bridge, never-overwrite saves, GPU cost measurement |
-| `skylarbarrera/nyan` | A typed `.toe` parser and a guide to editing an expansion and collapsing it back |
+| `skylarbarrera/nyan` | A typed `.toe` parser and a guide to editing an expansion and collapsing it back (TD_MCP 1.16 does this as `td_project_edit`, every byte rule re-measured and each file proved by re-expanding it) |
 
 ---
 

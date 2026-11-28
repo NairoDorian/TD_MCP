@@ -158,8 +158,9 @@ GOTCHA_TEMPLATES: Dict[str, Dict[str, object]] = {
         "options": {"source_type": {"type": "string", "default": "noiseTOP"}},
     },
     "render_pipeline": {
-        "description": "Camera + Light + Geo (empty) + Render TOP wired via path-parameter references.",
-        "gotchas": ["Geometry COMP starts empty — add SOPs to make it visible",
+        "description": "Camera + Light + Geo + Render TOP wired via path-parameter references.",
+        "gotchas": ["A Geometry COMP made in the editor or by create() already holds 'torus1', a "
+                    "Torus POP that renders -- delete it or turn its render flag off before adding your geometry",
                     "Geometry's create type is geometryCOMP, not geoCOMP"],
     },
 }

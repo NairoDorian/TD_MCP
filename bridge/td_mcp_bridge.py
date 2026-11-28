@@ -550,7 +550,7 @@ def _ws_push(event):
 # version lets the live server say so on the first call instead. Keep in sync
 # with pyproject.toml [project].version -- scripts/check_bridge_stale.py fails
 # CI when they diverge.
-BRIDGE_VERSION = "1.15.0"
+BRIDGE_VERSION = "1.16.0"
 
 
 # Server identity lives ON THE SERVER OBJECT (td_mcp_started_at / td_mcp_version),
@@ -2684,6 +2684,16 @@ def _do_set_parameters(path, params, detail="normal"):
                 if token is not None and token != v:
                     notes[k] = {"menu_label": "%r -> token %r" % (v, token)}
                     v = token
+                if token is None and isinstance(v, str) and _is_strict_menu(par):
+                    # Verified on 2025.33230 (six menus, six operator types):
+                    # an unknown token does not raise and does not keep the
+                    # old value -- the menu jumps to its FIRST item. So it is
+                    # never written.
+                    names = [str(n) for n in (par.menuNames or [])]
+                    invalid[k] = {"kept": _json_safe(par.eval()), "menu": names,
+                                  "not_written": "TouchDesigner would have reset it to its first "
+                                                 "item (%s)" % (names[0] if names else "?")}
+                    continue
                 par.val = v
                 applied[k] = v
                 note = _write_readback(par, v, was_mode)
@@ -2713,8 +2723,8 @@ def _do_set_parameters(path, params, detail="normal"):
         # between: that is how a sequence is extended, and worth saying.
         notes["sequences_grown"] = grown
     if invalid:
-        # TD does not raise on a bad menu token: the parameter just keeps its
-        # old value. Treated as the failure it is, with the valid tokens.
+        # TD does not raise on a bad menu token: it resets the menu to its first
+        # item. The token was not written; the failure lists the valid ones.
         return {"ok": False,
                 "error": "invalid menu value(s) on %s: %s" % (
                     getattr(node, "OPType", node.type),
@@ -2753,6 +2763,15 @@ def _do_set_parameters(path, params, detail="normal"):
     return out
 
 
+def _is_strict_menu(par):
+    """A Menu parameter, whose value must be one of its tokens. A StrMenu
+    (Select CHOP ``channames``, Rename CHOP ``renamefrom``) also reports
+    ``isMenu`` True, but its menu is only a list of suggestions: verified on
+    2025.33230, ``channames = 'tx ty'`` is kept as written (and ``= 0`` is
+    stored as the text '0', not as an index)."""
+    return bool(getattr(par, "isMenu", False)) and str(getattr(par, "style", "")) != "StrMenu"
+
+
 def _menu_token(par, value):
     """A menu *label* ('Clamp [0-1]') or case variant mapped to its token
     ('clamp'); None when ``par`` is not a menu or nothing matches."""
@@ -2771,7 +2790,8 @@ def _menu_token(par, value):
 
 def _write_readback(par, requested, was_mode):
     """What TD actually did with a plain-value write, when it is not what was
-    asked. Verified on 2025.33230: a bad menu token is silently ignored; a
+    asked. Verified on 2025.33230: a bad menu token resets the menu to its first
+    item (so set_parameters never writes one -- this is the backstop); a
     value past a hard clamp is silently clamped (resolutionw=-5 -> 1); a write
     to an EXPRESSION parameter switches it to CONSTANT (the expression text
     stays, inactive -- it is saved that way too); a write to a BOUND parameter
@@ -2781,7 +2801,7 @@ def _write_readback(par, requested, was_mode):
         got = par.eval()
     except Exception:  # noqa: BLE001
         return None
-    if getattr(par, "isMenu", False):
+    if _is_strict_menu(par):
         names = [str(n) for n in (getattr(par, "menuNames", None) or [])]
         if isinstance(requested, str) and names and requested not in names:
             return {"invalid": True, "kept": _json_safe(got), "menu": names}

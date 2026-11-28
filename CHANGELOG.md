@@ -4,6 +4,66 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.16.0] - 2026-11-28 — Edit saved projects with TouchDesigner closed; menus re-measured
+
+See `UPSTREAM_SYNC_2026-11-28.md`. Every fact below was measured on
+TouchDesigner 2025.33230 in TEST-01 first; edited files were loaded back into
+TouchDesigner and read (`scripts/live_toe_edit.py` 18/18), and
+`live_smoke.py` passes 35/35 through real MCP stdio clients.
+
+### Added
+- **`td_project_edit`** (offline): change a saved `.toe`/`.tox` with
+  TouchDesigner closed -- `set_params` (values, `{expr}`, `{bind}`,
+  `{mode, val}`, `null` = default, tuplets), `reset_params`, `set_text`,
+  `replace_text`, `set_table`, `set_cells`, `replace` (code, values,
+  expressions, binds, tables, comments), `relink` (media folders),
+  `set_flags`, `set_node`, `connect`, `disconnect`, `rename` (wires, docks
+  and `.network` follow; text mentions listed), `delete`, `add`, `build`
+  (the `build_network` spec), `insert` (a `.tox`), `set_project` (cook rate,
+  realtime); `new="name"` starts an empty component. The result is a **new**
+  file packed by TD's own `toecollapse`; the source is never written, no file
+  is ever replaced, one bad edit writes nothing, and the produced file is
+  expanded again and compared byte for byte before it is delivered. Names and
+  menu tokens are checked against the catalog the way `set_parameters`
+  checks them. New `td_mcp/toe_writer.py`; the writer re-renders all 806,301
+  parameter records of the 768 shipped components byte for byte
+  (`python -m td_mcp.toe_writer --selftest DIR`).
+- **`td_project_extract`** (offline): one COMP of a saved file as its own
+  `.tox`, with the parameters that point outside it listed.
+- `scripts/live_toe_edit.py`: builds a component in TouchDesigner, edits the
+  saved file offline, loads it back and checks every change.
+
+### Fixed (each verified live)
+- **An unknown Menu token resets the menu to its first item** (six menus on
+  six operator types) -- it was documented as "silently ignored". The bridge
+  now never writes one (`not_written`, the value stays); docs, instructions,
+  the workflow skill and the test double say what TD does.
+- **StrMenu parameters take free text**: Select CHOP `channames = 'tx ty'`
+  was reported as an invalid menu token by `set_parameters`, flagged by
+  `td_validate_build` and reset to `*` by `td_self_heal` (1,685 catalog
+  parameters are StrMenus).
+- The reader unescaped quoted fields only: 1,545 shipped expressions and 559
+  values with a `\"` or `\\` in a bare field were read with the escapes in.
+- Custom parameter definitions: every style code is decoded (25, measured
+  from every `Page.append*` method), and the component naming -- `Pos` is an
+  XYZ with `Posx Posy Posz`, a Float of size 2 `Size1 Size2` -- was misread.
+- The knowledge base described `project.cook.play/rate/frame`, which does not
+  exist (`root.time.*`, `project.cookRate`, `project.realTime` do).
+- The render-pipeline gotcha said a Geometry COMP starts empty: one made in
+  the editor or by `create()` holds a Torus POP that renders.
+- `scripts/bump_version.py` rewrote the top changelog heading whatever it
+  was, so bumping 1.14.0 -> 1.15.0 renamed the 1.14.0 entry; it now adds a
+  heading and only rewrites an `[Unreleased]` placeholder.
+
+### Changed
+- Tools: offline 65, live 57. Tests: 1,093 (+32 editor, +4 menus).
+- `docs/PROJECT_FILES.md` gains the editing rules and the corrected format;
+  TOOLS.md, README, ECOSYSTEM, PICKED_FROM, the MCP instructions and the
+  `td-workflow` skill updated. AGENTS.md: probe from a state that would show
+  the difference.
+
+---
+
 ## [1.15.0] - 2026-11-27 — Saved projects, silent failures, and paths that name one operator
 
 24 new reference repos cloned and the rest pulled (see

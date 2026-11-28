@@ -166,6 +166,10 @@ def _normalize_value(name: str, info: Dict[str, Any], val: Any,
                 warnings.append({"param": name, "message":
                                  f"menu label {val!r} -> token {menu[i]!r}"})
                 return menu[i], True
+        if info.get("style") == "StrMenu":
+            # Free text with suggestions (Select CHOP channames 'tx ty'):
+            # verified on 2025.33230 to keep whatever is written.
+            return val, True
         mv = _match_menu(val, menu, cutoff=0.75)
         if mv is not None:
             warnings.append({"param": name, "message":

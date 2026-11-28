@@ -170,7 +170,7 @@ numbers answers that badly and expensively. Every reader reduces by default.
 
 ---
 
-## Offline server — 63 tools
+## Offline server — 65 tools
 
 No TouchDesigner required. Every one is a pure function over a description or
 the knowledge base.
@@ -246,6 +246,8 @@ install. See [PROJECT_FILES.md](PROJECT_FILES.md).
 | `td_project_grep` | Regex inside the file: DAT code with line numbers, table cells, parameter values and expressions, names and comments. |
 | `td_project_diff` | Two saves compared by meaning: added / removed / retyped / rewired / re-parameterised / re-flagged operators and DAT code diffs; moves counted apart. |
 | `td_project_check` | The file against this build's parameter catalog: unknown types, parameter names the build does not have (with close matches), menu values outside the menu, missing absolute file paths. |
+| `td_project_edit` | **Edit** a saved file with TouchDesigner closed. The result is a NEW file (`out`, default `<name>.edited.toe`; an existing file is never replaced), packed by TD's `toecollapse` and expanded again to prove it. `edits` is a list of `{op: ...}` applied all or nothing: `set_params`, `reset_params`, `set_text`, `replace_text`, `set_table`, `set_cells`, `replace`, `relink`, `set_flags`, `set_node`, `connect`, `disconnect`, `rename`, `delete`, `add`, `build`, `insert`, `set_project`. Names and menu tokens are checked against the catalog. `new="name"` starts an empty component; `dry_run` writes nothing. WRITE_ADDITIVE. |
+| `td_project_extract` | One COMP of a saved file as its own `.tox`; lists parameters that point outside it. WRITE_ADDITIVE. |
 
 ### Memory
 

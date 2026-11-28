@@ -119,6 +119,17 @@ re-probed on 2025.33230 before use; the references supplied the questions.
 | **KingRaver/touchme** (no licence: ideas only) | Questions from its probe tables -- glob paths in `op()`, cross-network wiring, destroy-rewires, writes through binds, Script OP errors on no surface, sequence growth -- each answered by our own probe | bridge `path_argument_error`, `_do_connect_nodes`, `_do_delete`, `_write_readback`, `_docked_script_errors`, `_grows_sequence` |
 | **cacheflowe/td-http-api** (no licence: ideas only) | The lead that utility operators (annotations) are invisible to `op()` and `ops()` | bridge `_do_annotate`, `_annotations_in` |
 
+## Sweep of 2026-11-28 — editing saved files, menus re-measured
+
+See `UPSTREAM_SYNC_2026-11-28.md`. Ideas only; every rule re-measured in
+TouchDesigner 2025.33230 and proved by loading edited files back.
+
+| Reference repo | What was picked | Where it lives |
+|---|---|---|
+| **skylarbarrera/nyan** (no licence: ideas only) | That a `toeexpand` tree can be edited and packed back with `toecollapse`, and that the `.toc` must list every file. Its byte rules were not used: three came out differently here (the DAT length is a uint32 cell length, not a uint16; `17` is not "expression mode" but expression-mode-plus-stored-expression; `toecollapse` renames an existing output to `.bkp1`) | `td_mcp/toe_writer.py`, `td_project_edit`, `td_project_extract` |
+| **JazibAli360/jazib-td-mcp** (licence unclear: ideas only) | The lead that StrMenu parameters report `isMenu` but take free text -- probed (Select CHOP `channames`, Rename CHOP `renamefrom`); the probe also showed an unknown Menu token resets the menu to its first item | bridge `_is_strict_menu`, `set_parameters`; `param_resolver`, `validation` |
+| **grigabyte/td-atlas**, **jlopesmo/TDflowMCP**, **GaNotchVFX/touchbridge** | Designs compared for a call journal with old values, project memory and never-overwrite saves -- recorded as the next wave's plan, not yet built | `UPSTREAM_SYNC_2026-11-28.md` |
+
 ## Deliberately skipped (too complex / useless for TD_MCP)
 
 - **ChromaDB + OpenAI embeddings**: too heavy for a stdlib-first offline tool. TF-IDF cosine + BM25 is enough; dense opt-in via `TD_MCP_DENSE=1`.

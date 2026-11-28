@@ -22,7 +22,10 @@ python scripts/td_live.py py "result = op('/project1').children[0].OPType"
   parameter names from `describe_op_type` / the catalog, and settle behaviour
   with a probe in TEST-01 before modelling it in `tests/td_double.py`. Several
   "known" facts did not survive a probe (writing `par.val` switches the mode;
-  a bad menu token is silently ignored; an OP Viewer TOP needs frames).
+  an OP Viewer TOP needs frames). One even survived a probe and fell to a
+  better one: "a bad menu token is ignored" was measured on a menu already at
+  its first item -- the token actually resets the menu to that item. Probe
+  from a state that would show the difference.
 - **A probe or a read must not change what it reads.** Iterating `OP.seq`
   cooks an operator that has never cooked (even in `/sys/quiet`), and looking up
   a sequence parameter past the last block creates the blocks. A cook is what

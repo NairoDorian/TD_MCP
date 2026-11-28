@@ -49,17 +49,32 @@ def bump_pyproject(new: str) -> None:
     PYPROJECT.write_text(text, encoding="utf-8", newline="\n")
 
 
-def bump_changelog(new: str) -> None:
+def bump_changelog(new: str, old: str) -> str:
+    """Give ``new`` the top changelog heading; returns what was done.
+
+    A new version gets a NEW heading above the released ones. Only a top
+    heading that is a placeholder -- ``[Unreleased]`` or the new version
+    itself -- is rewritten in place. (The first version of this function
+    rewrote whatever heading was on top, so bumping 1.14.0 -> 1.15.0 renamed
+    the 1.14.0 entry and its history read as if 1.14.0 never shipped.)
+    """
     if not CHANGELOG.exists():
-        return
+        return "no CHANGELOG.md"
     text = CHANGELOG.read_text(encoding="utf-8")
     today = date.today().isoformat()
-    # Replace the ENTIRE top heading line (version + date), not just the [version] token.
-    def _replace(match: re.Match) -> str:
-        return f"## [{new}] - {today}"
-
-    new_text = re.sub(r'^##\s*\[[^\]]+\].*$', _replace, text, count=1, flags=re.MULTILINE)
+    heading = f"## [{new}] - {today}"
+    m = re.search(r'^##\s*\[([^\]]+)\].*$', text, flags=re.MULTILINE)
+    if m and m.group(1).strip().lower() in ("unreleased", new):
+        new_text = text[:m.start()] + heading + text[m.end():]
+        done = f"top heading [{m.group(1)}] rewritten as [{new}]"
+    elif m:
+        new_text = text[:m.start()] + heading + "\n\n---\n\n" + text[m.start():]
+        done = f"new heading [{new}] added above [{m.group(1)}]"
+    else:
+        new_text = text.rstrip("\n") + "\n\n" + heading + "\n"
+        done = f"heading [{new}] appended (there was none)"
     CHANGELOG.write_text(new_text, encoding="utf-8", newline="\n")
+    return done
 
 
 def scan_stale(old: str) -> list[str]:
@@ -100,9 +115,9 @@ def main() -> int:
         return 0
 
     bump_pyproject(new)
-    bump_changelog(new)
+    done = bump_changelog(new, old)
     print(f"[bump_version] {old} -> {new}")
-    print(f"[bump_version] updated pyproject.toml and the top CHANGELOG.md heading.")
+    print(f"[bump_version] updated pyproject.toml; CHANGELOG.md: {done}.")
 
     stale = scan_stale(old)
     if stale:

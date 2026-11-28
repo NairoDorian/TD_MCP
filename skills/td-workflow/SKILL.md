@@ -18,7 +18,11 @@ The **live** bridge acts inside a running TouchDesigner, one undo step per call.
    reads them (`list_nodes` says when there are some). A saved `.toe`/`.tox` can be
    read with TouchDesigner closed: `td_project_read` (what is in it, then one
    network), `td_project_grep` (code and expressions inside it), `td_project_check`
-   (names this build no longer has).
+   (names this build no longer has) -- and changed with it closed:
+   `td_project_edit` writes a NEW file (all edits or none, names and menu tokens
+   checked; review the `changed` it returns), `td_project_extract` saves a COMP
+   as a `.tox`. Edit offline only when TouchDesigner does not have the file open:
+   a running TouchDesigner saving it later would write over the edit.
 2. **Plan** -- name every operator before creating one. For each unfamiliar type call
    `describe_op_type` (live) or `td_describe_op_type` (offline): it returns the exact
    parameter names, menu tokens and creation defaults. Draft bigger builds as a spec
@@ -64,7 +68,8 @@ The **live** bridge acts inside a running TouchDesigner, one undo step per call.
 ## Reading tool results
 
 - `set_parameters` reads every write back. `ok:false` with "invalid menu value" means
-  TD silently kept the old value -- use one of the tokens it lists. `notes.clamped_to`
+  the token was not written (TD would have reset the menu to its first item) -- use one
+  of the tokens it lists. A StrMenu (Select CHOP `channames`) takes any text. `notes.clamped_to`
   means TD clamped your number; `notes.mode_changed` means you overwrote an expression
   (its text is kept, inactive); `notes.written_through_bind` means the parameter is
   bound and the value landed on ANOTHER operator, its bind master. Bind with

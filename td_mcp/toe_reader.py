@@ -27,14 +27,21 @@ Measured grammar
                   (``geometryCOMP``); the parameter catalog maps one to the
                   other.
 ``<name>.parm``   ``name flags constant [expression] [bind]`` between ``?``
-                  lines. Flag ``0x10`` = expression mode, ``0x200`` = bind
-                  mode; they -- not the shape of the line -- say how many
-                  values follow. Only parameters that differ from default.
+                  lines. The low two bits of the flags word are the mode;
+                  ``0x10`` = an expression is stored, ``0x200`` = a bind is
+                  stored, and those bits -- not the shape of the line -- say
+                  how many fields follow. Only parameters that differ from
+                  default (plus every parameter of sequence blocks past the
+                  first). A field is bare, or double-quoted when it is empty
+                  or holds white space; ``\\`` and ``"`` are backslash-escaped
+                  in both forms, and a field with a non-ASCII character is
+                  preceded by a UTF-8 byte order mark.
 ``<name>.cparm``  ``pages N names...`` then one definition per custom
                   parameter (type code, name, label, ..., page, order).
-``<name>.text``   ``2\\n*`` + six big-endian uint32, the last one the length.
-``<name>.table``  ``1\\n*`` + uint32 ``1, rows, cols, 0`` + row-major cells,
-                  each ``uint32 tag, uint32 length, bytes``.
+``<name>.text``   ``2\\n*`` + uint32 ``1, rows, cols, 1`` + one cell.
+``<name>.table``  ``1\\n*`` + uint32 ``1, rows, cols, 0`` + row-major cells.
+                  A cell is ``uint32 tag, uint32 length, bytes``; a text DAT
+                  is a 1 x 1 table (an empty one may have no cell at all).
 ``<name>.network`` a COMP's own input wires (``compinputs``).
 
 Pure standard library; ``toeexpand`` is only needed to *expand*. An already
@@ -78,10 +85,25 @@ _UI_STATE_PAR = re.compile(r"(pageindex|stdswitcher)\d*$")
 #: `flags =` words that are editor state, not something a reader cares about.
 _EDITOR_FLAGS = {"parlanguage", "picked", "current", "showDocked", "compare"}
 
-#: Low byte of a `.cparm` type code -> parameter style (measured by saving one
-#: custom parameter of each kind). Anything else is reported as its hex code.
+#: Low byte of a `.cparm` type code -> parameter style, measured by saving one
+#: custom parameter from every ``Page.append*`` method on 2025.33230. Anything
+#: else is reported as its hex code.
 _CPARM_BASE = {0x01: "Float", 0x02: "Int", 0x03: "Toggle", 0x04: "Str",
-               0x05: "Pulse", 0x0E: "OP", 0x0F: "Menu"}
+               0x05: "Pulse", 0x06: "Object", 0x07: "SOP", 0x08: "MAT",
+               0x09: "CHOP", 0x0A: "TOP", 0x0B: "DAT", 0x0C: "PanelCOMP",
+               0x0D: "COMP", 0x0E: "OP", 0x0F: "Menu", 0x10: "File",
+               0x11: "Folder", 0x12: "StrMenu", 0x13: "Momentary",
+               0x14: "Python", 0x15: "Header", 0x17: "POP", 0x18: "Sequence",
+               0x19: "FileSave", 0x1A: "TOPMulti"}
+#: Bits 8-11 of the type code are the number of components, bits 12-15 how the
+#: components are named: ``Pos`` with scheme 3 and three components is
+#: ``Posx Posy Posz``; scheme 1 numbers them (``Size1 Size2``) -- and is what
+#: a one-component parameter carries too. Bit 31 is "starts a section".
+#: (Float 0x2E101101, RGB 0x2E102301, XYZ 0x2E103301, UV 0x2E104201,
+#: WH 0x2E105201, Float size 2 0x2E101201.)
+_CPARM_SUFFIXES = {1: "1234", 2: "rgba", 3: "xyzw", 4: "uvw", 5: "wh"}
+_CPARM_TUPLE_STYLE = {(2, 3): "RGB", (2, 4): "RGBA", (3, 2): "XY", (3, 3): "XYZ",
+                      (3, 4): "XYZW", (4, 2): "UV", (4, 3): "UVW", (5, 2): "WH"}
 
 _PAYLOAD_HEADER = 27
 _BOM = "\ufeff"
@@ -219,18 +241,15 @@ def _read_text_file(path: Path) -> str:
         return ""
 
 
-def _unquote(value: str) -> str:
-    """Strip one pair of outer double quotes (and a BOM before them)."""
-    v = value.strip()
-    if v.startswith(_BOM):
-        v = v[len(_BOM):]
-    if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
-        return v[1:-1]
-    return v
+def _scan_field(s: str, i: int) -> Tuple[str, int, bool]:
+    """One field of ``s`` from ``i`` -> ``(value, next index, closed)``.
 
-
-def _lex_field(s: str, i: int) -> Tuple[str, int]:
-    """One whitespace-delimited or double-quoted field of ``s`` from ``i``.
+    A field is a bare run up to white space, or a double-quoted string that
+    may hold white space and newlines. In both forms ``\\\\`` is a backslash
+    and ``\\"`` a double quote (measured: ``back\\slash`` is saved as
+    ``back\\\\slash``, ``a"b`` as ``a\\"b``, neither quoted). ``closed`` is
+    False when a quoted field runs off the end -- the value continues on the
+    next line of the file.
 
     Not ``shlex``: single quotes are content (``op('a').par.x`` must survive).
     """
@@ -240,9 +259,9 @@ def _lex_field(s: str, i: int) -> Tuple[str, int]:
     if i < n and s[i] == _BOM:
         i += 1
     if i >= n:
-        return "", n
+        return "", n, True
+    out = []
     if s[i] == '"':
-        out = []
         i += 1
         while i < n:
             ch = s[i]
@@ -251,14 +270,39 @@ def _lex_field(s: str, i: int) -> Tuple[str, int]:
                 i += 2
                 continue
             if ch == '"':
-                return "".join(out), i + 1
+                return "".join(out), i + 1, True
             out.append(ch)
             i += 1
-        return "".join(out), n
-    j = i
-    while j < n and s[j] not in " \t":
-        j += 1
-    return s[i:j], j
+        return "".join(out), n, False
+    while i < n and s[i] not in " \t":
+        ch = s[i]
+        if ch == "\\" and i + 1 < n and s[i + 1] in '"\\':
+            out.append(s[i + 1])
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out), i, True
+
+
+def _lex_field(s: str, i: int) -> Tuple[str, int]:
+    """One field of ``s`` from ``i`` -> ``(value, next index)``."""
+    value, j, _closed = _scan_field(s, i)
+    return value, j
+
+
+def _unquote(value: str) -> str:
+    """A whole string as one field: outer quotes, BOM and escapes removed.
+
+    Text that is not one field (two bare words) is returned as it stands.
+    """
+    v = value.strip()
+    if not v:
+        return ""
+    field, j, _closed = _scan_field(v, 0)
+    if v[j:].strip():
+        return v[len(_BOM):] if v.startswith(_BOM) else v
+    return field
 
 
 def _tokens(s: str) -> List[str]:
@@ -290,15 +334,13 @@ def parse_parm_line(line: str) -> Optional[Dict[str, Any]]:
     except ValueError:
         return None
     rec: Dict[str, Any] = {"name": name, "flags": flags, "mode": PAR_MODES[flags & 3]}
-    extra = [k for k, bit in (("expr", FLAG_EXPRESSION), ("bind", FLAG_BIND),
-                              ("extra", FLAG_EXTRA_VALUE)) if flags & bit]
-    if not extra:
-        rec["value"] = _unquote(tail)
-        return rec
-    value, i = _lex_field(tail, 0)
-    rec["value"] = value
-    for k, key in enumerate(extra):
-        if k == len(extra) - 1:
+    keys = ["value"] + [k for k, bit in (("expr", FLAG_EXPRESSION), ("bind", FLAG_BIND),
+                                         ("extra", FLAG_EXTRA_VALUE)) if flags & bit]
+    i = 0
+    for k, key in enumerate(keys):
+        if k == len(keys) - 1:
+            # The last field owns the rest of the line. It is one field in
+            # every measured file; text that is not is kept as it stands.
             rec[key] = _unquote(tail[i:])
         else:
             rec[key], i = _lex_field(tail, i)
@@ -306,38 +348,46 @@ def parse_parm_line(line: str) -> Optional[Dict[str, Any]]:
 
 
 def _value_is_open(line: str) -> bool:
-    """True when a `.parm` line ends inside a double-quoted value.
+    """True when a `.parm` record ends inside a double-quoted field.
 
-    A quoted constant may hold newlines (a multi-line Text COMP string, an
-    annotation body): the record then runs on until the line that closes the
-    quote. 51 of 806,352 lines in the shipped examples continue this way.
+    A quoted field may hold newlines (a multi-line Text COMP string, an
+    annotation body): the record then runs on until the quote closes. Rare --
+    three of the 85,744 shipped `.parm` files have such a record.
     """
     _name, _, rest = line.partition(" ")
     flags_s, _, tail = rest.partition(" ")
     try:
-        flags = int(flags_s)
+        int(flags_s)
     except ValueError:
         return False
-    if not flags & (FLAG_EXPRESSION | FLAG_BIND | FLAG_EXTRA_VALUE):
-        t = tail.lstrip(_BOM)
-        return t.startswith('"') and (len(t) == 1 or not t.endswith('"'))
     i, n = 0, len(tail)
     while i < n:
-        while i < n and tail[i] in (" ", "\t", _BOM):
-            i += 1
-        if i >= n:
-            return False
-        if tail[i] != '"':
-            while i < n and tail[i] not in " \t":
-                i += 1
-            continue
-        i += 1
-        while i < n and tail[i] != '"':
-            i += 2 if tail[i] == "\\" and i + 1 < n else 1
-        if i >= n:
+        _value, i, closed = _scan_field(tail, i)
+        if not closed:
             return True
-        i += 1
     return False
+
+
+def split_parm_records(text: str) -> List[str]:
+    """The raw records of a `.parm` body: one per parameter, a multi-line
+    quoted value kept whole, the ``?`` fences and blank lines dropped.
+
+    Lines are split on ``\\n`` only -- a value may hold a carriage return or
+    another character ``str.splitlines`` would break on.
+    """
+    lines = text.split("\n")
+    out = []
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        i += 1
+        if not line or line == "?":
+            continue
+        while i < n and _value_is_open(line):
+            line += "\n" + lines[i]
+            i += 1
+        out.append(line)
+    return out
 
 
 def _parse_legacy_parms(lines: List[str]) -> List[Dict[str, Any]]:
@@ -356,23 +406,16 @@ def _parse_legacy_parms(lines: List[str]) -> List[Dict[str, Any]]:
     return out
 
 
+def is_legacy_parms(text: str) -> bool:
+    """True for the pre-099 ``{ version 0.8 ... }`` grammar."""
+    return text.lstrip("\n").startswith("{")
+
+
 def parse_parms(text: str) -> List[Dict[str, Any]]:
-    lines = text.splitlines()
-    if lines and lines[0].strip() == "{":
-        return _parse_legacy_parms(lines)
+    if is_legacy_parms(text):
+        return _parse_legacy_parms(text.splitlines())
     out = []
-    i, n = 0, len(lines)
-    while i < n:
-        line = lines[i]
-        i += 1
-        if not line or line == "?":
-            continue
-        if _value_is_open(line):
-            while i < n:
-                line += "\n" + lines[i]
-                i += 1
-                if lines[i - 1].endswith('"'):
-                    break
+    for line in split_parm_records(text):
         rec = parse_parm_line(line)
         if rec is not None:
             out.append(rec)
@@ -406,11 +449,18 @@ def parse_cparms(text: str) -> Dict[str, Any]:
         except ValueError:
             continue
         rec: Dict[str, Any] = {"name": toks[1], "label": toks[2]}
-        size = (code >> 12) & 0xF
         base = _CPARM_BASE.get(code & 0xFF)
-        rec["style"] = base if base else "0x%X" % (code & 0xFFFF)
+        size = (code >> 8) & 0xF
+        scheme = (code >> 12) & 0xF
+        rec["style"] = _CPARM_TUPLE_STYLE.get((scheme, size), base) if base in ("Float", "Int") \
+            else (base if base else "0x%X" % (code & 0xFFFF))
         if base in ("Float", "Int") and size > 1:
             rec["size"] = size
+            suffixes = _CPARM_SUFFIXES.get(scheme, "")[:size]
+            if len(suffixes) == size:
+                rec["names"] = [toks[1] + ch for ch in suffixes]
+        if code & 0x80000000:
+            rec["section"] = True  # starts a new section on its page
         # The page is the last token that names one of this COMP's pages.
         page_at = None
         for idx in range(len(toks) - 1, 2, -1):
@@ -437,8 +487,11 @@ def parse_cparms(text: str) -> Dict[str, Any]:
 def read_text_payload(data: bytes) -> str:
     """DAT text: 27-byte prologue whose last uint32 is the payload length.
 
-    Scanning for the first newline instead is right on the first file anyone
-    tries and wrong whenever the length's low byte is not 0x0A.
+    The prologue is a table header in disguise -- ``2\\n*`` then uint32
+    ``1, rows=1, cols=1, 1`` and one cell (``tag, length``); 14,689 of the
+    14,720 shipped files carry tag 2, the rest tag 1 or no cell. Scanning for
+    the first newline instead is right on the first file anyone tries and
+    wrong whenever the length's low byte is not 0x0A.
     """
     if data[1:3] != b"\n*":
         return _decode(data)
@@ -493,9 +546,9 @@ def _block(lines: List[str], i: int) -> Tuple[List[str], int]:
 
 def parse_node(text: str) -> Dict[str, Any]:
     """One ``.n`` file -> family, type, tile, flags, inputs and annotations."""
-    lines = text.splitlines()
+    lines = text.split("\n")  # not splitlines(): a comment may hold a \r
     node: Dict[str, Any] = {"family": "", "type": "", "flags": {}, "inputs": []}
-    if not lines:
+    if not lines or not lines[0].strip():
         return node
     family, _, short = lines[0].strip().partition(":")
     node["family"], node["type"] = family, short
@@ -534,8 +587,8 @@ def parse_node(text: str) -> Dict[str, Any]:
             except ValueError:
                 pass
         elif key == "comment":
-            while (rest.startswith('"') and (len(rest) == 1 or not rest.endswith('"'))
-                   and i < len(lines)):
+            rest = line.partition(" ")[2]  # unstripped: a quoted comment may end in spaces
+            while not _scan_field(rest, 0)[2] and i < len(lines):
                 rest += "\n" + lines[i]
                 i += 1
             node["comment"] = _unquote(rest)
@@ -818,11 +871,9 @@ class Project:
     def custom_styles(self, node: Node) -> Dict[str, str]:
         styles: Dict[str, str] = {}
         for p in node.cparms["pars"]:
-            size = p.get("size", 1)
-            if size > 1:  # Pos -> Posx Posy Posz, Tint -> Tintr Tintg Tintb
-                for suffix in ("xyzw"[:size], "rgba"[:size], "uvw"[:size], "wh"[:size]):
-                    for ch in suffix:
-                        styles.setdefault(p["name"] + ch, p["style"])
+            # Pos -> Posx Posy Posz, Tint -> Tintr Tintg Tintb, Size -> Size1 Size2
+            for name in p.get("names") or ():
+                styles[name] = p["style"]
             styles[p["name"]] = p["style"]
         return styles
 

@@ -147,13 +147,17 @@ class FakePar:
 
     @val.setter
     def val(self, v):
-        # Verified on 2025.33230: a menu ignores a token it does not have --
-        # no exception, the old value stays -- and an int selects by index.
+        # Verified on 2025.33230 (2026-11-28, six menus on six operator
+        # types): a Menu given a token it does not have raises nothing and
+        # jumps to its FIRST item; an int selects by index. A StrMenu
+        # (selectCHOP channames) keeps any text, and stores an int as text.
         if self.menuNames:
-            if isinstance(v, int) and not isinstance(v, bool) and 0 <= v < len(self.menuNames):
+            if self.style == "StrMenu":
+                v = v if isinstance(v, str) else str(v)
+            elif isinstance(v, int) and not isinstance(v, bool) and 0 <= v < len(self.menuNames):
                 v = self.menuNames[v]
             elif isinstance(v, str) and v not in self.menuNames:
-                return
+                v = self.menuNames[0]
         # Verified on 2025.33230 (probes of 2026-11-26):
         #  * a BOUND parameter stays bound -- the write lands on its bind
         #    master (tx bound to holder.Amount: after `tx = 0.42` the master

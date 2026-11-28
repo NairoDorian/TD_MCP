@@ -207,7 +207,9 @@ def test_custom_parameter_definitions():
     assert [by[n]["style"] for n in ("Amount", "Kind", "Label", "Enable", "Go")] == \
         ["Float", "Menu", "Str", "Toggle", "Pulse"]
     assert by["Kind"]["menu"] == ["one", "two"] and by["Kind"]["menu_labels"] == ["Label 1", "Label 2"]
-    assert by["Pos"]["style"] == "Float" and by["Pos"]["size"] == 3
+    # appendXYZ: type code 0x2E103301 = Float, three components, named x y z.
+    assert by["Pos"]["style"] == "XYZ" and by["Pos"]["size"] == 3
+    assert by["Pos"]["names"] == ["Posx", "Posy", "Posz"]
     assert all(p["page"] == "Controls" for p in c["pars"])
     c = tr.parse_cparms('?\npages 2 "TD MCP" About\n772804868 Token "Auth Token" 1 1 0 0 1 1 1 2 0 "" "" "TD MCP" 2\n?\n')
     assert c["pages"] == ["TD MCP", "About"]

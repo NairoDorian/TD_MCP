@@ -97,6 +97,39 @@ async def offline() -> None:
                                                                   "pattern": "null_ctrl"}))
                 check("offline: td_project_grep finds an expression inside the file",
                       hit.get("count", 0) >= 1, hit)
+                # Editing: the result is a NEW file, re-read, the source untouched.
+                import tempfile
+                before = toe.read_bytes()
+                with tempfile.TemporaryDirectory(prefix="td_mcp_smoke_") as tmp:
+                    out_toe = Path(tmp) / "edited.toe"
+                    res = _text(await s.call_tool("td_project_edit", {
+                        "file": str(toe), "out": str(out_toe), "edits": [
+                            {"op": "set_params", "path": "/project1/feedback_trails/noise_field",
+                             "params": {"period": 6.5}},
+                            {"op": "add", "parent": "/project1", "name": "zz_smoke_level",
+                             "type": "levelTOP", "params": {"opacity": 0.5}}]}))
+                    check("offline: td_project_edit writes a verified new .toe",
+                          res.get("ok") and out_toe.is_file() and "verified" in res,
+                          {k: res.get(k) for k in ("ok", "error", "out")})
+                    again = _text(await s.call_tool("td_project_read", {
+                        "file": str(out_toe), "path": "/project1/feedback_trails"}))
+                    by2 = {o["path"].rsplit("/", 1)[-1]: o for o in again.get("operators", [])}
+                    check("offline: ...and td_project_read sees the edit in it",
+                          by2.get("noise_field", {}).get("params", {}).get("period") == 6.5,
+                          by2.get("noise_field", {}).get("params"))
+                    bad = _text(await s.call_tool("td_project_edit", {
+                        "file": str(toe), "out": str(Path(tmp) / "bad.toe"), "edits": [
+                            {"op": "set_params", "path": "/project1/feedback_trails/noise_field",
+                             "params": {"perod": 2}}]}))
+                    check("offline: ...a bad edit writes nothing and names the parameter",
+                          bad.get("ok") is False and "period" in (bad.get("did_you_mean") or [])
+                          and not (Path(tmp) / "bad.toe").exists(), bad)
+                    ext = _text(await s.call_tool("td_project_extract", {
+                        "file": str(toe), "path": "/project1/feedback_trails",
+                        "out": str(Path(tmp) / "trails.tox")}))
+                    check("offline: td_project_extract saves one COMP as a .tox",
+                          ext.get("ok") and (Path(tmp) / "trails.tox").is_file(), ext)
+                check("offline: the source .toe is byte-for-byte untouched", toe.read_bytes() == before)
             else:
                 print("[SKIP] offline: no TEST-01 project file for the .toe reader")
 

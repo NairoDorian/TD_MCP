@@ -340,9 +340,10 @@ td-mcp/
 ├── scripts/
 │   └── generate_summary.py   # generates SUMMARY.md (code-free file/architecture overview)
 ├── td_mcp/
-│   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (63 tools)
+│   ├── server_offline.py     # offline doc/RAG + build/verify MCP server (65 tools)
 │   ├── server_live.py        # Streamable-HTTP/SSE/stdio MCP server for the bridge (57 tools)
 │   ├── toe_reader.py         # read saved .toe/.tox files offline (toeexpand on a cached copy)
+│   ├── toe_writer.py         # edit them offline into a NEW file (toecollapse, re-expanded to prove it)
 │   ├── heal.py                # self-healing orchestrator: validate → score → auto-repair → hints
 │   ├── validation.py          # 5-stage build validation + auto-repair (pure, TD-free)
 │   ├── scoring.py             # score_build (0..100 A–F) + repair_network
@@ -387,7 +388,7 @@ td-mcp/
 
 ## Tool catalog
 
-**Offline server (63 tools)** — `td_docs_search`, `td_docs_operator`, `td_docs_python`,
+**Offline server (65 tools)** — `td_docs_search`, `td_docs_operator`, `td_docs_python`,
 `td_docs_glsl`, `td_docs_template`, `td_docs_version`, `td_docs_family`, `td_docs_parameter`,
 `td_docs_compare`, `td_docs_connections`, `td_docs_workflow`, `td_docs_version_info`,
 `td_docs_related`, `td_docs_glossary`, `td_build_network`, `td_showcontrol_plan`, `td_led_map`,
@@ -398,7 +399,7 @@ td-mcp/
 `td_mediaserver`, `td_analyze_performance`, `td_discover`, `td_memory_save`, `td_memory_recall`,
 `td_scaffold_recipe`, `td_analyze_build`, `td_diff_networks`, `td_optimize_layout`,
 `td_resolve_params`, `td_docs_combos`, and for saved project files `td_project_read`,
-`td_project_grep`, `td_project_diff`, `td_project_check`.
+`td_project_grep`, `td_project_diff`, `td_project_check`, `td_project_edit`, `td_project_extract`.
 
 **Live server (57 tools)** — `build_network`, `health`, `annotate`, `screenshot`, `open_viewer`, `show_in_editor`, `ui_state`, `move_window`, `create_node`, `delete_node`, `set_parameters`, `get_parameters`,
 `describe_op_type`, `pulse_parameter`,
@@ -410,6 +411,23 @@ td-mcp/
 `map_network`, `disconnect_nodes`, `get_connections`, `exec_node_method`, `snapshot_network`,
 `restore_network`, `get_performance`, `validate_network`, `set_flags`, `find_nodes`,
 `set_node_position`, `timeline`, `export_recipe`, `import_recipe`, `save_tox`.
+
+**Edit saved projects with TouchDesigner closed (v1.16.0).** `td_project_edit`
+changes a `.toe`/`.tox` -- parameters, expressions, binds, DAT code and
+tables, flags, wires, renames, deletes, new operators or whole networks from a
+build spec, a `.tox` dropped in, media paths relinked, project cook rate --
+and writes the result to a **new** file with TouchDesigner's own
+`toecollapse`, expanding it again to prove it holds what was written. The
+source is never touched and no file is ever replaced; one bad edit and nothing
+is written. Names and menu tokens are checked against the catalog the way the
+live `set_parameters` checks them. `td_project_extract` lifts one COMP out as
+a `.tox`. Every rule was measured in TouchDesigner and the writer re-renders
+all 806,301 parameter records of the shipped examples byte for byte; edited
+files were loaded back into TouchDesigner and read
+(`scripts/live_toe_edit.py`, `docs/PROJECT_FILES.md`). Re-probing also
+corrected the live bridge: an unknown menu token **resets a menu to its first
+item** (it was documented as ignored) and is now never written, and StrMenu
+parameters such as Select CHOP `channames` accept free text.
 
 **Saved projects and silent failures (v1.15.0).** `td_project_read` /
 `td_project_grep` / `td_project_diff` / `td_project_check` read a `.toe` or

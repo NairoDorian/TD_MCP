@@ -42,6 +42,7 @@ from td_mcp import scaffolds as scaffolds_mod
 from td_mcp import safety_registry as safety_registry_mod
 from td_mcp import activity as activity_mod
 from td_mcp import toe_reader as toe_reader_mod
+from td_mcp import toe_writer as toe_writer_mod
 
 DEFAULT_CHUNKS = os.path.join(os.path.dirname(__file__), "kb", "chunks.jsonl")
 
@@ -725,7 +726,7 @@ def _register_offline():
                td_build_video_pipeline, td_build_midi_rig,
                td_build_kinect_skeleton,
                td_project_read, td_project_grep, td_project_diff,
-               td_project_check):
+               td_project_check, td_project_edit, td_project_extract):
         name = "td_" + fn.__name__[3:] if not fn.__name__.startswith("td_") else fn.__name__
         _OFFLINE_DISPATCH[name] = fn
 
@@ -1115,6 +1116,39 @@ def td_project_check(file, path=None):
     return _compact(out)
 
 
+def _edit_list(edits):
+    if isinstance(edits, str):
+        import json as _json
+        try:
+            edits = _json.loads(edits)
+        except ValueError as exc:
+            return None, {"ok": False, "error": "`edits` is not valid JSON: %s" % exc}
+    if isinstance(edits, dict):
+        edits = [edits]
+    return edits, None
+
+
+def td_project_edit(file=None, edits=None, out=None, dry_run=False, new=None, force=False):
+    """Edit a saved .toe/.tox with TouchDesigner closed; the result is a NEW file.
+
+    ``edits`` is a list of ``{"op": ...}`` objects applied in order, all or
+    nothing. The source file is never written; ``out`` defaults to
+    ``<name>.edited.toe`` beside it and an existing file is never replaced.
+    The produced file is expanded again and must match the edited tree byte
+    for byte before it is delivered. ``new="name"`` starts an empty component.
+    """
+    edits, err = _edit_list(edits)
+    if err:
+        return _json_dumps(err)
+    return _compact(toe_writer_mod.edit(file, edits, out=out, dry_run=bool(dry_run),
+                                        new=new, force=bool(force)))
+
+
+def td_project_extract(file, path, out=None, dry_run=False):
+    """Save one COMP of a .toe/.tox as its own .tox, with TouchDesigner closed."""
+    return _compact(toe_writer_mod.extract(file, path, out=out, dry_run=bool(dry_run)))
+
+
 # ============================================================
 # MCP server (MCP SDK 2.0 — on_* constructor kwargs, stateless transports)
 # ============================================================
@@ -1397,6 +1431,34 @@ async def _offline_list_tools(ctx, params):
                     "values outside the menu, and absolute file paths that are missing on this machine.",
                     {"file": {"type": "string"}, "path": {"type": "string", "optional": True}},
                     annotations=read_only),
+            _tool("td_project_edit", "Edit a saved .toe/.tox with TouchDesigner CLOSED. The source is never written: "
+                    "the result is a NEW file (`out`, default <name>.edited.toe beside it; an existing file is never "
+                    "replaced), checked by expanding it again. `edits` = list of {op: ...}, applied in order, all or "
+                    "nothing: set_params {path, params: {name: value | {expr} | {bind} | {mode, val} | null=default}, "
+                    "tuplets as lists, menu tokens and parameter names checked against the catalog}; reset_params "
+                    "{path, names}; set_text {path, text}; replace_text {path, old, new, count}; set_table {path, rows}; "
+                    "set_cells {path, cells: [{row, col, value}]} (row/col = index or header); replace {pattern, "
+                    "replacement, scope: all|text|values|expressions|binds|tables|comments, path, regex}; relink "
+                    "{from, to, path} (file parameters under a folder); set_flags {path, flags: {bypass, display, "
+                    "render, viewer, pickable, expose, cooking}}; set_node {path, position, color, comment, tags}; "
+                    "connect {from, to, input}; disconnect {to, input|from}; rename {path, name}; delete {path}; "
+                    "add {parent, name, type, params, inputs, flags, text, table, dock}; build {parent, spec} (the "
+                    "td_validate_build / build_network spec); insert {parent, file: .tox, name}; set_project "
+                    "{cookrate, realtime}. `new`='name' starts an empty component (needs `out`). `dry_run` writes nothing.",
+                    {"file": {"type": "string", "optional": True,
+                              "description": "Absolute path of the .toe or .tox to start from"},
+                     "edits": {"type": "array", "items": {"type": "object"}},
+                     "out": {"type": "string", "optional": True},
+                     "dry_run": {"type": "boolean", "optional": True},
+                     "new": {"type": "string", "optional": True},
+                     "force": {"type": "boolean", "optional": True}},
+                    annotations=additive),
+            _tool("td_project_extract", "Save one COMP of a saved .toe/.tox as its own .tox, with TouchDesigner "
+                    "closed (the source is untouched). Reports wires and parameter paths that leave the component.",
+                    {"file": {"type": "string"}, "path": {"type": "string"},
+                     "out": {"type": "string", "optional": True},
+                     "dry_run": {"type": "boolean", "optional": True}},
+                    annotations=additive),
         ],
         ttl_ms=60000,
         cache_scope="private",
@@ -1552,6 +1614,12 @@ async def _offline_call_tool(ctx, params):
                 out = (td_project_diff(a.get("before"), a.get("after"), a.get("path")), "")
             elif name == "td_project_check":
                 out = (td_project_check(a.get("file"), a.get("path")), "")
+            elif name == "td_project_edit":
+                out = (td_project_edit(a.get("file"), a.get("edits"), a.get("out"), a.get("dry_run", False),
+                                       a.get("new"), a.get("force", False)), "")
+            elif name == "td_project_extract":
+                out = (td_project_extract(a.get("file"), a.get("path"), a.get("out"),
+                                          a.get("dry_run", False)), "")
             else:
                 out = ("unknown tool", "")
         except Exception as e:  # noqa: BLE001

@@ -23,7 +23,7 @@ from td_mcp.validation import suggest_repairs, validate_build
 #: as an agent would (scripts/live_smoke.py), not by any unit test.
 _FINDING_HINTS = {
     "MENU_INVALID": ("A menu parameter has a value TouchDesigner does not accept "
-                     "(TD would silently keep the old value).",
+                     "(given an unknown token, TD silently resets the menu to its first item).",
                      "Use one of the tokens listed in the message, or let td_self_heal "
                      "reset it to the creation default.",
                      ["td_describe_op_type", "td_self_heal"]),

@@ -92,6 +92,7 @@ td-mcp/
 │   ├── generate_summary.py
 │   ├── install_all.py
 │   ├── live_smoke.py
+│   ├── live_toe_edit.py
 │   ├── probe_param_catalog_td.py
 │   └── td_live.py
 ├── skills
@@ -205,6 +206,7 @@ td-mcp/
 │   ├── server_offline.py
 │   ├── spatial.py
 │   ├── toe_reader.py
+│   ├── toe_writer.py
 │   ├── validation.py
 │   └── vision.py
 ├── td_mcp.egg-info
@@ -222,6 +224,7 @@ td-mcp/
 │   ├── test_bridge_readers.py
 │   ├── test_bridge_wave13.py
 │   ├── test_bridge_wave14.py
+│   ├── test_bridge_wave15.py
 │   ├── test_bundle.py
 │   ├── test_codeguard.py
 │   ├── test_compat.py
@@ -271,6 +274,7 @@ td-mcp/
 │   ├── test_tdn.py
 │   ├── test_tdn_fidelity.py
 │   ├── test_toe_reader.py
+│   ├── test_toe_writer.py
 │   ├── test_tool_schema_conformance.py
 │   ├── test_validation.py
 │   ├── test_version_truth.py
@@ -301,6 +305,7 @@ td-mcp/
 ├── UPSTREAM_SYNC_2026-09-14.md
 ├── UPSTREAM_SYNC_2026-11-22.md
 ├── UPSTREAM_SYNC_2026-11-27.md
+├── UPSTREAM_SYNC_2026-11-28.md
 └── uv.lock
 ```
 
@@ -327,7 +332,7 @@ td-mcp/
 - **`docs/DIAGNOSTICS.md`** — The four error surfaces — This is the single most important thing to understand about automating
 - **`docs/ECOSYSTEM.md`** — The TouchDesigner MCP ecosystem — A survey of the public TouchDesigner + MCP projects, mirrored side by side in
 - **`docs/INSTALL.md`** — Installing td-mcp — There are **two halves**, and they fail independently:
-- **`docs/PROJECT_FILES.md`** — Reading saved projects (`.toe` / `.tox`) — `td_project_read`, `td_project_grep`, `td_project_diff` and
+- **`docs/PROJECT_FILES.md`** — Saved projects (`.toe` / `.tox`): read and edit with TouchDesigner closed — `td_project_read`, `td_project_grep`, `td_project_diff` and
 - **`docs/RAG.md`** — Retrieval — **1.000 recall @k=5** with the full knowledge base, **0.991** curated-only. No
 - **`docs/README.md`** — td-mcp documentation — Start here.
 - **`docs/SECURITY.md`** — Security model — The bridge opens a port inside your TouchDesigner session and lets a language
@@ -350,6 +355,7 @@ td-mcp/
 - **`scripts/generate_summary.py`** — Generate a clean, code-free summary of the td-mcp repository.
 - **`scripts/install_all.py`** — One-command install (ai-brain / johnsabath / 8beeeaaat idea).
 - **`scripts/live_smoke.py`** — Use TD_MCP the way an agent does, and check that it works.
+- **`scripts/live_toe_edit.py`** — Prove the offline .toe/.tox editor against TouchDesigner itself.
 - **`scripts/probe_param_catalog_td.py`** — Probe every operator type in a running TouchDesigner into a parameter catalog.
 - **`scripts/td_live.py`** — Drive the TEST-01 TouchDesigner project from the command line.
 
@@ -437,6 +443,7 @@ td-mcp/
 - **`td_mcp/spatial.py`** — Spatial pointer resolver (twozero `*here` / `*this`).
 - **`td_mcp/tdn/__init__.py`** — TDN — TouchDesigner Network serialization (diffable YAML).
 - **`td_mcp/toe_reader.py`** — Read a saved TouchDesigner project (.toe) or component (.tox) with TouchDesigner closed.
+- **`td_mcp/toe_writer.py`** — Edit a saved TouchDesigner project (.toe) or component (.tox) with TouchDesigner closed -- and never touch the file that was given.
 - **`td_mcp/tools/__init__.py`** — Tools subpackage marker (risk / recovery / logs / layout helpers).
 - **`td_mcp/tools/layout.py`** — Layout lint — Embody-style deterministic placement hygiene.
 - **`td_mcp/tools/logs.py`** — Token-efficient logging (Embody discipline).
@@ -466,6 +473,7 @@ td-mcp/
 - **`tests/test_bridge_readers.py`** — Reader reduction contract (Wave 12, Embody's "never a blind dump").
 - **`tests/test_bridge_wave13.py`** — Wave 13 bridge behaviour, each case verified live on TouchDesigner 2025.33230 before it was modelled in the double (see UPSTREAM_SYNC_2026-11-22.md).
 - **`tests/test_bridge_wave14.py`** — Wave 14 bridge behaviour. Each case was reproduced on TouchDesigner 2025.33230 (TEST-01, through the HTTP tool layer) before it was modelled in the double -- see UPSTREAM_SYNC_2026-11-26.md for the probes.
+- **`tests/test_bridge_wave15.py`** — Wave 15: menu parameters, re-measured on TouchDesigner 2025.33230 (TEST-01, 2026-11-28; UPSTREAM_SYNC_2026-11-28.md).
 - **`tests/test_bundle.py`** — Tests for td_mcp.bundle (.mcpb packaging).
 - **`tests/test_codeguard.py`** — Bridge hardening absorbed from the ecosystem's last-15-days commits.
 - **`tests/test_compat.py`** — Tests for td_mcp.compat (version compat + error cache).
@@ -515,6 +523,7 @@ td-mcp/
 - **`tests/test_tdn.py`** — Tests for TDN serialization/diff and the knowledge graph.
 - **`tests/test_tdn_fidelity.py`** — TDN fidelity (Wave 12).
 - **`tests/test_toe_reader.py`** — The offline .toe/.tox reader (`td_mcp.toe_reader`).
+- **`tests/test_toe_writer.py`** — The offline .toe/.tox editor (`td_mcp.toe_writer`).
 - **`tests/test_tool_schema_conformance.py`** — Tool-schema conformance tests (inspired by Embody v6.0.159, test_envoy_tool_schema).
 - **`tests/test_validation.py`** — Tests for td_mcp.validation (TD_Builder 5-stage + tdmcp auto-repair).
 - **`tests/test_version_truth.py`** — One version, three places (Wave 12).
@@ -545,6 +554,7 @@ td-mcp/
 - **`UPSTREAM_SYNC_2026-09-14.md`** — Upstream sync — 2026-09-14 — All 31 sibling repos fetched from origin. Three had moved since the last sync
 - **`UPSTREAM_SYNC_2026-11-22.md`** — Upstream sync — 2026-11-22 — All sibling repos pulled; three new ones cloned. Everything below that is
 - **`UPSTREAM_SYNC_2026-11-27.md`** — Upstream sync — 2026-11-27 — All sibling repos pulled; 24 new ones cloned (a GitHub search plus the
+- **`UPSTREAM_SYNC_2026-11-28.md`** — Upstream sync — 2026-11-28 — A working session rather than a pull: the references were pulled on
 - **`pyproject.toml`** — Python project metadata: dependencies, optional extras (mcp/rag/scrape) and console entry points (td-mcp-offline, td-mcp-live).
 - **`repomix.config.json`** — Repomix configuration (include/exclude + output style) for emitting a full source pack.
 - **`setup_env.ps1`** — One-shot PowerShell bootstrap that pins Python 3.11.10 (TD's interpreter) via uv and installs td-mcp.

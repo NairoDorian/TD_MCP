@@ -155,7 +155,8 @@ def validate_build(desc: Dict[str, Any], strict: bool = False) -> Dict[str, Any]
             if pname in schema:
                 info = schema[pname]
                 menu = info.get("menu") or []
-                if menu and val not in menu:
+                # A StrMenu's menu is suggestions; any text is valid.
+                if menu and info.get("style") != "StrMenu" and val not in menu:
                     findings.append(_f("semantic", "error", "MENU_INVALID",
                                        f"{nm}.{pname} = {val!r} not in menu {menu[:10]}",
                                        target=nm))
@@ -331,9 +332,10 @@ def _repair_params(op: Dict[str, Any]) -> None:
     resolved, _, _ = _resolver().resolve_parameters(ot, params)
     schema = _catalog.schema(ot)
     for name, val in list(resolved.items()):
-        menu = (schema.get(name) or {}).get("menu") or []
-        if menu and val not in menu:
-            resolved[name] = schema[name].get("default")
+        info = schema.get(name) or {}
+        menu = info.get("menu") or []
+        if menu and info.get("style") != "StrMenu" and val not in menu:
+            resolved[name] = info.get("default")
     op["parameters"] = resolved
 
 

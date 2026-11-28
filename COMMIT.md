@@ -34,7 +34,7 @@ thorough:
   `SUMMARY.md`, `skills/td-building/SKILL.md`, and the brainstorm/docs
   (`TD_MCP_Master_Plan.md`, `TouchDesigner_MCP_Servers.md`, `TouchDesigner_Links.md`).
 - Verify, and **fix if wrong**:
-  - tool counts / tool names (offline = 59, live = 55) match what the servers
+  - tool counts / tool names (offline = 65, live = 57) match what the servers
     actually register;
   - file paths and the layout tree match the real directory structure;
   - numbers (chunk counts, recall/metrics, versions) match reality;
